@@ -1512,6 +1512,21 @@ public static class ShellApprovalCases
             Approvals.None,
             ExpectedApproval.Allow(ToolAllowReason.ApprovalExemptShellCandidates)),
         Case(
+            "unquoted-status-output-reuses-session-grant",
+            Bash("git push; echo $?"),
+            Approvals.Session("git push"),
+            ExpectedApproval.Allow(ToolAllowReason.StoredApproval, 1, "session:git push")),
+        Case(
+            "unquoted-status-output-prompts-for-unapproved-verb",
+            Bash("git push; echo $?"),
+            Approvals.None,
+            ExpectedApproval.Require(["git push"])),
+        Case(
+            "unquoted-status-output-redirect-remains-complex",
+            Bash("echo $? > /tmp/marker"),
+            Approvals.PersistentAnywhere("echo"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        Case(
             "control-flow-fails-closed",
             Bash("for f in *.txt; do cat \"$f\"; done"),
             Approvals.PersistentAnywhere("cat"),

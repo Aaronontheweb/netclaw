@@ -43,6 +43,32 @@ public sealed class ShellCommandAnalysisMutationTests
     }
 
     [Fact]
+    public void Bare_status_output_keeps_static_candidates_without_accepting_other_unknown_data_or_redirects()
+    {
+        var matcher = new ShellApprovalMatcher(
+            ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux));
+
+        ShellApprovalAnalysis Analyze(string command) => matcher.AnalyzeInvocation(
+            new ToolName("shell_execute"),
+            new Dictionary<string, object?>
+            {
+                ["Command"] = command,
+                ["WorkingDirectory"] = "/work"
+            });
+
+        var status = Analyze("git push; echo $?");
+        var positional = Analyze("git push; echo $@");
+        var redirect = Analyze("git push; echo $? > /tmp/marker");
+
+        Assert.False(status.IsMessy);
+        Assert.Equal(["git push", "echo"], status.Candidates.Select(static candidate => candidate.Verb));
+        Assert.True(positional.IsMessy);
+        Assert.Empty(positional.Candidates);
+        Assert.True(redirect.IsMessy);
+        Assert.Empty(redirect.Candidates);
+    }
+
+    [Fact]
     public void Known_and_unknown_execution_regions_keep_distinct_analysis_results()
     {
         var analyzer = new ShellCommandAnalyzer(PowerShellEnvironment);

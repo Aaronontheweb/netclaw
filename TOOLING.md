@@ -43,7 +43,7 @@ coverage. They do not replace positive and negative behavior tests.
 | `PathAccessPolicy.AddSessionRoots` | Only a Personal context receives shared session roots | 2 killed | `./scripts/run-path-access-mutations.sh` |
 | `ToolAccessPolicy.AuthorizeMcpInvocation` | Server and tool audience grants precede approval | 2 killed | `./scripts/run-tool-authorization-mutations.sh` |
 | `ToolAccessPolicy.AuthorizeShellInvocation` | A shell hard denial precedes approval | 1 killed | `./scripts/run-tool-authorization-mutations.sh` |
-| Shell analysis, denial-only, tree effects, and reviewed-safe gates | Parser-proved regions and authored diagnostic syntax preserve hard denials; only bounded audited non-path values and consistent non-link-following tree facts can use reusable approval | 79 killed | `./scripts/run-shell-command-analysis-mutations.sh` |
+| Shell analysis, denial-only, tree effects, and reviewed-safe gates | Parser-proved regions and authored diagnostic syntax preserve hard denials; only bounded audited non-path values and consistent non-link-following tree facts can use reusable approval | 81 killed | `./scripts/run-shell-command-analysis-mutations.sh` |
 | `ApprovalPatternMatching.EvaluateApprovalScope` | Folder grants require containment and reject link escape | 4 killed | `./scripts/run-approval-directory-mutations.sh` |
 | `ReminderManagerActor.HandleExecutionOutcomeAsync` | Only the current attempt can settle; the manager replies after settlement | 2 killed | `./scripts/run-reminder-execution-mutations.sh` |
 | `ActiveExecutionTracker.TryRemove` | Only the current owner can remove its guard; cleanup removes that guard | 2 killed | `./scripts/run-reminder-execution-mutations.sh` |
@@ -189,12 +189,16 @@ Run the shell analysis gate:
 ./scripts/run-shell-command-analysis-mutations.sh
 ```
 
-The script tests 79 mutants across execution-region accounting, denial-only
+The script tests 81 mutants across execution-region accounting, denial-only
 matching, tree traversal and root correspondence, bounded non-filesystem
-values, candidate extraction, approval mode, path facts, and reviewed-safe
-policy. The job fails unless every mutant dies.
+values, bare status-parameter output, candidate extraction, approval mode,
+path facts, and reviewed-safe policy. The job fails unless every mutant dies.
 
-The final local run took about 6 minutes. CI allows 30 minutes for
+Two status-parameter mutants test the rule that only bare `$?` can preserve
+reusable candidates. The focused test rejects other unknown output data.
+The new target took 49 seconds after package restore.
+
+The local run on 2026-09-18 took about 22 minutes. CI allows 30 minutes for
 hosted-runner variance and report upload. The report directory is
 `artifacts/stryker/shell-command-analysis`.
 
