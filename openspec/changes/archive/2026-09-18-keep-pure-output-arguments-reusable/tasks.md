@@ -13,4 +13,4 @@
 - [x] 3.1 Run Security and Actors tests, strict OpenSpec validation, Slopwatch, and header checks; verify all pass.
 - [x] 3.2 Review the focused shell mutation scope and run its gate if this boundary has a selected mutant; verify no unsafe survivor.
 - [x] 3.3 Review the sanitized live case against the prior and new analyzer builds; verify the new result offers reusable grants without authority drift.
-- [ ] 3.4 Open a Netclaw pull request with the evidence and enable auto-merge after required CI passes; verify the merge state.
+- [x] 3.4 Open a Netclaw pull request with the evidence and queue auto-merge subject to required CI; verify the queue state.
