@@ -239,6 +239,9 @@
 | printf-allows-without-grant | Bash | Personal | Project | Interactive | printf hello | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
 | echo-redirect-prompts | Bash | Personal | Project | Interactive | echo hello > result.txt | none | RequiresApproval | approval required | echo | No |
 | echo-control-word-argument-allows | Bash | Personal | Project | Interactive | echo done | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
+| unquoted-status-output-reuses-session-grant | Bash | Personal | Project | Interactive | git push; echo $? | session[this-chat]:git push | Allowed | StoredApproval | none | Not applicable |
+| unquoted-status-output-prompts-for-unapproved-verb | Bash | Personal | Project | Interactive | git push; echo $? | none | RequiresApproval | approval required | git push | No |
+| unquoted-status-output-redirect-remains-complex | Bash | Personal | Project | Interactive | echo $? > /tmp/marker | persistent[anywhere]:echo | RequiresApproval | approval required | none | Yes |
 | control-flow-fails-closed | Bash | Personal | Project | Interactive | for f in *.txt; do cat "$f"; done | persistent[anywhere]:cat | RequiresApproval | approval required | none | Yes |
 | printf-variable-target-hidden-execution-fails-closed | Bash | Personal | Project | Interactive | printf -v'value[$(printf marker >&2)0]' '%s' data | persistent[anywhere]:printf | RequiresApproval | approval required | none | Yes |
 | recursive-builtin-eval-fails-closed | Bash | Personal | Project | Interactive | command -p -- builtin -- eval 'printf marker >&2' | persistent[anywhere]:command, persistent[anywhere]:builtin, persistent[anywhere]:eval, persistent[anywhere]:printf | RequiresApproval | approval required | none | Yes |

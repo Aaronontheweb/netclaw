@@ -82,6 +82,26 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
                 1,
                 "persistent:git status")));
 
+    [SlopwatchSuppress("SW001", "The command uses a POSIX Bash status parameter.")]
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash semantics.")]
+    public async Task Unquoted_status_output_offers_reusable_grant_for_unapproved_verb()
+    {
+        await using var harness = await ShellApprovalHarness.CreateAsync(
+            ShellApprovalCases.Get("unquoted-status-output-prompts-for-unapproved-verb"),
+            fixture.ActorSystem,
+            TestContext.Current.CancellationToken);
+
+        var decision = await harness.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(ToolAuthorizationOutcome.RequiresApproval, decision.Outcome);
+        var approval = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
+        Assert.False(approval.IsMessy);
+        Assert.Equal(["git push"], approval.CandidateVerbs);
+        Assert.Contains(
+            approval.Options,
+            option => option.Key.Value == ApprovalOptionKeys.ApproveSession);
+    }
+
     [SlopwatchSuppress("SW001", "The observed compound uses POSIX Bash directory and pipeline semantics.")]
     [Fact(SkipUnless = nameof(IsPosix), Skip = "This case requires POSIX Bash semantics.")]
     public async Task Declared_project_does_not_resolve_an_inline_directory_pipeline()
