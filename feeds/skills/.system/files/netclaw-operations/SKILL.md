@@ -272,6 +272,19 @@ The SDK redirect URI is
 a pre-registered redirect URI, use the configured `Daemon.Port`, not a fixed
 default port.
 
+Some providers require a pre-registered confidential client.
+Caution: command arguments can appear in process inspection and shell history.
+Run the next command only on a trusted host.
+
+```bash
+netclaw mcp add --transport http --client-id <id> --client-secret <secret> <name> <url>
+```
+
+Netclaw stores the secret in encrypted configuration.
+Do not put the secret in `netclaw.json`.
+A client ID without a secret remains valid for public clients.
+The configured identity stays authoritative during token exchange, refresh, and daemon restart.
+
 A configured `Authorization` header takes precedence over SDK OAuth. Netclaw
 sends that header unchanged, does not start SDK OAuth after a challenge, and
 rejects `netclaw mcp auth <name>` until the header is removed. Check or rotate the
