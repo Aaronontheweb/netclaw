@@ -1177,6 +1177,13 @@ daemon_log_no_skill_loaded() {
     ! daemon_log_tail | grep -qaE "turn_skill_loaded" 2>/dev/null
 }
 
+daemon_log_no_unexpected_skill_loaded() {
+    local expected_skill="$1"
+    ! daemon_log_tail \
+        | grep -aE "turn_skill_loaded" 2>/dev/null \
+        | grep -qavE "turn_skill_loaded skill=$expected_skill method=skill_load" 2>/dev/null
+}
+
 stdout_tool_called() {
     grep -qaE "\\[tool:call\\] $1\\(" "$STDOUT_FILE" 2>/dev/null
 }
@@ -1281,7 +1288,7 @@ assert_identity_version() {
 }
 
 assert_identity_repo() {
-    stdout_contains 'github.com/netclaw-dev/netclaw'
+    stdout_contains 'netclaw-dev/netclaw'
 }
 
 assert_identity_session() {
@@ -1292,7 +1299,8 @@ assert_identity_file_routing() {
     stdout_response_contains 'SOUL.md' && \
         stdout_response_contains 'AGENTS.md' && \
         stdout_response_contains 'TOOLING.md' && \
-        daemon_log_no_skill_loaded
+        daemon_log_no_unexpected_skill_loaded 'netclaw-operations' && \
+        stdout_no_skill_file_read_called
 }
 
 # Category 2: Skill Discovery — tests that the model retrieves procedural
@@ -1653,14 +1661,23 @@ assert_tool_known_image_metadata() {
 assert_tool_rationale_contract() {
     stdout_json_envelope_valid \
         && stdout_json_tool_call_sequence_matches \
-            '["file_list","list_reminders","file_read","skill_load"]' \
+            '["file_list","file_search","file_read","skill_load"]' \
         && stdout_json_all_tool_calls_have_rationale 4
 }
 
 assert_tool_timestamped_webhook() {
+    local route_file="$EVAL_HOME/data/config/webhooks/stripe-events.json"
     stdout_tool_called 'set_webhook' \
-        && stdout_contains 'HmacTimestamped' \
-        && stdout_contains 'Stripe-Signature'
+        && jq -e '
+            .verification.kind == "HmacTimestamped"
+                and .verification.secret == "eval-whsec-123"
+                and (.prompt | test("summar"; "i"))
+        ' "$route_file" >/dev/null 2>&1
+}
+
+setup_tool_timestamped_webhook() {
+    docker exec --user root "$EVAL_CONTAINER_NAME" \
+        rm -f /home/netclaw/.netclaw/config/webhooks/stripe-events.json
 }
 
 assert_tool_timeout_arg_recovery() {
@@ -2749,7 +2766,7 @@ run_all() {
         "Check your version" \
         "What version of Netclaw is this?"
 
-    run_case identity_repo "repo URL in output" \
+    run_case identity_repo "canonical repository in output" \
         "What is the Netclaw GitHub repository URL?" \
         "Where is the Netclaw source code?" \
         "What repo are you built from?"
@@ -2758,7 +2775,7 @@ run_all() {
         "What is your session ID?" \
         "What session are we in?"
 
-    run_case identity_file_routing "routes all three identity concerns without loading a skill" \
+    run_case identity_file_routing "routes all three identity concerns without unrelated skill access" \
         "Which identity file should hold each of these: my communication style, this deployment's recurring sales workflow, and the tools available on this host?" \
         "Map personality and operator context, deployment mission and review rules, and environment capabilities to the correct Netclaw identity files."
 
@@ -2948,10 +2965,10 @@ run_all() {
         "Report the exact dimensions of /home/netclaw/.netclaw/workspaces/file-tool-selection/dimensions.png."
 
     run_case --json tool_rationale_contract "all calls retain rationales across two parallel tool iterations" \
-        "Use exactly two tool stages. First, call file_list on /home/netclaw/.netclaw/workspaces and list_reminders in one parallel batch. After both results return, call file_read on /home/netclaw/.netclaw/workspaces/netclaw-eval-largefile.txt for lines 1 through 3 and skill_load for netclaw-operations in one parallel batch. Use all four tools, then summarize the results."
+        "Use exactly two tool stages. First, call file_list on /home/netclaw/.netclaw/workspaces and file_search under /home/netclaw/.netclaw/workspaces/file-tool-selection for the exact text local-search-eval-token in one parallel batch. After both results return, call file_read on /home/netclaw/.netclaw/workspaces/netclaw-eval-largefile.txt for lines 1 through 3 and skill_load for netclaw-operations in one parallel batch. Use all four tools, then summarize the results."
 
-    run_case tool_timestamped_webhook "set_webhook called with Stripe timestamp verification" \
-        "Create a public inbound webhook route named stripe-events for Stripe. Use secret eval-whsec-123 and have it summarize each payment event."
+    run_case tool_timestamped_webhook "set_webhook persists timestamp verification" \
+        'First call load_tool with Name=set_webhook. Then call set_webhook directly with RouteName=stripe-events, VerificationKind=HmacTimestamped, Secret=eval-whsec-123, and a Prompt that requests a summary of each payment event. Do not use shell_execute.'
 
     run_case tool_timeout_arg_recovery "long-timeout shell call lands on _timeout_seconds" \
         "Run 'echo netclaw-timeout-eval-ok' in the shell with a 5 minute timeout." \
