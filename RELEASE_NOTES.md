@@ -1,5 +1,12 @@
 # NetClaw Release Notes
 
+## Unreleased
+
+### Shell authorization
+
+- **Static shell assignments can use exact reusable approvals.** Netclaw binds each grant to a digest of the complete Bash or PowerShell assignment facts.
+- **Shell launch facts stay aligned with parser facts.** Netclaw probes Bash versions and uses isolated PowerShell processes for bounded assignment analysis.
+
 ## 0.27.0-beta.4 (2026-09-14)
 
 Follow-up beta to 0.27.0-beta.3. Shell authorization is safer and less noisy on Windows, openai-compatible providers accept an optional API key, and OAuth token exchanges stay aligned with the MCP SDK.
