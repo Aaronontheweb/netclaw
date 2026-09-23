@@ -281,11 +281,28 @@ public static class ChannelIntegrationRegistrationExtensions
         var options = configuration.GetSection(nameof(ChannelType.Teams)).Get<TeamsChannelOptions>()
             ?? new TeamsChannelOptions();
         var registration = TeamsIngressRegistration.Evaluate(options);
-        var descriptor = ChannelDescriptor.CreateRemoteChat(
+        // Teams uses transport-owned actors for replies, approvals, and
+        // proactive delivery. It has no generic send or lookup adapters.
+        var capabilities = ChannelCapabilities.ReceiveMessages
+                           | ChannelCapabilities.ThreadedConversations
+                           | ChannelCapabilities.InteractiveApproval
+                           | ChannelCapabilities.ProactiveSend
+                           | ChannelCapabilities.RuntimeHealth;
+        if (options.AllowDirectMessages)
+            capabilities |= ChannelCapabilities.DirectMessages;
+        if (options.AllowAttachments)
+            capabilities |= ChannelCapabilities.FileIngress;
+
+        var descriptor = new ChannelDescriptor(
+            ChannelDescriptorKey.FromChannelType(ChannelType.Teams),
             ChannelType.Teams,
+            ChannelKind.RemoteChat,
             "Teams",
             options.Enabled,
-            options.AllowDirectMessages);
+            capabilities,
+            new HashSet<ChannelToolIntentKind>(),
+            new HashSet<ChannelAddressKind>(),
+            new HashSet<ChannelOutputEffectKind>());
 
         services.AddSingleton(options);
         services.AddSingleton(registration);

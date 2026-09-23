@@ -49,6 +49,8 @@ Rules:
 - Do not try to route via `delivery_instructions`.
 - `current_session` is the session check-back path and should be preferred for
   conversational follow-ups in Slack/TUI/SignalR sessions.
+- Teams supports `current_session` check-back through its actor-owned,
+  established destination.
 - `channel` requires both transport + address and resolves names/handles to
   canonical IDs at set time; unresolved targets fail loud.
 - Discord reminder targets must be explicit because channel IDs and user IDs are
@@ -178,6 +180,8 @@ Both tools require `channel_key` as the first argument. Use the returned
 `address_kind` (`destination`) as `destination.kind`. For user lookups, set
 `destination.kind` to `direct_message` and pass the returned user `stable_id`.
 If lookup is ambiguous, pick from the returned candidates instead of guessing.
+The generic `send_channel_message` and `lookup_channel_*` tools do not target
+Teams unless a generic Teams adapter provides that capability.
 Do not use channel-specific lookup aliases such as `lookup_slack_user` or
 `lookup_mattermost_user`; lookup is intentionally routed through the generic
 channel tools.

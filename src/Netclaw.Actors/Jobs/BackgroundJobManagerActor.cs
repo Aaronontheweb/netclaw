@@ -584,6 +584,7 @@ public sealed class BackgroundJobManagerActor : ReceiveActor, IWithTimers
             ChannelType.Slack => registry.TryGet<SlackGatewayActorKey>(out var slack) ? slack : null,
             ChannelType.Tui => registry.TryGet<SignalRGatewayActorKey>(out var signalr) ? signalr : null,
             ChannelType.SignalR => registry.TryGet<SignalRGatewayActorKey>(out var signalr2) ? signalr2 : null,
+            ChannelType.Teams => registry.TryGet<TeamsGatewayActorKey>(out var teams) ? teams : null,
             _ => null
         };
 

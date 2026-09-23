@@ -35,6 +35,26 @@ public sealed class ChannelSendToolTests
     }
 
     [Fact]
+    public void Send_schema_excludes_enabled_teams_without_a_generic_send_adapter()
+    {
+        var registry = BuildRegistry(
+            BuildDescriptor(ChannelType.Slack, isEnabled: true, ChannelCapabilities.SendMessages, ChannelAddressKind.Destination),
+            BuildDescriptor(
+                ChannelType.Teams,
+                isEnabled: true,
+                ChannelCapabilities.ReceiveMessages
+                | ChannelCapabilities.ThreadedConversations
+                | ChannelCapabilities.ProactiveSend,
+                [],
+                includeSendIntent: false));
+        var tool = new SendChannelMessageTool(registry);
+
+        var keys = ReadChannelKeyEnum(tool.ParameterSchema);
+
+        Assert.Equal(["slack"], keys);
+    }
+
+    [Fact]
     public async Task Send_rejects_mismatched_destination_channel_key()
     {
         var registry = BuildRegistry(

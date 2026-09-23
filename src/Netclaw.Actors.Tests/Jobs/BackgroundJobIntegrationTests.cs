@@ -9,6 +9,7 @@ using System.Net.Sockets;
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Tools;
 using Netclaw.Actors.Tests.Tools;
+using Netclaw.Channels.Teams;
 using Netclaw.Security;
 using Akka.Actor;
 using Akka.Hosting;
@@ -66,7 +67,10 @@ public class BackgroundJobIntegrationTests : TestKit
 
     private IActorRef GetManager() => ActorRegistry.For(Sys).Get<BackgroundJobManagerActorKey>();
 
-    private StartBackgroundJob MakeStartCommand(string command, ChannelType channelType = ChannelType.Slack, string? workingDirectory = null) => new()
+    private StartBackgroundJob MakeStartCommand(
+        string command,
+        ChannelType channelType = ChannelType.Slack,
+        string? workingDirectory = null) => new()
     {
         Launch = BackgroundShellLaunchFixture.Create(command, _dir.Path, "C0123ABC/1712000000.000001", TestShellEnvironment.Current, workingDirectory),
         Rationale = "integration test",
@@ -283,6 +287,55 @@ public class BackgroundJobIntegrationTests : TestKit
             var def = _store.Get(started.JobId);
             Assert.NotNull(def);
             Assert.Equal(BackgroundJobStatus.Cancelled, def!.Status);
+            return Task.CompletedTask;
+        }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task BackgroundJob_Completes_And_DeliversTeamsResult_ViaGateway()
+    {
+        var manager = GetManager();
+        Assert.True(TeamsSessionIdentifierCodec.TryCreatePersonal(
+            "00000000-0000-0000-0000-000000000001", "conversation-teams", out var teamsSessionId, out _));
+
+        var gatewayProbe = CreateTestProbe("fake-teams-gateway");
+        var autoAckRef = Sys.ActorOf(
+            Props.Create(() => new AutoAckTrustedGateway(gatewayProbe.Ref)),
+            "auto-ack-teams-gateway-completion");
+        ActorRegistry.For(Sys).Register<TeamsGatewayActorKey>(autoAckRef);
+
+        var started = await manager.Ask<BackgroundJobStarted>(
+            new StartBackgroundJob
+            {
+                Launch = BackgroundShellLaunchFixture.Create(
+                    "echo teams-integration-test-output",
+                    _dir.Path,
+                    teamsSessionId.Value,
+                    TestShellEnvironment.Current),
+                Rationale = "integration test",
+                OriginChannelType = ChannelType.Teams,
+                TimeoutSeconds = 30
+            },
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        var delivered = await gatewayProbe.ExpectMsgAsync<DeliverTrustedSessionTurn>(
+            TimeSpan.FromSeconds(15), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(teamsSessionId, delivered.SessionId);
+        Assert.Contains("teams-integration-test-output", delivered.Content);
+        Assert.Equal(ChannelType.Teams, delivered.Source.ChannelType);
+        Assert.Equal(TrustAudience.Personal, delivered.Source.Audience);
+        Assert.Equal(TrustBoundary.Personal, delivered.Source.Boundary);
+        Assert.Equal(PrincipalClassification.VerifiedAutomation, delivered.Source.Principal);
+        Assert.NotNull(delivered.Source.BackgroundJobId);
+        Assert.StartsWith("bg-job:", delivered.Source.BackgroundJobId!.Value.Value);
+
+        await AwaitAssertAsync(() =>
+        {
+            var definition = _store.Get(started.JobId);
+            Assert.NotNull(definition);
+            Assert.Equal(BackgroundJobStatus.Completed, definition!.Status);
             return Task.CompletedTask;
         }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
     }

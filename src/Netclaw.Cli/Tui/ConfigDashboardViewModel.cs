@@ -69,7 +69,7 @@ public sealed class ConfigDashboardViewModel : ReactiveViewModel
     [
         new("Inference Providers", "Manage provider definitions and authentication.", "/provider"),
         new("Models", "Assign model roles and discover provider models.", "/model"),
-        new("Channels", "Slack, Discord, and Mattermost settings.", "/channels"),
+        new("Channels", "Slack, Discord, Mattermost, and Teams settings.", "/channels"),
         new("Inbound Webhooks", "Global webhook enablement and route diagnostics.", "/inbound-webhooks"),
         new("Skill Sources", "External skills and private skill feeds.", "/skill-sources"),
         new("Search", "Search backend and credentials.", "/search"),
@@ -169,7 +169,8 @@ internal sealed class ConfigDashboardStatusReader
     [
         (ChannelType.Slack, "Slack"),
         (ChannelType.Discord, "Discord"),
-        (ChannelType.Mattermost, "Mattermost")
+        (ChannelType.Mattermost, "Mattermost"),
+        (ChannelType.Teams, "Teams")
     ];
 
     private readonly NetclawPaths _paths;
@@ -221,6 +222,7 @@ internal sealed class ConfigDashboardStatusReader
     {
         var configured = new List<string>();
         var totalChannels = 0;
+        var totalGroupChats = 0;
         foreach (var (_, section) in ChannelAdapters)
         {
             if (!BoolAt(config, $"{section}.Enabled"))
@@ -232,15 +234,29 @@ internal sealed class ConfigDashboardStatusReader
             {
                 totalChannels += channels.Length;
             }
+
+            if (section == "Teams"
+                && ConfigFileHelper.TryGetPathValue(config, "Teams.AllowedGroupChatIds", out var groupChatRaw)
+                && groupChatRaw is object[] groupChats)
+            {
+                totalGroupChats += groupChats.Length;
+            }
         }
 
         if (configured.Count == 0)
             return "– none configured";
 
-        if (configured.Count == 1)
-            return $"{configured[0]} · {Pluralize(totalChannels, "channel", "channels")}";
+        var suffix = totalGroupChats == 0
+            ? string.Empty
+            : $" · {Pluralize(totalGroupChats, "group chat", "group chats")}";
 
-        return $"{string.Join(" · ", configured)} · {Pluralize(totalChannels, "channel", "channels")}";
+        if (configured.Count == 1 && configured[0] == "Teams" && totalChannels == 0)
+            return $"Teams{suffix}";
+
+        if (configured.Count == 1)
+            return $"{configured[0]} · {Pluralize(totalChannels, "channel", "channels")}{suffix}";
+
+        return $"{string.Join(" · ", configured)} · {Pluralize(totalChannels, "channel", "channels")}{suffix}";
     }
 
     private string SkillSourcesSummary(Dictionary<string, object> config)

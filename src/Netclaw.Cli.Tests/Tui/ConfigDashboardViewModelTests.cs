@@ -214,6 +214,64 @@ public sealed class ConfigDashboardViewModelTests
     }
 
     [Fact]
+    public void Status_summary_includes_teams_when_teams_is_the_only_enabled_channel()
+    {
+        using var dir = new DisposableTempDir();
+        var paths = new NetclawPaths(dir.Path);
+        paths.EnsureDirectoriesExist();
+        File.WriteAllText(paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Teams": { "Enabled": true, "AllowedChannelIds": ["11111111-1111-1111-1111-111111111111", "22222222-2222-2222-2222-222222222222"] }
+            }
+            """);
+        using var vm = new ConfigDashboardViewModel(new ConfigDashboardNavigationState(), paths);
+
+        Assert.Equal("Teams · 2 channels", Summary(vm, "Channels"));
+    }
+
+    [Fact]
+    public void Status_summary_includes_teams_group_chats_without_calling_them_channels()
+    {
+        using var dir = new DisposableTempDir();
+        var paths = new NetclawPaths(dir.Path);
+        paths.EnsureDirectoriesExist();
+        File.WriteAllText(paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Teams": { "Enabled": true, "AllowedGroupChatIds": ["19:chat@thread.v2"] }
+            }
+            """);
+        using var vm = new ConfigDashboardViewModel(new ConfigDashboardNavigationState(), paths);
+
+        Assert.Equal("Teams · 1 group chat", Summary(vm, "Channels"));
+    }
+
+    [Fact]
+    public void Status_summary_adds_group_chats_to_teams_channel_count()
+    {
+        using var dir = new DisposableTempDir();
+        var paths = new NetclawPaths(dir.Path);
+        paths.EnsureDirectoriesExist();
+        File.WriteAllText(paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Teams": {
+                "Enabled": true,
+                "AllowedChannelIds": ["11111111-1111-1111-1111-111111111111"],
+                "AllowedGroupChatIds": ["19:chat-one@thread.v2", "19:chat-two@thread.v2"]
+              }
+            }
+            """);
+        using var vm = new ConfigDashboardViewModel(new ConfigDashboardNavigationState(), paths);
+
+        Assert.Equal("Teams · 1 channel · 2 group chats", Summary(vm, "Channels"));
+    }
+
+    [Fact]
     public void Status_summaries_are_recomputed_on_each_read_for_autosave_reentrancy()
     {
         using var dir = new DisposableTempDir();

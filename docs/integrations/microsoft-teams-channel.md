@@ -14,18 +14,19 @@ The app package grants only these bot scopes:
 - `team`
 - `groupchat`
 
-The package requests these app-scoped RSC permissions:
+The package requests these resource-specific (RSC) permissions:
 
 - `ChannelMessage.Read.Group`
 - `ChatMessage.Read.Chat`
 
-This permission is required for Teams to deliver an unmentioned channel reply
-to the bot. The team owner consents to it during app installation or upgrade.
-It delivers standard channel messages from that installed team to the bot
-endpoint. Netclaw retains `MentionOnly=true` as its model-dispatch policy: it
-admits an unmentioned message only when its canonical root was established by a
-genuine bot mention from the same approved human. New roots, unknown roots, and
-other senders are ignored before a session or model turn.
+`ChannelMessage.Read.Group` lets Teams deliver an unmentioned channel reply to
+the bot. An allowed team owner or team member approves this team permission.
+`ChatMessage.Read.Chat` lets an approved chat member allow Group Chat delivery.
+Tenant policy can limit these approvals. The permissions deliver messages to the
+bot endpoint. Netclaw retains `MentionOnly=true` as its model-dispatch policy:
+it admits an unmentioned message only when its canonical root was established
+by a genuine bot mention from the same approved human. New roots, unknown
+roots, and other senders are ignored before a session or model turn.
 
 The package supports personal chats, standard team channels, and approved group
 chats. It enables Teams file support for a bounded attachment pipeline.
@@ -401,10 +402,12 @@ Never publish a tunnel URL in a log, document, commit, or test fixture.
 4. Select **Upload a custom app**.
 5. Upload the generated ZIP file.
 6. Upgrade or reinstall the app in the approved team.
-7. Have the team owner approve both required RSC requests.
+7. Have an allowed team owner or team member approve the team RSC request.
+8. Have a member of each approved chat approve the chat RSC request.
 
 Your tenant policy can disable custom app upload. Ask a Teams administrator to
-approve or upload the package when required.
+approve or upload the package when required. Tenant policy can also limit who
+can approve each RSC request.
 
 ## Publish for production
 

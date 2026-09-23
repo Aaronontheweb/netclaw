@@ -179,6 +179,40 @@ public sealed class TeamsChannelFoundationTests
     }
 
     [Fact]
+    public void Teams_descriptor_does_not_advertise_unregistered_generic_adapters()
+    {
+        var services = new ServiceCollection();
+        services.AddLogging();
+        var configuration = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["Teams:Enabled"] = "true",
+                ["Teams:AllowDirectMessages"] = "true",
+                ["Teams:AllowAttachments"] = "true"
+            })
+            .Build();
+
+        services.AddChannelIntegrations(configuration);
+
+        using var provider = services.BuildServiceProvider();
+        var descriptor = provider.GetRequiredService<IChannelRegistry>()
+            .GetChannel(ChannelDescriptorKey.FromChannelType(ChannelType.Teams));
+
+        Assert.Equal(
+            ChannelCapabilities.ReceiveMessages
+            | ChannelCapabilities.ThreadedConversations
+            | ChannelCapabilities.ProactiveSend
+            | ChannelCapabilities.InteractiveApproval
+            | ChannelCapabilities.FileIngress
+            | ChannelCapabilities.DirectMessages
+            | ChannelCapabilities.RuntimeHealth,
+            descriptor.Capabilities);
+        Assert.Empty(descriptor.ToolIntents);
+        Assert.Empty(descriptor.AddressKinds);
+        Assert.Empty(descriptor.SupportedOutputEffects);
+    }
+
+    [Fact]
     public async Task Enabled_teams_has_no_transport_registration_or_secret_diagnostic_disclosure()
     {
         const string secret = "teams-pr1-synthetic-sentinel";
