@@ -147,6 +147,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // Actor-owned CTS for active tool execution. Cancels direct approval waits
     // and tool calls when the session stops, restarts, or fails the turn.
     private CancellationTokenSource? _activeToolExecutionCts;
+    private Task? _activeToolWorkTask;
+    private bool _toolRestartStopRequested;
 
     // Correlation ID for the active LLM call. Incremented in FireLlmCall.
     // Stale LlmResponseReceived/LlmCallFailed/LlmResponseDeltaReceived messages
@@ -191,6 +193,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private bool _restartDrainRequested;
     private bool _passivationCompleted;
     private bool _passivationFinalStopScheduled;
+
+    private sealed record ToolPipelineStoppedForRestart(Task WorkTask, Exception? Failure)
+        : INoSerializationVerificationNeeded;
 
     // Reap-on-passivation handshake: while a KillJobsForSession ask is in
     // flight, the final snapshot is deferred so it captures the reaped marks.
@@ -403,7 +408,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void Ready()
     {
-        CommandSubscriptionMessages();
+        CommandCommonMessages();
         CommandSessionContextMessages();
         CommandSnapshotMessages();
 
@@ -463,7 +468,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         CommandJobReapResolved();
         Command<SpawnChildActorRequest>(msg => Sender.Tell(Context.ActorOf(msg.Props, msg.ActorName)));
         Command<DeliveryFailed>(HandleDeliveryFailedWhenReady);
-        Command<PrepareForDaemonRestart>(_ => RequestRestartDrain());
 
         // Approval click for a tool batch that parked while the session was
         // idle (deferred passivation) or that survived cold recovery. The
@@ -479,7 +483,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         // Disable idle timeout while processing — re-enabled on transition to Ready
         Context.SetReceiveTimeout(null);
-        CommandSubscriptionMessages();
+        CommandCommonMessages();
         CommandSessionContextMessages();
         CommandSnapshotMessages();
 
@@ -553,6 +557,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 ApplyToolCallRecorded(evt);
                 ProcessToolCallResult(result);
                 TryCompleteStreamedToolBatch();
+                TryStopDurableApprovalWaits();
             });
         });
 
@@ -560,6 +565,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             _watchdog.Stop(Timers);
             CancelAndDisposeToolExecutionCts();
+            _activeToolWorkTask = null;
             _activeToolBatch.MarkExecutionTaskCompleted();
             TryCompleteStreamedToolBatch();
         });
@@ -740,7 +746,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 FindingsCount = msg.FindingsCount
             }, OutputFilter.ToolCalls);
         });
-        Command<PrepareForDaemonRestart>(_ => RequestRestartDrain());
         CommandDistillationAckNoOp();
         CommandJobReapResolved();
     }
@@ -1127,7 +1132,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         // Disable idle timeout while compacting — re-enabled on transition to Ready
         Context.SetReceiveTimeout(null);
-        CommandSubscriptionMessages();
+        CommandCommonMessages();
         CommandSessionContextMessages();
         CommandSnapshotMessages();
 
@@ -1175,7 +1180,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         Command<ProcessingWatchdogExpired>(HandleCompactionWatchdogExpired);
         Command<SpawnChildActorRequest>(msg => Sender.Tell(Context.ActorOf(msg.Props, msg.ActorName)));
-        Command<PrepareForDaemonRestart>(_ => RequestRestartDrain());
 
         Command<CompactionTriggered>(HandleCompactionTriggered);
 
@@ -1492,10 +1496,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             CompletePassivation();
         });
 
-        CommandSubscriptionMessages();
+        CommandCommonMessages();
         CommandSessionContextMessages();
         CommandSnapshotMessages();
-        Command<PrepareForDaemonRestart>(_ => RequestRestartDrain());
 
         Command<SendUserMessage>(cmd =>
         {
@@ -2089,7 +2092,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             CancellationToken = toolExecutionCt
         };
 
-        _ = pipeline.ExecuteAsync(batch);
+        _activeToolWorkTask = pipeline.ExecuteAsync(batch);
     }
 
     private void HandleTextResponse(
@@ -2425,8 +2428,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             && _lastInputTokenCount >= limit;
     }
 
-    private void CommandSubscriptionMessages()
+    private void CommandCommonMessages()
     {
+        Command<PrepareForDaemonRestart>(_ => RequestRestartDrain());
+        Command<ToolPipelineStoppedForRestart>(HandleToolPipelineStoppedForRestart);
+
         Command<WorkingContextSnapshotReady>(HandleWorkingContextSnapshotReady);
         Command<WorkingContextSnapshotCancelled>(msg =>
         {
@@ -3629,6 +3635,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             ApplyToolApprovalRequested(e);
             EmitOutput(msg);
+            TryStopDurableApprovalWaits();
         });
     }
 
@@ -3702,6 +3709,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void ClearActiveToolBatchTracking()
     {
+        _activeToolWorkTask = null;
+        _toolRestartStopRequested = false;
         _activeToolBatch.Clear();
         _mediaBuffer.Clear();
     }
@@ -4977,6 +4986,71 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         if (_phase.Current == SessionPhase.Ready)
             TransitionTo(SessionPhase.Passivating);
+        else if (_phase.Current == SessionPhase.Processing)
+            TryStopDurableApprovalWaits();
+    }
+
+    private void TryStopDurableApprovalWaits()
+    {
+        if (!CanStopToolsForRestart())
+            return;
+
+        var task = _activeToolWorkTask!;
+        _toolRestartStopRequested = true;
+        _log.Info("Stopping a tool batch that waits only for durable approvals before restart drain");
+        _activeToolExecutionCts!.Cancel();
+        _ = ReportToolPipelineStopAsync(task, Self);
+    }
+
+    private bool CanStopToolsForRestart()
+    {
+        if (!_restartDrainRequested || _phase.Current != SessionPhase.Processing)
+            return false;
+
+        // A buffered continuation can depend on the current tool results.
+        if (_buffer.Count > 0 || _deferredApprovalResponse is not null)
+            return false;
+
+        if (_toolRestartStopRequested || _activeToolExecutionCts is null
+            || _activeToolWorkTask is not { IsCompleted: false })
+            return false;
+
+        return _activeToolBatch.HasOnlyPendingDurableApprovals(
+            _toolApprovals.HasRecoverablePending);
+    }
+
+    private static async Task ReportToolPipelineStopAsync(Task task, IActorRef actor)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+            actor.Tell(new ToolPipelineStoppedForRestart(task, null));
+        }
+        catch (OperationCanceledException)
+        {
+            actor.Tell(new ToolPipelineStoppedForRestart(task, null));
+        }
+        catch (Exception ex)
+        {
+            actor.Tell(new ToolPipelineStoppedForRestart(task, ex));
+        }
+    }
+
+    private void HandleToolPipelineStoppedForRestart(ToolPipelineStoppedForRestart stopped)
+    {
+        if (!_toolRestartStopRequested || !ReferenceEquals(stopped.WorkTask, _activeToolWorkTask))
+            return;
+
+        if (stopped.Failure is { } failure)
+        {
+            _log.Error(failure, "The tool task failed during approval-only restart drain");
+            FailCurrentTurn("The tool task failed during restart drain.", failure, ErrorCategory.ToolFailure);
+            return;
+        }
+
+        CancelAndDisposeToolExecutionCts();
+        ClearActiveToolBatchTracking();
+        TransitionTo(SessionPhase.Passivating);
     }
 
     private void ClearBufferedMessagesForRestartDrain()

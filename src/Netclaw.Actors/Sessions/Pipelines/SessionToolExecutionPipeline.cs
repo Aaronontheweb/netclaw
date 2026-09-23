@@ -394,17 +394,10 @@ internal sealed class SessionToolExecutionPipeline
         {
             batch.ReplyTo.Tell(new ToolExecutionFailed { Cause = ex });
         }
-        catch (OperationCanceledException ex)
+        catch (OperationCanceledException) when (batch.CancellationToken.IsCancellationRequested)
         {
-            // The tool-execution token is cancelled both by caller (turn/user) supersede
-            // and by the session's own timeout watchdog; surface either as a failed
-            // batch (the watchdog message is the authoritative one).
-            batch.ReplyTo.Tell(new ToolExecutionFailed
-            {
-                Cause = new TimeoutException(
-                    $"Tool execution exceeded timeout of {batch.DefaultTimeout.Value.TotalSeconds:F0}s",
-                    ex)
-            });
+            // The caller owns cancellation. Preserve the task outcome without a synthetic timeout.
+            throw;
         }
         catch (Exception ex)
         {
