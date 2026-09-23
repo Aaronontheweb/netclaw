@@ -78,9 +78,9 @@ The reminder manager SHALL deliver a fresh restart reminder through its existing
 - **THEN** it does not register or deliver that reminder
 - **AND** it logs one warning
 
-#### Scenario: A channel lacks current session delivery
+#### Scenario: Stored authority has no channel type
 
-- **GIVEN** an interrupted session uses a channel that the reminder manager cannot address
+- **GIVEN** an interrupted session has no stored channel type
 - **WHEN** graceful drain classifies the session
 - **THEN** the actor creates no restart reminder
-- **AND** no channel adapter is added by this change
+- **AND** the actor does not contain a channel-specific route list

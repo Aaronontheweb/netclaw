@@ -144,6 +144,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // is the authoritative timeout — this CTS just propagates cancellation to the
     // HTTP layer so timed-out connections are released.
     private CancellationTokenSource? _activeLlmCts;
+    private Task? _activeLlmWorkTask;
 
     // Actor-owned CTS for active tool execution. Cancels direct approval waits
     // and tool calls when the session stops, restarts, or fails the turn.
@@ -165,6 +166,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     // (the generous prefill budget before the first token vs the tighter inter-delta
     // budget after).
     private bool _anyContentStreamed;
+    private bool _turnEmittedText;
 
     // Per-turn diagnostic correlation (ephemeral)
     private Protocol.TurnId? _activeTurnId;
@@ -192,10 +194,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     private readonly Telemetry.ISessionMetrics? _sessionMetrics;
 
     private bool _restartDrainRequested;
+    private bool _llmRestartStopRequested;
+    private DateTimeOffset? _restartInterruptionAt;
     private bool _passivationCompleted;
     private bool _passivationFinalStopScheduled;
 
     private sealed record ToolPipelineStoppedForRestart(Task WorkTask, Exception? Failure)
+        : INoSerializationVerificationNeeded;
+
+    private sealed record RestartModelGraceExpired(long CallId) : INoSerializationVerificationNeeded;
+
+    private sealed record ModelStoppedForRestart(long CallId, Exception? Failure)
         : INoSerializationVerificationNeeded;
 
     // Reap-on-passivation handshake: while a KillJobsForSession ask is in
@@ -643,6 +652,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         Command<LlmCallFailed>(msg =>
         {
             if (msg.CallId != _activeCallId) return; // stale failure from cancelled call
+            if (_llmRestartStopRequested) return;
+            _activeLlmWorkTask = null;
             _watchdog.Stop(Timers);
             CancelAndDisposeLlmCts();
 
@@ -765,7 +776,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         if (msg.CallId != _activeCallId)
             return;
+        if (_llmRestartStopRequested)
+            return;
 
+        _activeLlmWorkTask = null;
         _watchdog.Stop(Timers);
         CancelAndDisposeLlmCts();
 
@@ -823,7 +837,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void HandleLlmResponseDeltaReceived(LlmResponseDeltaReceived msg)
     {
-        if (msg.CallId != _activeCallId)
+        if (msg.CallId != _activeCallId || _llmRestartStopRequested)
             return;
 
         // Two-phase watchdog (shared with the sub-agent path): keep the generous
@@ -841,6 +855,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         switch (msg.Content)
         {
             case TextContent text when !string.IsNullOrEmpty(text.Text):
+                _turnEmittedText = true;
                 EmitOutput(new TextDeltaOutput(text.Text)
                 {
                     SessionId = _sessionId
@@ -1398,6 +1413,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (_restartDrainRequested)
         {
             _deferredApprovalResponse = null;
+            MarkRestartReminderEligible();
             ClearBufferedMessagesForRestartDrain();
             _resumeToolLoopAfterCompaction = false;
             TransitionTo(SessionPhase.Ready);
@@ -1442,6 +1458,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         }
     }
 
+    private const string RestartReminderInstruction =
+        "Resume the work that was interrupted by the daemon restart.";
+    private const string RestartReminderIdPrefix = "restart-resume-";
+    private static readonly TimeSpan RestartModelGracePeriod = TimeSpan.FromSeconds(2);
+    private static readonly TimeSpan RestartReminderLifetime = TimeSpan.FromMinutes(10);
+    private static readonly object RestartModelGraceTimerKey = new();
     private static readonly TimeSpan PassivationGracePeriod = TimeSpan.FromSeconds(5);
 
     // Bounds the reap-on-passivation handshake; the Ask always resolves within
@@ -1598,8 +1620,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             HandleDeliveryFailedWhenReady(msg);
         });
 
-        // Request final distillation from observer, or stop immediately
-        if (_observerActor is not null)
+        // Restart drain already preserves accepted input in the journal.
+        // Skip the optional memory pass because ingress is closed.
+        if (_restartDrainRequested)
+        {
+            CompletePassivation();
+        }
+        else if (_observerActor is not null)
         {
             _observerActor.Tell(new DistillMemories(), Self);
             Timers.StartSingleTimer(PassivationTimerKey, new PassivationTimeout(), PassivationGracePeriod);
@@ -1632,6 +1659,13 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         _passivationFinalStopScheduled = true;
         SaveSnapshotIfSafe();
+
+        if (_restartDrainRequested)
+        {
+            FinalizePassivation();
+            return;
+        }
+
         Timers.StartSingleTimer(
             PassivationFinalStopTimerKey,
             new PassivationFinalStop(),
@@ -1669,7 +1703,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         _passivationCompleted = true;
         _lifecycleObserver?.OnSessionDeactivated(_sessionId);
-        _restartDrainReplyTo?.Tell(CommandAck.For(_sessionId));
+        _restartDrainReplyTo?.Tell(new DaemonRestartPrepared(
+            _sessionId,
+            BuildRestartReminder()));
         _restartDrainReplyTo = null;
         Context.Stop(Self);
     }
@@ -1892,6 +1928,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             _state = _state.CloseInputs(evt.ConsumedInputIds);
             _activeInputIds.Clear();
+            _turnEmittedText = false;
             ApplyToolBatchStarted(evt);
             EmitAndDispatchToolBatch(
                 lastMessage,
@@ -2152,6 +2189,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             _inFlightDedup.CompleteBackgroundJob(evt.SourceBackgroundJobId);
             _state = _state.CloseInputs(evt.ConsumedInputIds);
             _activeInputIds.Clear();
+            _turnEmittedText = false;
 
             var processed = _state.ProcessedReminderIds;
             if (evt.SourceReminderId is { } reminderId && !string.IsNullOrEmpty(reminderId.Value))
@@ -2191,6 +2229,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         if (_restartDrainRequested)
         {
+            MarkRestartReminderEligible();
             ClearBufferedMessagesForRestartDrain();
             TransitionTo(SessionPhase.Ready);
             TransitionTo(SessionPhase.Passivating);
@@ -2219,6 +2258,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             // window only after the prior batch or response completes.
             _turnState.ResetForNewTurn();
             _recallManager.ResetForNewTurn();
+            _turnEmittedText = false;
         }
 
         foreach (var (message, _) in _buffer)
@@ -2303,6 +2343,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             TryReplyAck();
             return;
         }
+
+        if (TryResumeInterruptedInput(cmd))
+            return;
 
         if (TryRejectIncompatibleInput(cmd.MediaReferences, cmd.Source))
             return;
@@ -2429,6 +2472,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void ContinueIncomingUserMessage(SendUserMessage cmd)
     {
+        _turnEmittedText = false;
         _activeInputIds.Clear();
         if (cmd.AdmittedInputId is { } admittedId)
             _activeInputIds.Add(admittedId);
@@ -2484,6 +2528,103 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         TransitionTo(SessionPhase.Processing);
     }
 
+    private bool TryResumeInterruptedInput(SendUserMessage cmd)
+    {
+        var reminderId = cmd.Source?.ReminderId?.Value;
+        if (reminderId is null
+            || !reminderId.StartsWith(RestartReminderIdPrefix, StringComparison.Ordinal)
+            || !string.Equals(cmd.Content, RestartReminderInstruction, StringComparison.Ordinal))
+            return false;
+
+        if (_state.PendingInputs.Count == 0)
+        {
+            _log.Warning(
+                "Restart reminder {ReminderId} found no pending input for session {SessionId}.",
+                reminderId,
+                _sessionId.Value);
+            TryReplyNack("The interrupted input is no longer pending.");
+            return true;
+        }
+
+        if (!TryGetRestartContext(out var firstContext, out var reason))
+        {
+            _log.Warning(
+                "Restart reminder {ReminderId} cannot restore session {SessionId}: {Reason}.",
+                reminderId,
+                _sessionId.Value,
+                reason ?? "invalid stored authority");
+            TryReplyNack("The interrupted input authority is invalid.");
+            return true;
+        }
+
+        var pending = _state.PendingInputs.ToArray();
+        _restartInterruptionAt = null;
+        _turnEmittedText = false;
+        _activeInputIds.Clear();
+        _currentTurnSource = cmd.Source;
+        _currentTurnContext = firstContext;
+        BindTurnTelemetry(firstContext);
+        _toolApprovals.StartTurn(firstContext);
+        _currentTrustContext = _trustContextDeriver?.DeriveFromTurnContext(firstContext);
+        _inFlightDedup.ReserveReminder(cmd.Source!.ReminderId);
+        SetSystemPrompt();
+        _turnState.ResetForNewTurn();
+        _discoveredToolCache.PrepareForNewTurn(
+            _config.Tuning.DiscoveredToolRetentionTurns,
+            _config.Tuning.DiscoveredToolMaxCount,
+            _fullRegistry);
+
+        if (TryResumeSlashCommand(pending))
+            return true;
+
+        _activeInputIds.AddRange(pending.Select(static item => item.InputId));
+        foreach (var item in pending)
+            _state = _state with { History = _state.History.Add(item.UserMessage) };
+
+        _recallManager.ResetForNewTurn();
+        _compactionOverflowRetryCount = 0;
+
+        TryReplyAck();
+        var recallQuery = string.Join(
+            '\n',
+            pending.Select(static item => item.ExecutableText ?? item.UserMessage.Content ?? string.Empty));
+        FireInitialTurnLlmCall(recallQuery);
+        TransitionTo(SessionPhase.Processing);
+        return true;
+    }
+
+    private bool TryResumeSlashCommand(IReadOnlyList<InputAdmitted> pending)
+    {
+        var first = pending[0];
+        if (first.ExecutableText is not { } executableText
+            || string.IsNullOrWhiteSpace(executableText)
+            || executableText.TrimStart()[0] != '/')
+            return false;
+
+        _activeInputIds.Add(first.InputId);
+        if (!TryHandleSlashCommand(executableText, first.UserMessage.MediaReferences))
+        {
+            _activeInputIds.Clear();
+            return false;
+        }
+
+        if (_phase.Current != SessionPhase.Processing)
+            return true;
+
+        foreach (var item in pending.Skip(1))
+        {
+            _buffer.Add((new SendUserMessage
+            {
+                SessionId = _sessionId,
+                Content = item.UserMessage.Content ?? string.Empty,
+                MediaReferences = item.UserMessage.MediaReferences,
+                AdmittedInputId = item.InputId
+            }, false));
+        }
+
+        return true;
+    }
+
     private bool IsReminderDedupHit(ReminderId? reminderId, bool includeBuffered)
     {
         if (reminderId is not { } id || string.IsNullOrEmpty(id.Value))
@@ -2529,6 +2670,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     {
         Command<PrepareForDaemonRestart>(_ => RequestRestartDrain());
         Command<ToolPipelineStoppedForRestart>(HandleToolPipelineStoppedForRestart);
+        Command<RestartModelGraceExpired>(HandleRestartModelGraceExpired);
+        Command<ModelStoppedForRestart>(HandleModelStoppedForRestart);
 
         Command<WorkingContextSnapshotReady>(HandleWorkingContextSnapshotReady);
         Command<WorkingContextSnapshotCancelled>(msg =>
@@ -3022,7 +3165,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             forceNoTools,
             _activeCallId);
 
-        _ = SessionLlmInvoker.InvokeAsync(client, messages, options, self, _activeCallId, _sessionId, _activeLlmCts!.Token);
+        _activeLlmWorkTask = SessionLlmInvoker.InvokeAsync(
+            client,
+            messages,
+            options,
+            self,
+            _activeCallId,
+            _sessionId,
+            _activeLlmCts!.Token);
     }
 
     private async Task<INoSerializationVerificationNeeded> CreateWorkingContextContinuationAsync(
@@ -3085,6 +3235,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
     private void HandleWorkingContextSnapshotReady(WorkingContextSnapshotReady message)
     {
+        if (_llmRestartStopRequested)
+            return;
+
         if (!ShouldApplyWorkingContextSnapshot(
                 message.Generation,
                 _workingContextGeneration,
@@ -5055,19 +5208,31 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         if (_phase.Current == SessionPhase.Ready)
             TransitionTo(SessionPhase.Passivating);
         else if (_phase.Current == SessionPhase.Processing)
-            TryStopDurableApprovalWaits();
+        {
+            if (TryStopDurableApprovalWaits())
+                return;
+
+            if (_activeLlmCts is not null && _activeInputIds.Count > 0)
+            {
+                Timers.StartSingleTimer(
+                    RestartModelGraceTimerKey,
+                    new RestartModelGraceExpired(_activeCallId),
+                    RestartModelGracePeriod);
+            }
+        }
     }
 
-    private void TryStopDurableApprovalWaits()
+    private bool TryStopDurableApprovalWaits()
     {
         if (!CanStopToolsForRestart())
-            return;
+            return false;
 
         var task = _activeToolWorkTask!;
         _toolRestartStopRequested = true;
         _log.Info("Stopping a tool batch that waits only for durable approvals before restart drain");
         _activeToolExecutionCts!.Cancel();
         _ = ReportToolPipelineStopAsync(task, Self);
+        return true;
     }
 
     private bool CanStopToolsForRestart()
@@ -5085,6 +5250,71 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         return _activeToolBatch.HasOnlyPendingDurableApprovals(
             _toolApprovals.HasRecoverablePending);
+    }
+
+    private void HandleRestartModelGraceExpired(RestartModelGraceExpired expired)
+    {
+        if (!_restartDrainRequested || _phase.Current != SessionPhase.Processing
+            || expired.CallId != _activeCallId || _activeLlmCts is null
+            || _activeInputIds.Count == 0)
+            return;
+
+        _llmRestartStopRequested = true;
+        _watchdog.Stop(Timers);
+        _workingContextGeneration++;
+        _activeLlmCts.Cancel();
+
+        if (_activeLlmWorkTask is { IsCompleted: false } task)
+        {
+            _ = ReportModelStopAsync(task, Self, expired.CallId);
+            return;
+        }
+
+        Self.Tell(new ModelStoppedForRestart(expired.CallId, null));
+    }
+
+    private static async Task ReportModelStopAsync(Task task, IActorRef actor, long callId)
+    {
+        try
+        {
+            await task.ConfigureAwait(false);
+            actor.Tell(new ModelStoppedForRestart(callId, null));
+        }
+        catch (Exception ex)
+        {
+            actor.Tell(new ModelStoppedForRestart(callId, ex));
+        }
+    }
+
+    private void HandleModelStoppedForRestart(ModelStoppedForRestart stopped)
+    {
+        if (!_llmRestartStopRequested || stopped.CallId != _activeCallId)
+            return;
+
+        _activeCallId++;
+        _activeLlmWorkTask = null;
+        CancelAndDisposeLlmCts();
+        _llmRestartStopRequested = false;
+
+        if (stopped.Failure is { } failure)
+        {
+            _log.Error(failure, "The model task failed during restart drain");
+        }
+
+        if (stopped.Failure is null && !_turnEmittedText)
+        {
+            CompleteModelStopForRestart();
+            return;
+        }
+
+        CloseActiveInputs(CompleteModelStopForRestart);
+    }
+
+    private void CompleteModelStopForRestart()
+    {
+        MarkRestartReminderEligible();
+        ClearBufferedMessagesForRestartDrain();
+        TransitionTo(SessionPhase.Passivating);
     }
 
     private static async Task ReportToolPipelineStopAsync(Task task, IActorRef actor)
@@ -5121,13 +5351,121 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         TransitionTo(SessionPhase.Passivating);
     }
 
+    private void MarkRestartReminderEligible()
+    {
+        if (_state.PendingInputs.Count == 0)
+            return;
+
+        if (_turnEmittedText && _activeInputIds.Count > 0)
+        {
+            _log.Warning(
+                "Restart drain cannot resume session {SessionId} because the interrupted turn emitted text.",
+                _sessionId.Value);
+            return;
+        }
+
+        _restartInterruptionAt = _timeProvider.GetUtcNow();
+    }
+
+    private ReminderDefinition? BuildRestartReminder()
+    {
+        if (_restartInterruptionAt is not { } interruptedAt || _state.PendingInputs.Count == 0)
+            return null;
+
+        if (!TryGetRestartContext(out var context, out var reason))
+        {
+            _log.Warning(
+                "Restart drain cannot resume session {SessionId}: {Reason}.",
+                _sessionId.Value,
+                reason ?? "invalid stored authority");
+            return null;
+        }
+
+        if (context.ChannelType is not { } channelType)
+        {
+            _log.Warning(
+                "Restart drain cannot resume session {SessionId}: the turn has no channel type.",
+                _sessionId.Value);
+            return null;
+        }
+
+        return new ReminderDefinition
+        {
+            Id = ReminderIdGenerator.Generate("restart resume"),
+            Title = "Resume after daemon restart",
+            Instructions = RestartReminderInstruction,
+            Schedule = new ReminderSchedule
+            {
+                Type = ReminderScheduleType.OneShot,
+                FireAt = interruptedAt
+            },
+            Delivery = new ReminderDelivery
+            {
+                Kind = DeliveryKind.CurrentSession,
+                SessionId = _sessionId.Value,
+                OriginChannelType = channelType
+            },
+            DeliveryRequired = true,
+            Audience = context.Audience,
+            Boundary = context.Boundary,
+            CreatedBy = "system",
+            CreatedAt = interruptedAt,
+            UpdatedAt = interruptedAt,
+            ExpiresAt = interruptedAt + RestartReminderLifetime
+        };
+    }
+
+    private bool TryGetRestartContext(out TurnContext context, out string? reason)
+    {
+        context = null!;
+        TurnContext? first = null;
+        reason = "no pending input";
+        foreach (var pending in _state.PendingInputs)
+        {
+            if (!TurnContext.TryFromRecord(pending.TurnContext, out var candidate, out reason)
+                || candidate is null)
+                return false;
+
+            if (first is null)
+            {
+                first = candidate;
+                continue;
+            }
+
+            if (!HasSameRestartAuthority(first, candidate))
+            {
+                reason = "pending inputs have different authority";
+                context = first;
+                return false;
+            }
+        }
+
+        context = first!;
+        return first is not null;
+    }
+
+    private static bool HasSameRestartAuthority(TurnContext left, TurnContext right)
+        => left.SessionId == right.SessionId
+           && left.Audience == right.Audience
+           && left.Boundary == right.Boundary
+           && left.ChannelType == right.ChannelType
+           && left.RequesterSenderId == right.RequesterSenderId
+           && left.RequesterPrincipal == right.RequesterPrincipal
+           && left.Provenance == right.Provenance
+           && left.DefaultDeliveryTarget == right.DefaultDeliveryTarget
+           && left.RequestedDeliveryTarget == right.RequestedDeliveryTarget
+           && left.HasAdoptedContext == right.HasAdoptedContext
+           && left.HasThirdPartyAdoptedContext == right.HasThirdPartyAdoptedContext
+           && left.AdoptedSpeakerIds.SequenceEqual(right.AdoptedSpeakerIds, StringComparer.Ordinal)
+           && left.SupportsInteractiveApproval == right.SupportsInteractiveApproval;
+
     private void ClearBufferedMessagesForRestartDrain()
     {
         if (_buffer.Count == 0)
             return;
 
         _log.Warning(
-            "Dropping {BufferCount} buffered message(s) because coordinated restart drain is completing.",
+            "Clearing {BufferCount} transient buffered message copy or copies; the journal keeps each accepted input.",
             _buffer.Count);
         _buffer.Clear();
     }

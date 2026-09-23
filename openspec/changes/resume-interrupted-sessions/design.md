@@ -38,15 +38,15 @@ The actor creates a standard one shot `ReminderDefinition` only when these condi
 - no tool batch started;
 - no partial text reached a subscriber;
 - the stored turn context is valid;
-- the existing reminder path supports the session channel.
+- the stored turn has a channel type for current-session delivery.
 
-The reminder expires ten minutes after the interruption. The restart manifest stores the definition with the active session list.
+The reminder expires ten minutes after the interruption. The restart manifest stores only restart reminder definitions.
 
 ### D3. The reminder manager owns wakeup and delivery
 
 Startup registers each fresh definition through `SaveReminderCommand`. The reminder uses `DeliveryKind.CurrentSession` and the existing gateway path.
 
-The daemon adds no route binder, channel state, retry loop, or resume candidate protocol. The reminder manager owns persistence, delivery retries, and deduplication.
+The daemon adds no route binder, channel state, retry loop, or resume candidate protocol. The reminder manager owns route resolution, persistence, delivery retries, and deduplication.
 
 ### D4. The reminder is a trigger
 
@@ -67,8 +67,8 @@ journal -> session: stored
 session -> source: CommandAck
 stop -> session: PrepareForDaemonRestart
 session -> model: cancel and await stop
-session -> stop: ReminderDefinition or no reminder
-stop -> manifest: active sessions and reminders
+session -> stop: DaemonRestartPrepared with a reminder or no reminder
+stop -> manifest: restart reminders
 start -> reminder manager: SaveReminderCommand
 reminder manager -> existing gateway: current_session reminder
 gateway -> session: SendUserMessage
@@ -82,4 +82,5 @@ session -> model: resume prior work
 - A tool can have an uncertain effect. `ToolBatchStarted` closes its input before execution and blocks this path.
 - A partial reply can repeat text. The actor records transient text emission and does not create a reminder.
 - A reminder can register twice after a process failure. Its stored ID makes `CreateOnly` registration idempotent.
-- A channel can lack `current_session` support. The actor creates no reminder for that session.
+- A stored turn can lack a channel type. The actor then creates no reminder.
+- The reminder system owns gateway resolution for a stored channel type.

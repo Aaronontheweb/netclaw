@@ -1126,6 +1126,7 @@ static void ConfigureDaemonServices(
             var sessionManager = registry.Get<SessionManagerActorKey>();
             var ingressGate = sp.GetRequiredService<SessionIngressGate>();
             var lifecycleNotifier = sp.GetRequiredService<DaemonLifecycleNotifier>();
+            var restartManifestStore = sp.GetRequiredService<RestartManifestStore>();
             var drainLogger = sp.GetRequiredService<ILoggerFactory>().CreateLogger("Netclaw.Daemon.SessionDrain");
 
             cs.AddTask(CoordinatedShutdown.PhaseBeforeServiceUnbind, "drain-llm-sessions", async () =>
@@ -1153,6 +1154,18 @@ static void ConfigureDaemonServices(
                         drainLogger,
                         drainDeadlineCts.Token,
                         CancellationToken.None);
+
+                    if (drainResult.RestartReminders.Count == 0)
+                    {
+                        await restartManifestStore.DeleteAsync();
+                    }
+                    else
+                    {
+                        await restartManifestStore.WriteAsync(new RestartManifest
+                        {
+                            RestartReminders = [.. drainResult.RestartReminders]
+                        }, CancellationToken.None);
+                    }
 
                     lifecycleNotifier.NotifyShutdown("daemon-stop", drainResult.ToNotificationContext());
                 }
