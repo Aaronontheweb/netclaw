@@ -44,6 +44,21 @@ public sealed record ApprovalCandidate(
         string.Equals(Directory, other.Directory, StringComparison.Ordinal) &&
         AssignmentConstraint == other.AssignmentConstraint;
 
+    // Authorization evidence must also preserve the parser facts that public equality omits.
+    internal bool HasSameApprovalFacts(ApprovalCandidate? other) =>
+        other is not null &&
+        Equals(other) &&
+        Shell == other.Shell &&
+        HasSameVerbTokens(other.VerbTokens);
+
+    private bool HasSameVerbTokens(IReadOnlyList<string>? other)
+    {
+        if (VerbTokens is null)
+            return other is null;
+
+        return other is not null && VerbTokens.SequenceEqual(other, StringComparer.Ordinal);
+    }
+
     /// <inheritdoc />
     public override int GetHashCode() => HashCode.Combine(Verb, Directory, AssignmentConstraint);
 }
