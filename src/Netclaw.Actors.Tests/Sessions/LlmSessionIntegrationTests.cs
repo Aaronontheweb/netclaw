@@ -1913,13 +1913,6 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
         var sessionId = new SessionId("test-channel/restart-drain-compacting");
         var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
         var subscriber = CreateTestProbe("restart-drain-compacting-sub");
-        _fakeChatClient.UsageOverride = new UsageDetails
-        {
-            InputTokenCount = 200_000,
-            OutputTokenCount = 1,
-            TotalTokenCount = 200_001
-        };
-        _fakeChatClient.HangingObservationCallsRemaining = 1;
 
         await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
         {
@@ -1927,6 +1920,26 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
             Filter = OutputFilter.TextOnly
         }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
         await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken);
+
+        for (var turn = 1; turn <= 3; turn++)
+        {
+            await sessionManager.Ask<CommandAck>(new SendUserMessage
+            {
+                SessionId = sessionId,
+                Content = $"Build compaction history {turn}"
+            }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+
+            await subscriber.ExpectMsgAsync<TextOutput>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+            await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+        }
+
+        _fakeChatClient.UsageOverride = new UsageDetails
+        {
+            InputTokenCount = 200_000,
+            OutputTokenCount = 1,
+            TotalTokenCount = 200_001
+        };
+        _fakeChatClient.HangingObservationCallsRemaining = 1;
 
         await sessionManager.Ask<CommandAck>(new SendUserMessage
         {
@@ -1937,17 +1950,29 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
         await subscriber.ExpectMsgAsync<TextOutput>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
         await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
 
+        await AwaitAssertAsync(() =>
+        {
+            Assert.Contains(_fakeChatClient.ReceivedMessages, conversation =>
+                conversation.Any(message =>
+                    message.Role == Microsoft.Extensions.AI.ChatRole.System
+                    && message.Text?.Contains("You are a session summarizer", StringComparison.Ordinal) == true));
+            return Task.CompletedTask;
+        }, TimeSpan.FromSeconds(3), TimeSpan.FromMilliseconds(50), cancellationToken: TestContext.Current.CancellationToken);
+
         var escapedId = Uri.EscapeDataString(sessionId.Value);
         var child = await Sys.ActorSelection($"/user/session-manager/{escapedId}").ResolveOne(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
         Watch(child);
 
-        var drainTask = sessionManager.Ask<CommandAck>(new PrepareForDaemonRestart(sessionId, "config-reload"), TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
-
-        var nack = await sessionManager.Ask<CommandNack>(new SendUserMessage
+        sessionManager.Tell(new PrepareForDaemonRestart(sessionId, "config-reload"), TestActor);
+        sessionManager.Tell(new SendUserMessage
         {
             SessionId = sessionId,
             Content = "Should be rejected during compaction"
-        }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+        }, TestActor);
+
+        var nack = await ExpectMsgAsync<CommandNack>(
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
 
         Assert.Equal(SessionIngressGate.RestartInProgressMessage, nack.Reason);
 
@@ -1956,7 +1981,10 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
             Cause = new InvalidOperationException("test compaction completion")
         });
 
-        Assert.Equal(sessionId, (await drainTask).SessionId);
+        var drainAck = await ExpectMsgAsync<DaemonRestartPrepared>(
+            TimeSpan.FromSeconds(5),
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(sessionId, drainAck.SessionId);
         await ExpectTerminatedAsync(child, TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
         Assert.Contains(sessionId.Value, _lifecycleObserver.DeactivatedSessionIds);
     }
