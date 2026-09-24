@@ -126,6 +126,38 @@ count, next retry time, and last failure reason.
 Use this command when a reminder stops its expected work. A failure count that
 increases usually means that the reminder or its delivery target is not healthy.
 
+### Manual run (fire now)
+
+An operator can run an existing reminder now, ahead of its schedule:
+
+```
+netclaw reminder run <id>
+```
+
+This command needs the daemon and Operator authority. It is not an agent
+tool — direct the operator to run it themselves; do not try to call it as a
+tool.
+
+Rules:
+
+- A manual run sends the reminder's real prompt to its real delivery target,
+  through the normal execution path.
+- A manual run does not alter the schedule. A one-shot reminder keeps its
+  original fire time. An interval or cron reminder keeps its next fire time.
+- `netclaw reminder history <id>` and `get_reminder_history` mark each run as
+  `manual` or `scheduled`.
+- A manual run does not count toward the auto-disable limit for scheduled
+  runs (5 consecutive failures).
+- If the reminder is already active, the manual run fails with a clear
+  error. It does not queue.
+- Offer a manual run only when `delivery_kind` is `channel` or `none`. Do not
+  offer it for `delivery_kind=current_session` — that mode returns to this
+  same session, and a manual run would add a confusing extra turn.
+- Do not call a manual run a "dry run." It sends the real prompt to the real
+  target and records real history.
+- Do not promise that a manual run skips tool approval prompts. It runs
+  through the same approval gate as a scheduled fire.
+
 If `audience` is omitted during conversational scheduling, the reminder inherits
 the audience of the channel/session that created it. A reminder cannot be
 minted with broader audience than the creator currently holds; lowering the
