@@ -274,6 +274,18 @@ public enum ReminderTerminalOutcome
 }
 
 /// <summary>
+/// Who triggered a reminder execution: the Akka.Reminders scheduler on the
+/// reminder's own fire schedule, or an operator running it now via
+/// <c>netclaw reminder run</c>. Recorded on <see cref="HistoryRecord"/> so an
+/// operator can tell a manual test run apart from a real scheduled fire.
+/// </summary>
+public enum ReminderExecutionSource
+{
+    Scheduled = 0,
+    Manual = 1
+}
+
+/// <summary>
 /// Message persisted inside Akka.Reminders. Intentionally lightweight: pointer to disk definition.
 /// </summary>
 public sealed record ReminderPayload : INetclawSerializableMessage
@@ -338,6 +350,17 @@ public static partial class ReminderProtocol
     public sealed record EnableReminderCommand(ReminderId Id) : IReminderCommand, INoSerializationVerificationNeeded;
     public sealed record ListRemindersCommand(bool IncludeDisabled = true) : IReminderQuery, INoSerializationVerificationNeeded;
 
+    /// <summary>
+    /// Runs an existing reminder now, outside its schedule. Requires Operator
+    /// authority — <see cref="Authorization"/> is required, not optional, so a
+    /// caller that forgets to resolve it fails closed instead of running
+    /// unauthorized. The manual run does not consume the reminder's next
+    /// scheduled occurrence and does not touch scheduled failure accounting.
+    /// </summary>
+    public sealed record RunReminderNowCommand(
+        ReminderId Id,
+        ReminderAudienceAuthorizationContext? Authorization) : IReminderCommand, INoSerializationVerificationNeeded;
+
     // ===== Queries =====
 
     public sealed record GetReminderCommand(ReminderId Id) : IReminderQuery, INoSerializationVerificationNeeded;
@@ -354,6 +377,24 @@ public static partial class ReminderProtocol
 
     public sealed record ReminderCancelledResponse(ReminderId Id, bool Found) : IReminderResponse, INoSerializationVerificationNeeded;
     public sealed record ReminderDeletedResponse(ReminderId Id, bool Found) : IReminderResponse, INoSerializationVerificationNeeded;
+
+    /// <summary>Reason a <see cref="RunReminderNowCommand"/> was rejected.</summary>
+    public enum ReminderRunError
+    {
+        None,
+        Unauthorized,
+        SchedulingDisabled,
+        NotFound,
+        Disabled,
+        Expired,
+        AlreadyExecuting
+    }
+
+    public sealed record ReminderRunNowResponse(
+        ReminderId Id,
+        bool Success,
+        ReminderRunError Error = ReminderRunError.None,
+        string? ErrorMessage = null) : IReminderResponse, INoSerializationVerificationNeeded;
 
     public sealed record ReminderStateResponse(
         ReminderId Id,
@@ -502,9 +543,15 @@ public sealed record ReminderOccurrenceInfo(
 /// A single execution history entry for a reminder, appended to
 /// <c>~/.netclaw/reminders/{id}.history.jsonl</c> after each run.
 /// </summary>
+/// <param name="Source">
+/// Who triggered the run. Defaults to <see cref="ReminderExecutionSource.Scheduled"/>
+/// so a legacy record on disk missing this field (written before this field
+/// existed) still reads as a scheduled run.
+/// </param>
 public sealed record HistoryRecord(
     DateTimeOffset FiredAt,
     bool Success,
     long DurationMs,
     string SessionId,
-    string? ErrorMessage);
+    string? ErrorMessage,
+    ReminderExecutionSource Source = ReminderExecutionSource.Scheduled);

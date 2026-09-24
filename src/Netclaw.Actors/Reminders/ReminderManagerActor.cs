@@ -85,6 +85,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         ReceiveAsync<EnableReminderCommand>(HandleEnableAsync);
         ReceiveAsync<ListRemindersCommand>(HandleListAsync);
         ReceiveAsync<GetReminderCommand>(HandleGetAsync);
+        Receive<RunReminderNowCommand>(HandleRunNow);
 
         ReceiveAsync<ReminderEnvelope<ReminderPayload>>(HandleReminderFiredAsync);
         ReceiveAsync<ReminderExecutionCompleted>(HandleExecutionOutcomeAsync);
@@ -535,6 +536,87 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         }
     }
 
+    /// <summary>
+    /// Runs an existing reminder now, outside its schedule. Gates in order:
+    /// Operator authority, scheduling enabled, reminder exists, reminder
+    /// enabled, not expired, not already executing. Each rejection is fail-fast
+    /// — no execution actor starts and no history is appended.
+    /// </summary>
+    private void HandleRunNow(RunReminderNowCommand cmd)
+    {
+        var replyTo = Sender;
+
+        // Defense in depth: the daemon endpoint already gates this to Operator
+        // callers before it ever asks the manager, but the manager is the actor
+        // boundary every caller (endpoint today, any future caller) must cross.
+        // A missing authorization context fails closed instead of trusting the
+        // caller checked first.
+        if (cmd.Authorization?.SourceAudience is null)
+        {
+            replyTo.Tell(new ReminderRunNowResponse(
+                cmd.Id,
+                Success: false,
+                Error: ReminderRunError.Unauthorized,
+                ErrorMessage: "Running a reminder now requires Operator authority."));
+            return;
+        }
+
+        if (!_schedulingConfig.Enabled)
+        {
+            replyTo.Tell(new ReminderRunNowResponse(
+                cmd.Id,
+                Success: false,
+                Error: ReminderRunError.SchedulingDisabled,
+                ErrorMessage: "Scheduling is disabled for this deployment."));
+            return;
+        }
+
+        var definition = _definitionStore.Get(cmd.Id);
+        if (definition is null)
+        {
+            replyTo.Tell(new ReminderRunNowResponse(
+                cmd.Id,
+                Success: false,
+                Error: ReminderRunError.NotFound,
+                ErrorMessage: $"Reminder '{cmd.Id.Value}' was not found."));
+            return;
+        }
+
+        if (!definition.Enabled)
+        {
+            replyTo.Tell(new ReminderRunNowResponse(
+                cmd.Id,
+                Success: false,
+                Error: ReminderRunError.Disabled,
+                ErrorMessage: $"Reminder '{cmd.Id.Value}' is disabled."));
+            return;
+        }
+
+        if (definition.ExpiresAt is { } expiresAt && expiresAt <= _timeProvider.GetUtcNow())
+        {
+            replyTo.Tell(new ReminderRunNowResponse(
+                cmd.Id,
+                Success: false,
+                Error: ReminderRunError.Expired,
+                ErrorMessage: $"Reminder '{cmd.Id.Value}' has expired."));
+            return;
+        }
+
+        if (_activeExecutions.IsExecuting(cmd.Id))
+        {
+            replyTo.Tell(new ReminderRunNowResponse(
+                cmd.Id,
+                Success: false,
+                Error: ReminderRunError.AlreadyExecuting,
+                ErrorMessage: $"Reminder '{cmd.Id.Value}' is already executing. Wait for it to finish and try again."));
+            return;
+        }
+
+        StartManualExecution(definition);
+        _log.Info("Manual run started for reminder '{0}'", cmd.Id.Value);
+        replyTo.Tell(new ReminderRunNowResponse(cmd.Id, Success: true));
+    }
+
     private async Task HandleReminderFiredAsync(ReminderEnvelope<ReminderPayload> envelope)
     {
         if (!_schedulingConfig.Enabled)
@@ -594,16 +676,31 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         if (_activeExecutions.TryGet(reminderId, out var activeExecution))
         {
             RecordSkippedDuplicate(reminderId, definition.Title, "active");
-            if (IsSameDeliveryAttempt(activeExecution.Envelope, envelope))
-                return;
 
-            var sameOccurrence = activeExecution.Envelope.Key == envelope.Key
-                                 && activeExecution.Envelope.DueTimeUtc == envelope.DueTimeUtc;
+            // A manual (`netclaw reminder run`) execution carries no envelope. It
+            // can never be the same delivery attempt or occurrence as a real
+            // scheduler fire, so this incoming occurrence is always a distinct
+            // one blocked by the in-flight manual run.
+            if (activeExecution.Envelope is { } activeEnvelope)
+            {
+                if (IsSameDeliveryAttempt(activeEnvelope, envelope))
+                    return;
+
+                var sameOccurrence = activeEnvelope.Key == envelope.Key
+                                     && activeEnvelope.DueTimeUtc == envelope.DueTimeUtc;
+                await SettleBlockedOccurrenceAsync(
+                    definition,
+                    envelope,
+                    nack: definition.Schedule.Type == ReminderScheduleType.OneShot || sameOccurrence,
+                    "Another execution for this reminder is active.");
+                return;
+            }
+
             await SettleBlockedOccurrenceAsync(
                 definition,
                 envelope,
-                nack: definition.Schedule.Type == ReminderScheduleType.OneShot || sameOccurrence,
-                "Another execution for this reminder is active.");
+                nack: definition.Schedule.Type == ReminderScheduleType.OneShot,
+                "A manual run for this reminder is active.");
             return;
         }
 
@@ -762,15 +859,17 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         const string reason = "Reminder execution actor terminated unexpectedly.";
         var now = _timeProvider.GetUtcNow();
         var definition = _definitionStore.Get(terminated.Id);
+        var occurrenceTimeMs = (execution.Envelope?.DueTimeUtc ?? execution.StartedAt).ToUnixTimeMilliseconds();
         var sessionId = definition?.Delivery.Kind == DeliveryKind.CurrentSession
             ? definition.Delivery.SessionId ?? $"reminder/{terminated.Id}/unknown"
-            : $"reminder/{terminated.Id}/{execution.Envelope.DueTimeUtc.ToUnixTimeMilliseconds()}";
+            : $"reminder/{terminated.Id}/{occurrenceTimeMs}";
         var history = new HistoryRecord(
             execution.StartedAt,
             Success: false,
             DurationMs: (long)(now - execution.StartedAt).TotalMilliseconds,
             sessionId,
-            reason);
+            reason,
+            Source: execution.Source);
 
         try
         {
@@ -796,6 +895,17 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         await AppendHistorySafelyAsync(outcome.Id, outcome.History);
 
         var definition = _definitionStore.Get(outcome.Id);
+
+        // A manual run has no scheduler occurrence to settle: nothing to Ack/Nack,
+        // and it must not perturb the reminder's own schedule or its scheduled
+        // consecutive-failure accounting (a failed test run must not auto-disable
+        // a healthy scheduled reminder).
+        if (execution.Source == ReminderExecutionSource.Manual)
+        {
+            SettleManualExecution(outcome, definition);
+            return;
+        }
+
         if (outcome.Success)
         {
             await SettleSuccessfulExecutionAsync(outcome, execution, definition);
@@ -803,6 +913,29 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         }
 
         await SettleFailedExecutionAsync(outcome, execution, definition);
+    }
+
+    /// <summary>
+    /// Settles a manual (<c>netclaw reminder run</c>) execution. History was
+    /// already appended by <see cref="SettleExecutionOutcomeAsync"/> with
+    /// <see cref="ReminderExecutionSource.Manual"/>. Everything the scheduled
+    /// path does beyond that — Akka.Reminders Ack/Nack, schedule mutation,
+    /// consecutive-failure accounting, auto-disable, and channel failure
+    /// notices — is scheduler bookkeeping that a manual test run must not touch.
+    /// </summary>
+    private void SettleManualExecution(ReminderExecutionCompleted outcome, ReminderDefinition? definition)
+    {
+        var title = definition?.Title ?? outcome.Id.Value;
+        if (outcome.Success)
+        {
+            _log.Info("Manual run of reminder '{0}' completed successfully", outcome.Id.Value);
+            return;
+        }
+
+        var reason = string.IsNullOrWhiteSpace(outcome.ErrorMessage)
+            ? "Manual reminder run failed."
+            : outcome.ErrorMessage;
+        _log.Warning("Manual run of reminder '{0}' ('{1}') failed: {2}", outcome.Id.Value, title, reason);
     }
 
     private async Task AppendHistorySafelyAsync(ReminderId id, HistoryRecord history)
@@ -842,7 +975,10 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         AkkaReminderProtocol.ReminderAckResponse ack;
         try
         {
-            ack = await _client!.AckAsync(execution.Envelope);
+            // Non-null: SettleExecutionOutcomeAsync routes Source == Manual (the
+            // only case with a null Envelope) to SettleManualExecution before
+            // this method is ever reached.
+            ack = await _client!.AckAsync(execution.Envelope!);
         }
         catch (Exception ex)
         {
@@ -903,7 +1039,8 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         AkkaReminderProtocol.ReminderNackResponse? nack = null;
         try
         {
-            nack = await _client!.NackAsync(execution.Envelope, reason);
+            // Non-null: see the matching comment in SettleSuccessfulExecutionAsync.
+            nack = await _client!.NackAsync(execution.Envelope!, reason);
         }
         catch (Exception ex)
         {
@@ -1266,6 +1403,34 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         _log.Info(
             "Started execution actor for reminder '{0}' occurrence={1}: {2}",
             definition.Id, envelope.DueTimeUtc, executionActor.Path);
+    }
+
+    /// <summary>
+    /// Starts a manual (<c>netclaw reminder run</c>) execution. Mirrors
+    /// <see cref="StartExecution"/> but carries no scheduler envelope — see
+    /// <see cref="ActiveExecutionTracker.AddManual"/>.
+    /// </summary>
+    private void StartManualExecution(ReminderDefinition definition)
+    {
+        var executionId = Guid.NewGuid();
+        var startedAt = _timeProvider.GetUtcNow();
+        _activeExecutions.AddManual(definition.Id, executionId, startedAt);
+
+        var actorName = $"exec-{SanitizeActorName(definition.Id.Value)}-{++_executionSequence}";
+        var executionActor = Context.ActorOf(
+            ReminderExecutionActor.CreateManualProps(
+                executionId,
+                definition,
+                _pipeline,
+                _timeProvider),
+            actorName);
+        Context.WatchWith(
+            executionActor,
+            new ReminderExecutionTerminated(executionId, definition.Id));
+
+        _log.Info(
+            "Started manual execution actor for reminder '{0}': {1}",
+            definition.Id, executionActor.Path);
     }
 
     private async Task<ScheduleAttempt> ScheduleDefinitionAsync(ReminderDefinition definition, bool rescheduleFromNow)

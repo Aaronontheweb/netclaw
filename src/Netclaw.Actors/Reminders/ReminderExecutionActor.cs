@@ -66,7 +66,17 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
     private readonly Guid _executionId;
     private readonly ReminderDefinition _definition;
     private readonly TimeProvider _timeProvider;
-    private readonly ReminderEnvelope<ReminderPayload> _envelope;
+
+    /// <summary>
+    /// The scheduler's durable occurrence, present only for a scheduled fire.
+    /// A manual run (<see cref="_source"/> = <see cref="ReminderExecutionSource.Manual"/>)
+    /// has no envelope — there is no Akka.Reminders occurrence behind a
+    /// <c>netclaw reminder run</c> invocation, so callers must not synthesize
+    /// one. Anywhere this actor previously read <c>_envelope.DueTimeUtc</c> for
+    /// a derived key, it now falls back to <see cref="_dispatchedAt"/>.
+    /// </summary>
+    private readonly ReminderEnvelope<ReminderPayload>? _envelope;
+    private readonly ReminderExecutionSource _source;
     private readonly ILoggingAdapter _log;
     private readonly DateTimeOffset _dispatchedAt;
     private readonly SessionPipelineHandle _handle;
@@ -86,25 +96,48 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
 
     private bool RoutesBackToOriginSession => _definition.Delivery.Kind == DeliveryKind.CurrentSession;
 
+    /// <summary>
+    /// The occurrence time keys derived from a fire are based on: the scheduler's
+    /// due time for a scheduled fire, or this execution's dispatch time for a
+    /// manual run (which has no scheduler occurrence).
+    /// </summary>
+    private DateTimeOffset OccurrenceTimeUtc => _envelope?.DueTimeUtc ?? _dispatchedAt;
+
     public static Props CreateProps(
         Guid executionId,
         ReminderDefinition definition,
         ISessionPipeline pipeline,
         TimeProvider timeProvider,
         ReminderEnvelope<ReminderPayload> envelope) =>
-        Props.Create(() => new ReminderExecutionActor(executionId, definition, pipeline, timeProvider, envelope));
+        Props.Create(() => new ReminderExecutionActor(
+            executionId, definition, pipeline, timeProvider, envelope, ReminderExecutionSource.Scheduled));
+
+    /// <summary>
+    /// Builds the execution actor for a <c>netclaw reminder run</c> manual
+    /// invocation. There is no scheduler envelope for a manual run — see
+    /// <see cref="_envelope"/>.
+    /// </summary>
+    public static Props CreateManualProps(
+        Guid executionId,
+        ReminderDefinition definition,
+        ISessionPipeline pipeline,
+        TimeProvider timeProvider) =>
+        Props.Create(() => new ReminderExecutionActor(
+            executionId, definition, pipeline, timeProvider, envelope: null, ReminderExecutionSource.Manual));
 
     public ReminderExecutionActor(
         Guid executionId,
         ReminderDefinition definition,
         ISessionPipeline pipeline,
         TimeProvider timeProvider,
-        ReminderEnvelope<ReminderPayload> envelope)
+        ReminderEnvelope<ReminderPayload>? envelope,
+        ReminderExecutionSource source)
     {
         _executionId = executionId;
         _definition = definition;
         _timeProvider = timeProvider;
         _envelope = envelope;
+        _source = source;
         _dispatchedAt = timeProvider.GetUtcNow();
         _log = Context.GetLogger();
         _handle = new SessionPipelineHandle(pipeline, _log, "reminder-exec");
@@ -152,7 +185,7 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
         {
             var sessionId = !string.IsNullOrWhiteSpace(_definition.Delivery.SessionId)
                 ? new SessionId(_definition.Delivery.SessionId)
-                : new SessionId($"reminder/{_definition.Id}/{_envelope.DueTimeUtc.ToUnixTimeMilliseconds()}");
+                : new SessionId($"reminder/{_definition.Id}/{OccurrenceTimeUtc.ToUnixTimeMilliseconds()}");
 
             _sessionIdValue = sessionId.Value;
             var audience = _definition.Audience;
@@ -237,7 +270,9 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
             // re-runs it (duplicate delivery). The envelope's scheduled fire time
             // (DueTimeUtc) is identical on every redelivery; _dispatchedAt is
             // captured fresh per execution actor and drifts, defeating the dedup.
-            var fireTimeMs = _envelope.DueTimeUtc.ToUnixTimeMilliseconds();
+            // A manual run has no envelope and is never redelivered, so falling
+            // back to _dispatchedAt there is safe — OccurrenceTimeUtc picks it.
+            var fireTimeMs = OccurrenceTimeUtc.ToUnixTimeMilliseconds();
             var reminderDeliveryKey = $"{_definition.Id}:{fireTimeMs}";
 
             _log.Info(
@@ -586,7 +621,8 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
             Success: success,
             DurationMs: durationMs,
             SessionId: _sessionIdValue ?? $"reminder/{_definition.Id}/unknown",
-            ErrorMessage: errorMessage);
+            ErrorMessage: errorMessage,
+            Source: _source);
 
         if (!success)
         {
