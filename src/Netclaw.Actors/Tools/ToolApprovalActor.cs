@@ -367,7 +367,7 @@ internal sealed class ToolApprovalActor : ReceiveActor
         }
     }
 
-    private static bool TryCreateEntries(
+    internal static bool TryCreateEntries(
         ToolName toolName,
         IReadOnlyList<ToolApprovalGrant> grants,
         out IReadOnlyList<ApprovalEntry> persistentEntries,
@@ -393,9 +393,25 @@ internal sealed class ToolApprovalActor : ReceiveActor
                     if (grant.Repository is not null)
                     {
                         if (grant.Directory is not null
-                            || !GitRepositoryApprovalScope.TryResolve(grant.RepositoryWorktree, out var scope)
-                            || !ToolApprovalEntryComparer.Equals(scope!.CommonDirectory, grant.Repository)
-                            || !scope.Contains(grant.Candidate.Directory, grant.RepositoryWorktree))
+                            || grant.RepositoryWorktree is null)
+                        {
+                            persistentEntries = [];
+                            sessionEntries = [];
+                            return false;
+                        }
+
+                        var candidateResolved = GitRepositoryApprovalScope.TryResolveCandidate(
+                            grant.Candidate.Directory, cwd: null, out var scope);
+                        if (!candidateResolved)
+                        {
+                            persistentEntries = [];
+                            sessionEntries = [];
+                            return false;
+                        }
+
+                        if (!ToolApprovalEntryComparer.Equals(scope!.CommonDirectory, grant.Repository)
+                            || !PathUtility.AreEquivalentPaths(
+                                scope.WorktreeRoot, grant.RepositoryWorktree))
                         {
                             persistentEntries = [];
                             sessionEntries = [];
@@ -420,7 +436,8 @@ internal sealed class ToolApprovalActor : ReceiveActor
                 }
                 else
                 {
-                    if (grant.Repository is not null || grant.RepositoryWorktree is not null)
+                    if (grant.Repository is not null
+                        || grant.RepositoryWorktree is not null)
                     {
                         persistentEntries = [];
                         sessionEntries = [];
