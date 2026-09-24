@@ -243,6 +243,11 @@ restores the pending input under its recorded authority when the reminder
 arrives. A completed turn, partial text, or possible tool effect produces no
 restart reminder.
 
+The daemon gives session drain 20 seconds within a 30-second shutdown phase.
+The CLI allows 45 seconds before forced termination. The generated systemd
+unit allows 60 seconds. A container should set
+`terminationGracePeriodSeconds` to at least 60 seconds.
+
 `netclaw daemon status` checks the PID file and verifies the process is alive.
 Reports: running/stopped, PID, uptime, port, number of active sessions.
 
