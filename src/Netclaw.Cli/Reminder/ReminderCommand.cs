@@ -71,6 +71,7 @@ internal static class ReminderCommand
             "delete" => await RunDeleteAsync(daemonApi, args),
             "disable" => await RunDisableAsync(daemonApi, args),
             "enable" => await RunEnableAsync(daemonApi, args),
+            "run" => await RunRunAsync(daemonApi, args),
             "import" => await RunImportAsync(daemonApi, args),
             "show" => await RunShowAsync(daemonApi, args),
             "history" => await RunHistoryAsync(daemonApi, args),
@@ -315,6 +316,53 @@ internal static class ReminderCommand
         }
     }
 
+    private static async Task<int> RunRunAsync(DaemonApi api, string[] args)
+    {
+        if (args.Length < 3)
+        {
+            Console.Error.WriteLine("Usage: netclaw reminder run <id>");
+            return 1;
+        }
+
+        var id = args[2];
+
+        try
+        {
+            using var response = await api.RunReminderAsync(id);
+            var json = await response.Content.ReadAsStringAsync();
+            var result = JsonSerializer.Deserialize<JsonElement>(json);
+
+            if (response.IsSuccessStatusCode)
+            {
+                if (result.TryGetProperty("message", out var msg))
+                    Console.WriteLine(msg.GetString());
+                else
+                    Console.WriteLine(json);
+                return 0;
+            }
+
+            if (response.StatusCode == System.Net.HttpStatusCode.NotFound)
+            {
+                Console.Error.WriteLine($"[FAIL] Reminder '{id}' not found.");
+                return 1;
+            }
+
+            if (result.TryGetProperty("error", out var err))
+                Console.Error.WriteLine($"[FAIL] {err.GetString()}");
+            else if (result.TryGetProperty("detail", out var detail))
+                Console.Error.WriteLine($"[FAIL] {detail.GetString()}");
+            else
+                Console.Error.WriteLine($"[FAIL] {json}");
+            return 1;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"[FAIL] unable to reach daemon: {ex.Message}");
+            Console.Error.WriteLine("       fix: run `netclaw daemon start` and retry.");
+            return 1;
+        }
+    }
+
     private static async Task<int> RunImportAsync(DaemonApi api, string[] args)
     {
         if (args.Length < 3)
@@ -548,14 +596,16 @@ internal static class ReminderCommand
             const int colFiredAt = 25;
             const int colStatus = 8;
             const int colDuration = 12;
+            const int colSource = 10;
 
-            Console.WriteLine($"{"fired_at",-colFiredAt}  {"status",-colStatus}  {"duration_ms",-colDuration}  session_id");
-            Console.WriteLine(new string('-', colFiredAt + colStatus + colDuration + 34));
+            Console.WriteLine($"{"fired_at",-colFiredAt}  {"status",-colStatus}  {"duration_ms",-colDuration}  {"source",-colSource}  session_id");
+            Console.WriteLine(new string('-', colFiredAt + colStatus + colDuration + colSource + 44));
 
             foreach (var r in records)
             {
                 var status = r.Success ? "ok" : "failed";
-                Console.WriteLine($"{r.FiredAt:u,-colFiredAt}  {status,-colStatus}  {r.DurationMs,-colDuration}  {r.SessionId}");
+                var source = r.Source == ReminderExecutionSource.Manual ? "manual" : "scheduled";
+                Console.WriteLine($"{r.FiredAt,-colFiredAt:u}  {status,-colStatus}  {r.DurationMs,-colDuration}  {source,-colSource}  {r.SessionId}");
             }
 
             return 0;
@@ -633,8 +683,9 @@ internal static class ReminderCommand
                 foreach (var r in history.Reverse())
                 {
                     var outcome = r.Success ? "ok" : "failed";
+                    var source = r.Source == ReminderExecutionSource.Manual ? "manual" : "scheduled";
                     var err = string.IsNullOrEmpty(r.ErrorMessage) ? "" : $" — {r.ErrorMessage}";
-                    Console.WriteLine($"  {r.FiredAt:u}  {outcome}{err}");
+                    Console.WriteLine($"  {r.FiredAt:u}  {outcome}  {source}{err}");
                 }
             }
 
@@ -678,6 +729,7 @@ internal static class ReminderCommand
         output.WriteLine("  delete <id>                                   Permanently delete a reminder and its history");
         output.WriteLine("  disable <id>                                  Disable a reminder");
         output.WriteLine("  enable <id>                                   Enable a reminder");
+        output.WriteLine("  run <id>                                      Run a reminder now, outside its schedule");
         output.WriteLine("  import <file> [--replace|--upsert]            Import one reminder file");
         output.WriteLine("  validate <file>                               Validate reminder file");
         output.WriteLine("  show <id>                                     Show reminder details");

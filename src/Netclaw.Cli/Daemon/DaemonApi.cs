@@ -267,6 +267,13 @@ public sealed class DaemonApi
         return await client.GetAsync($"{_endpoint}/api/reminders/{id}/status", cts.Token);
     }
 
+    public async Task<HttpResponseMessage> RunReminderAsync(string id, CancellationToken ct = default)
+    {
+        using var cts = CreateTimeoutCts(DefaultTimeout, ct);
+        var client = CreateHttpClient();
+        return await client.PostAsync($"{_endpoint}/api/reminders/{id}/run", content: null, cts.Token);
+    }
+
     public async Task<HttpResponseMessage> EnableReminderAsync(string id, CancellationToken ct = default)
     {
         using var cts = CreateTimeoutCts(DefaultTimeout, ct);
