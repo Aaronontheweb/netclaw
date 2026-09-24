@@ -221,6 +221,46 @@ public static class ReminderEndpointRouteBuilderExtensions
         .WithName("DeleteReminder")
         .WithSummary("Cancel a reminder, or permanently delete it with ?permanent=true.");
 
+        reminders.MapPost("/{id}/run", async ValueTask<Results<Ok<ReminderMessageResponse>, NotFound<ReminderErrorResponse>, Conflict<ReminderErrorResponse>, BadRequest<ReminderErrorResponse>, ProblemHttpResult>> (
+            string id,
+            IRequiredActor<ReminderManagerActorKey> actor,
+            ClaimsPrincipalMapper mapper,
+            HttpContext httpContext,
+            CancellationToken ct) =>
+        {
+            var authorization = ResolveReminderAuthorizationContext(mapper, httpContext);
+
+            // Same operator-only gate as create: a non-Operator caller never
+            // reaches the manager actor.
+            if (authorization?.SourceAudience is null)
+                return TypedResults.Problem(
+                    detail: "Running a reminder now requires Operator authority.",
+                    statusCode: StatusCodes.Status403Forbidden);
+
+            var manager = await actor.GetAsync(ct);
+            var response = await manager.Ask<ReminderRunNowResponse>(
+                new RunReminderNowCommand(new ReminderId(id), authorization),
+                TimeSpan.FromSeconds(10), ct);
+
+            if (response.Success)
+                return TypedResults.Ok(new ReminderMessageResponse($"Reminder '{id}' run started."));
+
+            return response.Error switch
+            {
+                ReminderRunError.NotFound => TypedResults.NotFound(
+                    new ReminderErrorResponse(response.ErrorMessage ?? $"Reminder '{id}' not found.")),
+                ReminderRunError.AlreadyExecuting => TypedResults.Conflict(
+                    new ReminderErrorResponse(response.ErrorMessage ?? $"Reminder '{id}' is already executing.")),
+                ReminderRunError.Unauthorized => TypedResults.Problem(
+                    detail: response.ErrorMessage ?? "Running a reminder now requires Operator authority.",
+                    statusCode: StatusCodes.Status403Forbidden),
+                _ => TypedResults.BadRequest(
+                    new ReminderErrorResponse(response.ErrorMessage ?? $"Unable to run reminder '{id}'."))
+            };
+        })
+        .WithName("RunReminderNow")
+        .WithSummary("Run a reminder now, outside its schedule (requires Operator authority).");
+
         reminders.MapPost("/{id}/disable", async ValueTask<Results<Ok<ReminderDisableResponse>, NotFound<ReminderErrorResponse>>> (
             string id,
             IRequiredActor<ReminderManagerActorKey> actor,
