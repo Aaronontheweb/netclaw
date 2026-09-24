@@ -448,7 +448,7 @@ public class ReminderManagerActorTests : TestKit
     }
 
     [Fact]
-    public async Task Save_rejects_expiration_for_oneshot_reminders()
+    public async Task Save_accepts_expiration_for_oneshot_reminders()
     {
         var manager = await GetManagerAsync();
         var now = TimeProvider.System.GetUtcNow();
@@ -469,9 +469,8 @@ public class ReminderManagerActorTests : TestKit
             TimeSpan.FromSeconds(5),
             TestContext.Current.CancellationToken);
 
-        Assert.False(response.Success);
-        Assert.Equal(ReminderSaveError.Validation, response.Error);
-        Assert.Contains("one-shot", response.ErrorMessage, StringComparison.OrdinalIgnoreCase);
+        Assert.True(response.Success, response.ErrorMessage);
+        Assert.Equal(definition.ExpiresAt, _definitionStore.Get(definition.Id)?.ExpiresAt);
     }
 
     [Fact]

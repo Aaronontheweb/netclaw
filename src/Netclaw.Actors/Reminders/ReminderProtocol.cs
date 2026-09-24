@@ -239,7 +239,7 @@ public sealed record ReminderDefinition
     public long UpdatedAtMs { get; set; }
 
     /// <summary>
-    /// Optional expiration for recurring reminders. When set, the reminder
+    /// Optional expiration for reminders. When set, the reminder
     /// auto-disables on next fire after this time without executing.
     /// Null means no expiration (default for backwards compatibility).
     /// </summary>

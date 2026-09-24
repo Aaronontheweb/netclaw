@@ -222,7 +222,8 @@ Two status-parameter mutants test the rule that only bare `$?` can preserve
 reusable candidates. The focused test rejects other unknown output data.
 The new target took 49 seconds after package restore.
 
-The local run on 2026-09-18 took about 22 minutes. CI allows 30 minutes for
+The script groups targets by source project. Stryker analyzes each source project once.
+The local run on 2026-09-24 took under four minutes. CI allows 30 minutes for
 hosted-runner variance and report upload. The report directory is
 `artifacts/stryker/shell-command-analysis`.
 

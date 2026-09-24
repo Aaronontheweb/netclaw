@@ -234,6 +234,15 @@ The pipeline reports cancellation through its canceled task state. The daemon
 keeps the existing approval prompt. Button and text responses can resume the
 recovered turn. A channel UI can temporarily lag the session state after restart.
 
+During any graceful stop, the actor gives an active model call a two-second
+completion grace. It then cancels an eligible call and waits for its task.
+The actor returns a standard `current_session` reminder for durable pending
+input. The reminder expires ten minutes after the interruption. Startup
+registers each fresh reminder through the reminder manager. The session
+restores the pending input under its recorded authority when the reminder
+arrives. A completed turn, partial text, or possible tool effect produces no
+restart reminder.
+
 `netclaw daemon status` checks the PID file and verifies the process is alive.
 Reports: running/stopped, PID, uptime, port, number of active sessions.
 
@@ -360,8 +369,8 @@ not execute tools.
 4. **Valid config**: close daemon-managed ingress, enumerate live session actors,
    ask them to drain, persist a restart manifest, and request coordinated
    daemon restart
-5. **After restart**: warm the sessions that were active when restart began and
-   inject a continuity notice for the next turn
+5. **After restart**: register fresh restart reminders. The normal reminder
+   route activates each target session.
 6. **Invalid config**: log warning with validation errors, preserve previous config
 
 ### What Changes Take Effect After Restart

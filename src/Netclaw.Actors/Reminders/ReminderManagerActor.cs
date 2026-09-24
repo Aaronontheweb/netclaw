@@ -267,12 +267,6 @@ public sealed partial class ReminderManagerActor : ReceiveActor
                 : cmd.Definition.CreatedBy
         };
 
-        if (normalized.Schedule.Type == ReminderScheduleType.OneShot && normalized.ExpiresAt is not null)
-        {
-            replyTo.Tell(ValidationFailure(id, title, "expires_at is not applicable to one-shot reminders."));
-            return;
-        }
-
         if (exists)
         {
             var existing = _definitionStore.Get(id);
@@ -570,8 +564,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             return;
         }
 
-        if (definition.Schedule.Type is not ReminderScheduleType.OneShot
-            && definition.ExpiresAt is { } expiresAt
+        if (definition.ExpiresAt is { } expiresAt
             && expiresAt <= _timeProvider.GetUtcNow())
         {
             _log.Info("Reminder '{0}' has expired (expiresAt={1}), disabling", reminderId.Value, expiresAt);

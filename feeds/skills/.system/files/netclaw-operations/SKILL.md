@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.75.1"
+  version: "2.75.2"
 ---
 
 # Netclaw Operations
@@ -461,11 +461,16 @@ stale button, ask them to re-issue the request.
 
 During a graceful stop, the session can stop a tool task that waits only for
 journaled approval prompts. The session waits for that task to stop before it
-acknowledges drain. The daemon keeps the existing approval prompt. The original requester can
-still approve through its button or a text response after restart. The UI
+acknowledges drain. The daemon keeps the existing approval prompt. The original
+requester can approve it after restart. They can use its button or a text response. The UI
 can temporarily lag the session state. Shutdown cancellation does not mean
 the approval expired.
-An active tool or accepted buffered input keeps the current bounded drain path.
+An active tool with a possible external effect keeps the bounded drain path.
+
+An interrupted model call can create a short-lived restart reminder. The
+session restores accepted input and its original authority from the journal.
+The reminder expires ten minutes after the interruption. A completed turn,
+partial reply, or possible tool effect does not create this reminder.
 
 **Why you may not see a prompt at all.** If the user invokes a read-only verb
 (say `grep`) with a path argument under a tree the operator has previously
