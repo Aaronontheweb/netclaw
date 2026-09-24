@@ -21,6 +21,12 @@ internal sealed record PendingToolInteraction(
     TurnContext? TurnContext,
     string? TurnContextRestoreFailure) : INoSerializationVerificationNeeded
 {
+    public bool CanRecoverAfterRestart
+        => PersistApprovalState
+           && Request.TurnContext is not null
+           && TurnContext is not null
+           && TurnContextRestoreFailure is null;
+
     public static PendingToolInteraction From(
         ToolApprovalRequested evt,
         bool persistApprovalState)
@@ -134,6 +140,10 @@ internal sealed class ToolApprovalState
 
     public bool HasPending(string callId)
         => _calls.TryGetValue(callId, out var call) && call is PendingToolApproval;
+
+    public bool HasRecoverablePending(string callId)
+        => TryGetPending(callId, out var pending)
+           && pending.CanRecoverAfterRestart;
 
     public bool HasResolved(string callId)
         => _calls.TryGetValue(callId, out var call) && call is ResolvedToolApproval;

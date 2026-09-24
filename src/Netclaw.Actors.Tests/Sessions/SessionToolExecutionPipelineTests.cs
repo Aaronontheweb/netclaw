@@ -920,12 +920,40 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
 
         await executionCts.CancelAsync();
 
-        var failed = await probe.ExpectMsgAsync<ToolExecutionFailed>(
-            TimeSpan.FromSeconds(3),
-            cancellationToken: TestContext.Current.CancellationToken);
-        Assert.IsType<TimeoutException>(failed.Cause);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken));
+        Assert.True(pipelineTask.IsCanceled);
         Assert.False(approvalChannel.Complete(approvalRequest.CallId, ApprovalDecision.ApprovedOnce));
+        Assert.False(probe.HasMessages);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Approval_dispatch_failure_remains_a_failure_without_caller_cancellation(bool isTimeout)
+    {
+        var probe = CreateTestProbe("approval-dispatch-failure");
+        var sessionId = new SessionId("D1/approval-dispatch-failure");
+        Exception failure = isTimeout
+            ? new TimeoutException("Approval dispatch timed out.")
+            : new OperationCanceledException("Approval dispatch canceled independently.");
+        using var executionCts = new CancellationTokenSource();
+
+        var pipelineTask = new SessionToolPipelineTestFixture(
+                new ApprovalThenSuccessExecutor(),
+                [new FunctionCallContent("call-dispatch", "shell_execute",
+                    new Dictionary<string, object?> { ["command"] = "git status" })],
+                sessionId, probe.Ref)
+            .WithTurnContext(InteractiveTurnContext(sessionId))
+            .WithApprovals(new ApprovalChannel(), _ => throw failure, Timeout.InfiniteTimeSpan)
+            .ExecuteAsync(executionCts.Token);
+
+        var failed = await probe.ExpectMsgAsync<ToolExecutionFailed>(
+            TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Same(failure, failed.Cause);
         await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        Assert.False(pipelineTask.IsCanceled);
+        await executionCts.CancelAsync();
     }
 
     [Fact]
@@ -1057,10 +1085,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
     [Fact]
     public async Task Self_monitoring_tool_is_bounded_only_by_caller_cancellation()
     {
-        // A self-monitoring tool that never completes is ended ONLY by caller (turn/
-        // user) cancellation — no parent watchdog exists. The cancel must surface as a
-        // failed batch (ToolExecutionFailed), NOT as a tool-result error fed back to the
-        // model as if the sub-agent had failed.
+        // Parent cancellation stops the task without a synthetic tool result or timeout.
         var executor = new SelfMonitoringStreamingExecutor();
         var probe = CreateTestProbe("self-monitoring-cancel-probe");
         using var cts = CancellationTokenSource.CreateLinkedTokenSource(TestContext.Current.CancellationToken);
@@ -1078,11 +1103,10 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
 
         cts.Cancel();
 
-        var failed = await probe.ExpectMsgAsync<ToolExecutionFailed>(
-            TimeSpan.FromSeconds(3),
-            cancellationToken: TestContext.Current.CancellationToken);
-        Assert.IsType<TimeoutException>(failed.Cause);
-        await pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken));
+        Assert.True(pipelineTask.IsCanceled);
+        Assert.False(probe.HasMessages);
     }
 
     [Fact]
