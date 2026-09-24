@@ -4035,16 +4035,17 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
     /// handler and the idle re-drive handler so the two paths never diverge.
     /// Any unrecognized key falls closed to <see cref="ApprovalDecision.Denied"/>.
     /// </summary>
-    private static ApprovalDecision MapApprovalDecision(string selectedKey) => selectedKey switch
-    {
-        ApprovalOptionKeys.ApproveOnce => ApprovalDecision.ApprovedOnce,
-        ApprovalOptionKeys.ApproveSession => ApprovalDecision.ApprovedSession,
-        ApprovalOptionKeys.ApproveAlways => ApprovalDecision.ApprovedAlways,
-        ApprovalOptionKeys.ApproveRepository => ApprovalDecision.ApprovedRepository,
-        ApprovalOptionKeys.ApproveEverywhere => ApprovalDecision.ApprovedEverywhere,
-        ApprovalOptionKeys.Deny => ApprovalDecision.Denied,
-        _ => ApprovalDecision.Denied
-    };
+    internal static ApprovalDecision MapApprovalDecision(string selectedKey) =>
+        ApprovalOptionKeys.CanonicalDecisionKey(selectedKey) switch
+        {
+            ApprovalOptionKeys.ApproveOnce => ApprovalDecision.ApprovedOnce,
+            ApprovalOptionKeys.ApproveSession => ApprovalDecision.ApprovedSession,
+            ApprovalOptionKeys.ApproveAlways => ApprovalDecision.ApprovedAlways,
+            ApprovalOptionKeys.ApproveRepository => ApprovalDecision.ApprovedRepository,
+            ApprovalOptionKeys.ApproveEverywhere => ApprovalDecision.ApprovedEverywhere,
+            ApprovalOptionKeys.Deny => ApprovalDecision.Denied,
+            _ => ApprovalDecision.Denied
+        };
 
     private bool HasApprovalHistory
         => _toolApprovals.ResolvedCount > 0
@@ -4155,7 +4156,11 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         IReadOnlyList<string> optionKeys,
         string selectedKey,
         string? repositoryCommonDirectory)
-        => selectedKey == ApprovalOptionKeys.ApproveRepository
+        => ApprovalOptionKeys.IsAssignmentVariant(selectedKey)
+            ? optionKeys.Contains(selectedKey, StringComparer.Ordinal)
+              && (!ApprovalOptionKeys.IsRepository(selectedKey)
+                  || repositoryCommonDirectory is not null)
+            : ApprovalOptionKeys.IsRepository(selectedKey)
             ? repositoryCommonDirectory is not null
               && optionKeys.Contains(selectedKey, StringComparer.Ordinal)
             : optionKeys.Count == 0 || optionKeys.Contains(selectedKey, StringComparer.Ordinal);
@@ -4835,6 +4840,12 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         if (decision == ApprovalDecision.ApprovedRepository)
             throw new InvalidOperationException("Repository grants require structured approval storage.");
+
+        if (request.Candidates.Any(static candidate => candidate.AssignmentDigest is not null))
+        {
+            throw new InvalidOperationException(
+                "Assignment-qualified grants require structured approval storage.");
+        }
 
         var grouping = ApprovalBucketBuilder.Build(
             request.Candidates,

@@ -20,8 +20,21 @@ namespace Netclaw.Security;
 /// One shell clause can produce multiple candidates when it accesses multiple
 /// authorization scopes.
 /// </summary>
-public sealed record ApprovalCandidate(string Verb, string? Directory)
+public sealed record ApprovalCandidate(
+    string Verb,
+    string? Directory)
 {
+    private ApprovalAssignmentDigest? _assignmentDigest;
+
+    /// <summary>The exact bounded shell-assignment digest, when present.</summary>
+    public ApprovalAssignmentDigest? AssignmentDigest
+    {
+        get => _assignmentDigest;
+        init => _assignmentDigest = value is { } digest
+            ? new ApprovalAssignmentDigest(digest.Value)
+            : null;
+    }
+
     /// <summary>The immutable parser-owned canonical verb tokens.</summary>
     public IReadOnlyList<string>? VerbTokens { get; init; }
 
@@ -33,8 +46,7 @@ public sealed record ApprovalCandidate(string Verb, string? Directory)
     internal CommandOccurrence? SourceOccurrence { get; init; }
 
     /// <summary>
-    /// Retains the released candidate identity contract. Parser metadata does
-    /// not change occurrence identity.
+    /// Parser source metadata does not change occurrence identity.
     /// </summary>
     public bool Equals(ApprovalCandidate? other) =>
         other is not null &&
@@ -295,9 +307,18 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         var shell = Environment.Grammar == ShellGrammar.Bash
             ? ApprovalShell.Bash
             : ApprovalShell.PowerShell;
+        if (!ShellAssignmentDigestFactory.TryCreate(
+                shell,
+                occurrence.Assignments,
+                out var assignmentDigest))
+        {
+            return null;
+        }
+
         return directories
             .Select(directory => new ApprovalCandidate(verb, directory)
             {
+                AssignmentDigest = assignmentDigest,
                 VerbTokens = GetCanonicalVerbTokens(clause),
                 Shell = shell,
                 SourceOccurrence = occurrence,
@@ -1242,6 +1263,18 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             return true;
 
         var workingDirectory = analysis.WorkingDirectory;
+        var shell = Environment.Grammar == ShellGrammar.Bash
+            ? ApprovalShell.Bash
+            : ApprovalShell.PowerShell;
+
+        if (analysis.Commands.Any(command =>
+                !ShellAssignmentDigestFactory.TryCreate(
+                    shell,
+                    command.Assignments,
+                    out _)))
+        {
+            return true;
+        }
 
         if (analysis.Commands
             .SelectMany(static command => command.Clause.Args)
@@ -1338,6 +1371,11 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         // Fast path: a command with no embedded line break renders verbatim.
         if (!ContainsLineBreak(command))
             return command;
+
+        // The operator must see each assignment that qualifies a reusable grant.
+        // Assignment-only statements do not occur in the reconstructed command list.
+        if (analysis.Commands.Any(static occurrence => occurrence.Assignments.Count > 0))
+            return command.ReplaceLineEndings(" ⏎ ");
 
         // Issue #1402: channel renderers embed DisplayText in single-line
         // code fences, so a multi-line quoted string (a message body, an

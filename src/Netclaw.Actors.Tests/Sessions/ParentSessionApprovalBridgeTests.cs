@@ -17,6 +17,22 @@ namespace Netclaw.Actors.Tests.Sessions;
 public sealed class ParentSessionApprovalBridgeTests
 {
     [Fact]
+    public void Assignment_digest_does_not_change_parent_candidate_identity()
+    {
+        var first = new ParentApprovalCandidate("inspect", "/work")
+        {
+            AssignmentDigest = new ApprovalAssignmentDigest($"sha256:{new string('a', 64)}"),
+        };
+        var second = new ParentApprovalCandidate("inspect", "/work")
+        {
+            AssignmentDigest = new ApprovalAssignmentDigest($"sha256:{new string('b', 64)}"),
+        };
+
+        Assert.Equal(first, second);
+        Assert.Equal(first.GetHashCode(), second.GetHashCode());
+    }
+
+    [Fact]
     public async Task Bridge_preserves_requester_identity_and_adopted_context()
     {
         var channel = new ApprovalChannel();
@@ -39,6 +55,7 @@ public sealed class ParentSessionApprovalBridgeTests
             adoptedSpeakerIds: ["user-123", "user-456"]);
 
         var authorizationAttemptId = AuthorizationAttemptId.New();
+        var assignmentDigest = new ApprovalAssignmentDigest($"sha256:{new string('a', 64)}");
         var decision = await ((IAuthorizationAttemptAwareParentApprovalBridge)bridge).RequestApprovalAsync(
             new ParentApprovalRequest(
                 authorizationAttemptId,
@@ -58,8 +75,11 @@ public sealed class ParentSessionApprovalBridgeTests
                     Cwd: "/home/user/repos/foo",
                     Candidates:
                     [
-                        new ApprovalCandidate("grep", "/home/user/repos/foo")
+                        new ApprovalCandidate(
+                            "grep",
+                            "/home/user/repos/foo")
                         {
+                            AssignmentDigest = assignmentDigest,
                             Shell = ApprovalShell.Bash,
                             VerbTokens = Array.AsReadOnly(["grep", "timeout"]),
                         }
@@ -85,6 +105,7 @@ public sealed class ParentSessionApprovalBridgeTests
         Assert.Equal("/home/user/repos/foo", emitted.Candidates[0].Directory);
         Assert.Equal(ApprovalShell.Bash, emitted.Candidates[0].Shell);
         Assert.Equal(["grep", "timeout"], emitted.Candidates[0].VerbTokens);
+        Assert.Equal(assignmentDigest, emitted.Candidates[0].AssignmentDigest);
         Assert.Equal(ApprovalOptionKeys.ApproveSessionLabel, emitted.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveSession).Label);
         Assert.Equal(ApprovalOptionKeys.ApproveAlwaysLabel, emitted.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveAlways).Label);
         Assert.Equal(ApprovalOptionKeys.ApproveEverywhereLabel, emitted.Options.Single(o => o.Key.Value == ApprovalOptionKeys.ApproveEverywhere).Label);

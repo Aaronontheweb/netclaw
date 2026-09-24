@@ -652,6 +652,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
         string.Equals(first.Verb, second.Verb, StringComparison.Ordinal) &&
         string.Equals(first.Directory, second.Directory, StringComparison.Ordinal) &&
         first.Shell == second.Shell &&
+        first.AssignmentDigest == second.AssignmentDigest &&
         ((first.VerbTokens is null && second.VerbTokens is null) ||
          (first.VerbTokens is not null &&
           second.VerbTokens is not null &&

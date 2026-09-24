@@ -11,6 +11,9 @@ namespace Netclaw.Security.Tests;
 
 public sealed class ApprovalPatternV3Tests
 {
+    private static readonly ApprovalAssignmentDigest AssignmentDigest =
+        new($"sha256:{new string('a', 64)}");
+
     private static readonly ApprovalEntry BashGitPush =
         ApprovalEntry.CreateTokenPrefix(ApprovalShell.Bash, ["git", "push"]);
 
@@ -132,5 +135,65 @@ public sealed class ApprovalPatternV3Tests
             candidate,
             cwd: null,
             [grant]));
+    }
+
+    [Fact]
+    public void Assignment_qualified_grant_requires_the_same_exact_constraint()
+    {
+        var grant = ApprovalEntry.CreateTokenPrefix(
+            ApprovalShell.Bash,
+            ["inspect"],
+            assignmentDigest: AssignmentDigest);
+        var matching = new ApprovalCandidate("inspect", Directory: null)
+        {
+            AssignmentDigest = AssignmentDigest,
+            VerbTokens = ["inspect"],
+            Shell = ApprovalShell.Bash,
+        };
+        var unqualified = matching with
+        {
+            AssignmentDigest = null,
+        };
+
+        Assert.True(ApprovalPatternMatching.MatchesShellApproval(
+            matching,
+            cwd: null,
+            [grant]));
+        Assert.False(ApprovalPatternMatching.MatchesShellApproval(
+            unqualified,
+            cwd: null,
+            [grant]));
+        Assert.False(ApprovalPatternMatching.MatchesShellApproval(
+            matching,
+            cwd: null,
+            [ApprovalEntry.CreateTokenPrefix(ApprovalShell.Bash, ["inspect"])]));
+    }
+
+    [Fact]
+    public void String_candidate_does_not_match_an_assignment_qualified_grant()
+    {
+        var grant = ApprovalEntry.CreateTokenPrefix(
+            ApprovalShell.Bash,
+            ["inspect"],
+            assignmentDigest: AssignmentDigest);
+
+        Assert.False(ApprovalPatternMatching.MatchesShellApproval(
+            "inspect",
+            candidateDirectory: null,
+            cwd: null,
+            [grant]));
+    }
+
+    [Fact]
+    public void Assignment_qualified_side_effect_is_not_approval_exempt()
+    {
+        var candidate = new ApprovalCandidate(
+            "echo",
+            Directory: null)
+        {
+            AssignmentDigest = AssignmentDigest,
+        };
+
+        Assert.False(ApprovalPatternMatching.IsPureSideEffect(candidate));
     }
 }

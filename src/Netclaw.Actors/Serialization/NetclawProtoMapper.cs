@@ -20,6 +20,9 @@ namespace Netclaw.Actors.Serialization;
 
 internal static class NetclawProtoMapper
 {
+    private const int NoAssignmentDigestWireKind = 1;
+    private const int ExactAssignmentDigestWireKind = 2;
+
     internal static IMessage ToProtoMessage(object obj) => obj switch
     {
         SessionId v => ToProto(v),
@@ -447,7 +450,10 @@ internal static class NetclawProtoMapper
     {
         var proto = new Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto
         {
-            Verb = c.Verb
+            Verb = c.Verb,
+            AssignmentConstraintKind = c.AssignmentDigest is null
+                ? NoAssignmentDigestWireKind
+                : ExactAssignmentDigestWireKind,
         };
         if (c.Directory is not null)
             proto.Directory = c.Directory;
@@ -455,6 +461,8 @@ internal static class NetclawProtoMapper
             proto.VerbTokens.AddRange(c.VerbTokens);
         if (c.Shell is not null)
             proto.Shell = (int)c.Shell.Value;
+        if (c.AssignmentDigest is { } digest)
+            proto.AssignmentDigest = digest.Value;
         return proto;
     }
 
@@ -462,6 +470,7 @@ internal static class NetclawProtoMapper
         Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto proto) =>
         new(proto.Verb, proto.HasDirectory ? proto.Directory : null)
         {
+            AssignmentDigest = FromApprovalAssignmentDigestProto(proto),
             VerbTokens = proto.VerbTokens.Count == 0
                 ? null
                 : Array.AsReadOnly(proto.VerbTokens.ToArray()),
@@ -469,6 +478,37 @@ internal static class NetclawProtoMapper
                 ? (ApprovalShell)proto.Shell
                 : null,
         };
+
+    private static ApprovalAssignmentDigest? FromApprovalAssignmentDigestProto(
+        Proto.ToolApprovalRequestedProto.Types.ApprovalCandidateProto proto)
+    {
+        if (!proto.HasAssignmentConstraintKind && !proto.HasAssignmentDigest)
+            return null;
+
+        if (!proto.HasAssignmentConstraintKind)
+        {
+            throw new InvalidOperationException(
+                "The approval assignment constraint has an invalid wire form.");
+        }
+
+        try
+        {
+            return proto.AssignmentConstraintKind switch
+            {
+                NoAssignmentDigestWireKind when !proto.HasAssignmentDigest => null,
+                ExactAssignmentDigestWireKind when proto.HasAssignmentDigest =>
+                    new ApprovalAssignmentDigest(proto.AssignmentDigest),
+                _ => throw new InvalidOperationException(
+                    "The approval assignment constraint has an invalid wire form."),
+            };
+        }
+        catch (ArgumentException ex)
+        {
+            throw new InvalidOperationException(
+                "The approval assignment constraint has an invalid wire form.",
+                ex);
+        }
+    }
 
     private static Proto.ToolApprovalRequestedProto.Types.TurnContextRecordProto ToProto(TurnContextRecord record)
     {

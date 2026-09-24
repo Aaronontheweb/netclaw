@@ -357,9 +357,10 @@ public sealed class ShellPolicyPathFactsTests
         return new ShellPolicyEvaluation(Assert.IsType<ShellPolicyProjection>(projection));
     }
 
-    private static ApprovalCandidate BashCandidate(string verb, string directory) => new(verb, directory)
-    {
-        Shell = ApprovalShell.Bash,
-        VerbTokens = Array.AsReadOnly(verb.Split(' ', StringSplitOptions.RemoveEmptyEntries))
-    };
+    private static ApprovalCandidate BashCandidate(string verb, string directory) =>
+        new(verb, directory)
+        {
+            Shell = ApprovalShell.Bash,
+            VerbTokens = Array.AsReadOnly(verb.Split(' ', StringSplitOptions.RemoveEmptyEntries))
+        };
 }

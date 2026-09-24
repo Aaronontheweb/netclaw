@@ -68,7 +68,9 @@ internal sealed record ShellPolicyCandidate(
 
     internal bool CanMatchStoredGrant => Role != ShellPolicyCandidateRole.CausalIntentConsumer;
 
-    internal bool CanUseRealReviewedSafePolicy => Role == ShellPolicyCandidateRole.Ordinary;
+    internal bool CanUseRealReviewedSafePolicy =>
+        Role == ShellPolicyCandidateRole.Ordinary
+        && Candidate.AssignmentDigest is null;
 }
 
 /// <summary>

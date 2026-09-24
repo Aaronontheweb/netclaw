@@ -149,6 +149,24 @@ public sealed class ReviewedSafeShellPolicyTests : IDisposable
     }
 
     [Fact]
+    public void Assignment_qualified_safe_verb_does_not_short_circuit()
+    {
+        var policy = CreatePolicy(VerbList("grep"));
+        var ctx = PersonalContext(projectDir: _projectDir);
+        var parsed = Candidate("grep", _projectDir);
+        var digest = new ApprovalAssignmentDigest($"sha256:{new string('a', 64)}");
+        var qualified = parsed with
+        {
+            AssignmentDigest = digest,
+        };
+
+        Assert.False(AllShortCircuit(policy, [qualified], _projectDir, ctx));
+        Assert.False(policy.IsReviewedDiagnosticInvocation(
+            [qualified],
+            ShellPathStyle.Posix));
+    }
+
+    [Fact]
     public void Safe_verb_in_session_directory_short_circuits()
     {
         var policy = CreatePolicy(VerbList("cat"));

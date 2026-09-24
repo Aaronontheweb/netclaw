@@ -258,6 +258,11 @@ internal sealed class ReviewedSafeShellPolicy
         out ApprovalShell shell)
     {
         shell = default;
+        if (candidate.AssignmentDigest is not null)
+        {
+            return false;
+        }
+
         if (candidate is not { Shell: { } candidateShell })
             return false;
 

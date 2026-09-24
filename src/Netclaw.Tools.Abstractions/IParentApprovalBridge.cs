@@ -77,15 +77,28 @@ public sealed class ParentApprovalUnavailableException : InvalidOperationExcepti
 /// session can record folder-scoped grants from the actual paths the sub-agent
 /// touched, not just the cwd.
 /// </summary>
-public sealed record ParentApprovalCandidate(string Verb, string? Directory)
+public sealed record ParentApprovalCandidate(
+    string Verb,
+    string? Directory)
 {
+    private ApprovalAssignmentDigest? _assignmentDigest;
+
+    /// <summary>The exact bounded shell-assignment digest, when present.</summary>
+    public ApprovalAssignmentDigest? AssignmentDigest
+    {
+        get => _assignmentDigest;
+        init => _assignmentDigest = value is { } digest
+            ? new ApprovalAssignmentDigest(digest.Value)
+            : null;
+    }
+
     /// <summary>The immutable parser-owned canonical verb tokens.</summary>
     public IReadOnlyList<string>? VerbTokens { get; init; }
 
     /// <summary>The native shell grammar that produced the candidate.</summary>
     public ApprovalShell? Shell { get; init; }
 
-    /// <summary>Retains the released candidate identity contract.</summary>
+    /// <summary>Compares the public candidate identity.</summary>
     public bool Equals(ParentApprovalCandidate? other) =>
         other is not null &&
         string.Equals(Verb, other.Verb, StringComparison.Ordinal) &&

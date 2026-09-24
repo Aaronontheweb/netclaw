@@ -693,6 +693,72 @@ public sealed class ToolApprovalActorTests : TestKit
     }
 
     [Fact]
+    public async Task Persistent_assignment_grant_requires_the_same_exact_digest()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var tempFile = Path.GetTempFileName();
+        try
+        {
+            var store = CreateStore(tempFile);
+            var actor = Sys.ActorOf(ToolApprovalActor.CreateProps(store));
+            var service = CreateService(actor);
+            var firstDigest = new ApprovalAssignmentDigest($"sha256:{new string('a', 64)}");
+            var secondDigest = new ApprovalAssignmentDigest($"sha256:{new string('b', 64)}");
+            var candidate = BashCandidate("inspect") with
+            {
+                AssignmentDigest = firstDigest,
+            };
+
+            await service.RecordApprovalCandidatesAsync(
+                (ToolApprovalSessionId)"session-a",
+                TrustAudience.Personal,
+                new ToolName("shell_execute"),
+                [new ToolApprovalGrant(candidate, Directory: null)],
+                persistent: true,
+                ct);
+
+            var entry = Assert.Single(
+                store.GetApprovedEntries(TrustAudience.Personal, "shell_execute"));
+            Assert.Equal(firstDigest, entry.AssignmentDigest);
+            var matching = await service.CheckApprovalAsync(
+                "session-b",
+                TrustAudience.Personal,
+                new ToolName("shell_execute"),
+                [candidate],
+                cwd: null,
+                ct);
+            var changed = await service.CheckApprovalAsync(
+                "session-b",
+                TrustAudience.Personal,
+                new ToolName("shell_execute"),
+                [candidate with
+                {
+                    AssignmentDigest = secondDigest,
+                }],
+                cwd: null,
+                ct);
+            var unqualified = await service.CheckApprovalAsync(
+                "session-b",
+                TrustAudience.Personal,
+                new ToolName("shell_execute"),
+                [candidate with { AssignmentDigest = null }],
+                cwd: null,
+                ct);
+
+            Assert.Empty(matching.UnapprovedPatterns);
+            Assert.Single(matching.ApprovedMatches);
+            Assert.Equal(["inspect"], changed.UnapprovedPatterns);
+            Assert.Empty(changed.ApprovedMatches);
+            Assert.Equal(["inspect"], unqualified.UnapprovedPatterns);
+            Assert.Empty(unqualified.ApprovedMatches);
+        }
+        finally
+        {
+            File.Delete(tempFile);
+        }
+    }
+
+    [Fact]
     public async Task Persistent_phrase_uses_parser_tokens_when_legacy_projection_is_shorter()
     {
         var ct = TestContext.Current.CancellationToken;

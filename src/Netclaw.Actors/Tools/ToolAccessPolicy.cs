@@ -703,7 +703,7 @@ public sealed class ToolAccessPolicy
 
         var decision = _pathAccessPolicy.Evaluate(rawPath, context, request.Operation);
         return decision is PathAccessPolicy.PathAccessDecision.Denied
-            { Failure: PathAccessPolicy.PathAccessFailure.AccessDenied } denied
+        { Failure: PathAccessPolicy.PathAccessFailure.AccessDenied } denied
             ? ToolAuthorizationDecision.Deny("path_access_denied", denied.Error)
             : null;
     }
@@ -851,7 +851,8 @@ public sealed class ToolAccessPolicy
                     isMessy,
                     hasReusablePhrase,
                     directoryApprovalAvailable),
-                repository is not null);
+                repository is not null,
+                HasAssignmentDigest(candidates));
         }
 
         var approvalContext = new ToolApprovalContext(
@@ -983,7 +984,8 @@ public sealed class ToolAccessPolicy
                         context.Cwd,
                         sessionOwnedDirectories,
                         pathStyle)),
-                repository is not null);
+                repository is not null,
+                HasAssignmentDigest(unapprovedCandidates));
         }
 
         return context with
@@ -1107,7 +1109,8 @@ public sealed class ToolAccessPolicy
     /// </summary>
     private static IReadOnlyList<ToolApprovalOption> BuildApprovalOptions(
         ApprovalOptionProfile profile,
-        bool includeRepository)
+        bool includeRepository,
+        bool hasAssignmentDigest)
     {
         if (profile is ApprovalOptionProfile.OneShotOnly)
         {
@@ -1121,26 +1124,48 @@ public sealed class ToolAccessPolicy
         var options = new List<ToolApprovalOption>(6)
         {
             new ToolApprovalOption(ApprovalOptionKeys.ApproveOnceKey, ApprovalOptionKeys.ApproveOnceLabel),
-            new ToolApprovalOption(ApprovalOptionKeys.ApproveSessionKey, ApprovalOptionKeys.ApproveSessionLabel)
+            new ToolApprovalOption(
+                hasAssignmentDigest
+                    ? ApprovalOptionKeys.ApproveAssignmentSessionV1Key
+                    : ApprovalOptionKeys.ApproveSessionKey,
+                ApprovalOptionKeys.ApproveSessionLabel)
         };
 
         if (profile is ApprovalOptionProfile.StandardWithDirectory)
         {
-            options.Add(new ToolApprovalOption(ApprovalOptionKeys.ApproveAlwaysKey, ApprovalOptionKeys.ApproveAlwaysLabel));
+            options.Add(new ToolApprovalOption(
+                hasAssignmentDigest
+                    ? ApprovalOptionKeys.ApproveAssignmentAlwaysV1Key
+                    : ApprovalOptionKeys.ApproveAlwaysKey,
+                ApprovalOptionKeys.ApproveAlwaysLabel));
         }
 
         if (includeRepository)
-            options.Add(new ToolApprovalOption(ApprovalOptionKeys.ApproveRepositoryKey, ApprovalOptionKeys.ApproveRepositoryLabel));
+        {
+            options.Add(new ToolApprovalOption(
+                hasAssignmentDigest
+                    ? ApprovalOptionKeys.ApproveAssignmentRepositoryV1Key
+                    : ApprovalOptionKeys.ApproveRepositoryKey,
+                ApprovalOptionKeys.ApproveRepositoryLabel));
+        }
 
         options.Add(new ToolApprovalOption(
-            ApprovalOptionKeys.ApproveEverywhereKey,
+            hasAssignmentDigest
+                ? ApprovalOptionKeys.ApproveAssignmentEverywhereV1Key
+                : ApprovalOptionKeys.ApproveEverywhereKey,
             ApprovalOptionKeys.LabelFor(
-                ApprovalOptionKeys.ApproveEverywhere,
+                hasAssignmentDigest
+                    ? ApprovalOptionKeys.ApproveAssignmentEverywhereV1
+                    : ApprovalOptionKeys.ApproveEverywhere,
                 profile is ApprovalOptionProfile.McpTool)));
         options.Add(new ToolApprovalOption(ApprovalOptionKeys.DenyKey, ApprovalOptionKeys.DenyLabel));
 
         return options;
     }
+
+    internal static bool HasAssignmentDigest(IReadOnlyList<ApprovalCandidate> candidates)
+        => candidates.Any(static candidate =>
+            candidate.AssignmentDigest is not null);
 
     private static string? ResolveOfferedRepository(
         ToolName toolName,

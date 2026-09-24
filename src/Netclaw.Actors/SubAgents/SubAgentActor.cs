@@ -1573,6 +1573,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                                     candidate.Verb,
                                     candidate.Directory)
                                 {
+                                    AssignmentDigest = candidate.AssignmentDigest,
                                     Shell = candidate.Shell,
                                     VerbTokens = candidate.VerbTokens,
                                 }).ToList()
