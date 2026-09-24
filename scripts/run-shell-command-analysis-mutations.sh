@@ -28,19 +28,23 @@ find_span() {
   ' "$context_marker" "$start_marker" "$end_marker" "$source_file"
 }
 
-run_target() {
+run_group() {
   local config_file="$1"
-  local source_name="$2"
-  local span_start="$3"
-  local span_end="$4"
-  local target_output="$5"
-  local expected_count="$6"
+  local target_output="$2"
+  local expected_count="$3"
+  shift 3
+
+  local mutate_args=()
+  local mutation
+  for mutation in "$@"; do
+    mutate_args+=(--mutate "$mutation")
+  done
 
   (
     cd "$test_project"
     dotnet stryker \
       --config-file "$config_file" \
-      --mutate "$source_name{$span_start..$span_end}" \
+      "${mutate_args[@]}" \
       --output "$target_output" \
       --skip-version-check
   )
@@ -59,6 +63,8 @@ run_target() {
   fi
 }
 
+security_mutations=()
+
 analysis_file="$repo_root/src/Netclaw.Security/ShellCommandAnalysis.cs"
 read -r region_start region_end < <(
   find_span \
@@ -67,13 +73,7 @@ read -r region_start region_end < <(
     "=> argument.Argument.Kind == ArgKind.DynamicSkip" \
     "&& accountedRegionArguments.Contains(argument.Element);"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellCommandAnalysis.cs" \
-  "$region_start" \
-  "$region_end" \
-  "$output_path/execution-region" \
-  2
+security_mutations+=("ShellCommandAnalysis.cs{$region_start..$region_end}")
 
 policy_file="$repo_root/src/Netclaw.Security/ShellCommandPolicy.cs"
 read -r gate_start gate_end < <(
@@ -83,13 +83,7 @@ read -r gate_start gate_end < <(
     "var denyOnlyDecision = EvaluateDenyOnlyClauses" \
     "return denyOnlyDecision;"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellCommandPolicy.cs" \
-  "$gate_start" \
-  "$gate_end" \
-  "$output_path/deny-only-gate" \
-  1
+security_mutations+=("ShellCommandPolicy.cs{$gate_start..$gate_end}")
 
 read -r trust_start trust_end < <(
   find_span \
@@ -98,13 +92,7 @@ read -r trust_start trust_end < <(
     "if (!tokens[i].IsKnown)" \
     "return false;"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellCommandPolicy.cs" \
-  "$trust_start" \
-  "$trust_end" \
-  "$output_path/deny-only-token-trust" \
-  2
+security_mutations+=("ShellCommandPolicy.cs{$trust_start..$trust_end}")
 
 tree_policy_file="$repo_root/src/Netclaw.Security/ShellFileSystemTreeAccessPolicy.cs"
 read -r tree_decision_start tree_decision_end < <(
@@ -114,13 +102,7 @@ read -r tree_decision_start tree_decision_end < <(
     "var accesses = command.FileSystemTreeAccesses;" \
     "return !CanUseReusableApproval(command, accesses[0]);"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellFileSystemTreeAccessPolicy.cs" \
-  "$tree_decision_start" \
-  "$tree_decision_end" \
-  "$output_path/tree-decision" \
-  7
+security_mutations+=("ShellFileSystemTreeAccessPolicy.cs{$tree_decision_start..$tree_decision_end}")
 
 read -r tree_root_start tree_root_end < <(
   find_span \
@@ -129,13 +111,7 @@ read -r tree_root_start tree_root_end < <(
     "if (!IsReusableTraversal(access.Traversal)" \
     "&& string.Equals(root.Value, cwd.Value, StringComparison.Ordinal);"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellFileSystemTreeAccessPolicy.cs" \
-  "$tree_root_start" \
-  "$tree_root_end" \
-  "$output_path/tree-root" \
-  10
+security_mutations+=("ShellFileSystemTreeAccessPolicy.cs{$tree_root_start..$tree_root_end}")
 
 read -r root_match_start root_match_end < <(
   find_span \
@@ -144,13 +120,7 @@ read -r root_match_start root_match_end < <(
     "=> root switch" \
     "_ => false"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellFileSystemTreeAccessPolicy.cs" \
-  "$root_match_start" \
-  "$root_match_end" \
-  "$output_path/tree-root-correspondence" \
-  3
+security_mutations+=("ShellFileSystemTreeAccessPolicy.cs{$root_match_start..$root_match_end}")
 
 read -r leaf_call_start leaf_call_end < <(
   find_span \
@@ -159,13 +129,7 @@ read -r leaf_call_start leaf_call_end < <(
     "!IsReusableLeafPattern(pattern)" \
     "!IsReusableLeafPattern(pattern)"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellFileSystemTreeAccessPolicy.cs" \
-  "$leaf_call_start" \
-  "$leaf_call_end" \
-  "$output_path/tree-root-leaf-call" \
-  1
+security_mutations+=("ShellFileSystemTreeAccessPolicy.cs{$leaf_call_start..$leaf_call_end}")
 
 read -r leaf_shape_start leaf_shape_end < <(
   find_span \
@@ -174,13 +138,7 @@ read -r leaf_shape_start leaf_shape_end < <(
     "internal static bool IsReusableLeafPattern(" \
     "return separator != 0 && !IsIncompleteUncLeafPattern(pattern, separator);"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellFileSystemTreeAccessPolicy.cs" \
-  "$leaf_shape_start" \
-  "$leaf_shape_end" \
-  "$output_path/tree-root-leaf-shape" \
-  15
+security_mutations+=("ShellFileSystemTreeAccessPolicy.cs{$leaf_shape_start..$leaf_shape_end}")
 
 read -r traversal_start traversal_end < <(
   find_span \
@@ -189,13 +147,7 @@ read -r traversal_start traversal_end < <(
     "=> Enum.IsDefined(traversal)" \
     "or ShellTreeTraversalMode.RecursiveWithoutFollowingLinks;"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellFileSystemTreeAccessPolicy.cs" \
-  "$traversal_start" \
-  "$traversal_end" \
-  "$output_path/tree-traversal" \
-  2
+security_mutations+=("ShellFileSystemTreeAccessPolicy.cs{$traversal_start..$traversal_end}")
 
 read -r nonfile_start nonfile_end < <(
   find_span \
@@ -204,13 +156,7 @@ read -r nonfile_start nonfile_end < <(
     "if (argument.Argument.IsPath" \
     "ShellValueDomain.Unknown => HasMatchingIntegerRange(argument),"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellCommandAnalysis.cs" \
-  "$nonfile_start" \
-  "$nonfile_end" \
-  "$output_path/audited-nonfilesystem" \
-  5
+security_mutations+=("ShellCommandAnalysis.cs{$nonfile_start..$nonfile_end}")
 
 read -r range_start range_end < <(
   find_span \
@@ -219,13 +165,7 @@ read -r range_start range_end < <(
     "=> argument.Value is" \
     "< MaximumReviewedIntegerRangeCardinality;"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellCommandAnalysis.cs" \
-  "$range_start" \
-  "$range_end" \
-  "$output_path/integer-range" \
-  11
+security_mutations+=("ShellCommandAnalysis.cs{$range_start..$range_end}")
 
 read -r status_start status_end < <(
   find_span \
@@ -234,13 +174,7 @@ read -r status_start status_end < <(
     "argument.Argument.Raw == \"\$?\"" \
     "argument.Argument.Raw == \"\$?\""
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "ShellCommandAnalysis.cs" \
-  "$status_start" \
-  "$status_end" \
-  "$output_path/status-parameter" \
-  2
+security_mutations+=("ShellCommandAnalysis.cs{$status_start..$status_end}")
 
 matcher_file="$repo_root/src/Netclaw.Security/IToolApprovalMatcher.cs"
 read -r candidate_start candidate_end < <(
@@ -250,13 +184,7 @@ read -r candidate_start candidate_end < <(
     "if (!result.IsResolved" \
     "return [];"
 )
-run_target \
-  "stryker-shell-command-analysis.json" \
-  "IToolApprovalMatcher.cs" \
-  "$candidate_start" \
-  "$candidate_end" \
-  "$output_path/reusable-candidates" \
-  5
+security_mutations+=("IToolApprovalMatcher.cs{$candidate_start..$candidate_end}")
 
 read -r messy_start messy_end < <(
   find_span \
@@ -265,13 +193,15 @@ read -r messy_start messy_end < <(
     "if (!analysis.IsResolved" \
     "return true;"
 )
-run_target \
+security_mutations+=("IToolApprovalMatcher.cs{$messy_start..$messy_end}")
+
+run_group \
   "stryker-shell-command-analysis.json" \
-  "IToolApprovalMatcher.cs" \
-  "$messy_start" \
-  "$messy_end" \
-  "$output_path/messy-analysis" \
-  6
+  "$output_path/security" \
+  72 \
+  "${security_mutations[@]}"
+
+actor_mutations=()
 
 tool_policy_file="$repo_root/src/Netclaw.Actors/Tools/ToolAccessPolicy.cs"
 read -r mode_start mode_end < <(
@@ -281,13 +211,7 @@ read -r mode_start mode_end < <(
     "=> configuredMode == ToolApprovalMode.Auto" \
     ": configuredMode;"
 )
-run_target \
-  "stryker-config.json" \
-  "Tools/ToolAccessPolicy.cs" \
-  "$mode_start" \
-  "$mode_end" \
-  "$output_path/exact-tree-mode" \
-  4
+actor_mutations+=("Tools/ToolAccessPolicy.cs{$mode_start..$mode_end}")
 
 path_facts_file="$repo_root/src/Netclaw.Actors/Tools/ShellPolicyPathFacts.cs"
 read -r path_fact_start path_fact_end < <(
@@ -297,13 +221,7 @@ read -r path_fact_start path_fact_end < <(
     "facts.Add(CreateFact(" \
     "ShellPathShape.Unknown));"
 )
-run_target \
-  "stryker-config.json" \
-  "Tools/ShellPolicyPathFacts.cs" \
-  "$path_fact_start" \
-  "$path_fact_end" \
-  "$output_path/tree-path-fact" \
-  1
+actor_mutations+=("Tools/ShellPolicyPathFacts.cs{$path_fact_start..$path_fact_end}")
 
 reviewed_file="$repo_root/src/Netclaw.Actors/Tools/ReviewedSafeShellPolicy.cs"
 read -r reviewed_start reviewed_end < <(
@@ -313,10 +231,10 @@ read -r reviewed_start reviewed_end < <(
     "if (ShellFileSystemTreeAccessPolicy.RequiresExactApproval(" \
     "return false;"
 )
-run_target \
+actor_mutations+=("Tools/ReviewedSafeShellPolicy.cs{$reviewed_start..$reviewed_end}")
+
+run_group \
   "stryker-config.json" \
-  "Tools/ReviewedSafeShellPolicy.cs" \
-  "$reviewed_start" \
-  "$reviewed_end" \
-  "$output_path/reviewed-safe-tree" \
-  4
+  "$output_path/actors" \
+  9 \
+  "${actor_mutations[@]}"
