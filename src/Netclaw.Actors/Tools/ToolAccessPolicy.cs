@@ -239,25 +239,24 @@ public sealed class ToolAccessPolicy
         if (!decision.NeedsApproval)
         {
             return new ShellPolicyPreflightResult.Complete(
-                decision,
-                decision.Outcome == ToolAuthorizationOutcome.Allowed ? analysis : null);
+                ToolAuthorizationResult.CreateShell(
+                    decision,
+                    decision.Outcome == ToolAuthorizationOutcome.Allowed ? analysis : null));
         }
 
         if (analysis is null)
         {
             return new ShellPolicyPreflightResult.Complete(
-                decision,
-                authorizedAnalysis: null);
+                ToolAuthorizationResult.CreateShell(decision, authorizedAnalysis: null));
         }
 
         return decision.ApprovalContext is { } approvalContext
             ? new ShellPolicyPreflightResult.Continue(
                 analysis,
-                approvalContext,
-                ShellEnvironment)
+                approvalContext)
             : new ShellPolicyPreflightResult.Complete(
-                ToolAuthorizationDecision.Deny("internal_policy_failure"),
-                authorizedAnalysis: null);
+                ToolAuthorizationResult.Stop(
+                    ToolAuthorizationDecision.Deny("internal_policy_failure")));
     }
 
     private ToolAuthorizationDecision AuthorizeMcpInvocation(

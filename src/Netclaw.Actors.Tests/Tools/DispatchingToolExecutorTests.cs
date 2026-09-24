@@ -1699,12 +1699,11 @@ public partial class DispatchingToolExecutorTests
         var builder = new ShellPolicyDecisionTraceBuilder();
         for (var index = 0; index < 300; index++)
         {
-            builder.AddCoverage(
-                ShellPolicyCoverageSource.ReviewedSafeReal,
-                new ShellPolicyCandidate(
-                    new ShellPolicyCandidateId(index),
-                    BashCandidate($"/usr/bin/tool-{index}"),
-                    SourceOccurrence: null));
+            var candidate = new ShellPolicyCandidate(
+                new ShellPolicyCandidateId(index),
+                BashCandidate($"/usr/bin/tool-{index}"),
+                SourceOccurrence: null);
+            builder.AddCoverage(candidate, ShellCoverageKind.ReviewedSafeReal);
         }
 
         var decision = ToolAuthorizationDecision.Allow(ToolAllowReason.ReviewedSafePolicy);
@@ -1755,12 +1754,11 @@ public partial class DispatchingToolExecutorTests
         var logger = new RecordingLogger<DispatchingToolExecutor>();
         var executor = CreateApprovalGatedShellExecutor(logger: logger);
         var builder = new ShellPolicyDecisionTraceBuilder();
-        builder.AddCoverage(
-                ShellPolicyCoverageSource.ReviewedSafeReal,
-            new ShellPolicyCandidate(
-                new ShellPolicyCandidateId(0),
-                BashCandidate($"/usr/bin/{secret}\r\n\u202Espoof"),
-                SourceOccurrence: null));
+        var candidate = new ShellPolicyCandidate(
+            new ShellPolicyCandidateId(0),
+            BashCandidate($"/usr/bin/{secret}\r\n\u202Espoof"),
+            SourceOccurrence: null);
+        builder.AddCoverage(candidate, ShellCoverageKind.ReviewedSafeReal);
         var trace = builder.Complete(
             ToolAuthorizationDecision.Allow(ToolAllowReason.ReviewedSafePolicy));
 
@@ -1849,15 +1847,27 @@ public partial class DispatchingToolExecutorTests
             expected.CandidateId,
             BashCandidate("git status"),
             RealDirectory: null);
-        var grant = ApprovalEntry.CreateTokenPrefix(
-            ApprovalShell.Bash,
-            ["git", "status"]);
-        var foreignResult = ShellGrantCandidateResult.Persistent(foreign, grant);
+        var foreignResult = ShellGrantCandidateResult.Session(foreign);
 
         Assert.Throws<ArgumentException>(() => ShellApprovalMatchResult.Create(
             [expected],
             persistentStoreFailure: null,
             [foreignResult]));
+    }
+
+    [Fact]
+    public void Persistent_shell_result_rejects_a_grant_for_another_candidate()
+    {
+        var candidate = new ShellGrantCandidate(
+            new ShellPolicyCandidateId(0),
+            BashCandidate("git push"),
+            RealDirectory: null);
+        var grant = ApprovalEntry.CreateTokenPrefix(
+            ApprovalShell.Bash,
+            ["git", "status"]);
+
+        Assert.Throws<ArgumentException>(() =>
+            ShellGrantCandidateResult.Persistent(candidate, grant));
     }
 
     [SlopwatchSuppress("SW001", "This test requires native POSIX symbolic-link behavior.")]
@@ -1896,7 +1906,6 @@ public partial class DispatchingToolExecutorTests
                 SessionId: null,
                 TrustAudience.Personal,
                 new ToolName("shell_execute"),
-                ShellEnvironment,
                 [requestCandidate]);
 
             await Assert.ThrowsAsync<ArgumentException>(() =>

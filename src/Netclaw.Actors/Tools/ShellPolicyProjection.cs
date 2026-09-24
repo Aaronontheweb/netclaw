@@ -18,21 +18,10 @@ internal enum ShellCoverageKind
     PersistentGlobal = 3,
     PersistentFolder = 4,
     ReviewedSafePolicy = 5,
-    Denied = 6,
-    PersistentRepository = 7,
-}
-
-internal enum ShellPolicyCoverageSource
-{
-    Uncovered = 0,
-    OneTime = 1,
-    Session = 2,
-    PersistentGlobal = 3,
-    PersistentFolder = 4,
-    ReviewedSafeReal = 5,
-    ReviewedSafeIntent = 6,
-    ApprovalExemptSideEffect = 7,
-    PersistentRepository = 8,
+    PersistentRepository = 6,
+    ReviewedSafeReal = 7,
+    ReviewedSafeIntent = 8,
+    ApprovalExemptSideEffect = 9,
 }
 
 internal readonly record struct ShellPolicyCandidateId
@@ -66,7 +55,9 @@ internal sealed record ShellPolicyCandidate(
 
     internal IReadOnlyList<ShellPolicyCandidateId> IntentPrerequisites { get; init; } = [];
 
-    internal bool CanMatchStoredGrant => Role != ShellPolicyCandidateRole.CausalIntentConsumer;
+    internal bool CanRequestStoredGrant =>
+        Role != ShellPolicyCandidateRole.CausalIntentConsumer
+        && !ApprovalPatternMatching.IsPureSideEffect(Candidate);
 
     internal bool CanUseRealReviewedSafePolicy =>
         Role == ShellPolicyCandidateRole.Ordinary
@@ -83,7 +74,6 @@ internal sealed record ShellPolicyProjection
         InteractiveApprovalCapability interactiveApproval,
         ToolApprovalContext approvalContext,
         IReadOnlyList<ShellPolicyCandidate> candidates,
-        IReadOnlyList<ShellPolicyCandidatePathFacts> pathFacts,
         IReadOnlySet<string> approvedOneTimeKeys,
         string? approvedOneTimeToolName)
     {
@@ -91,12 +81,6 @@ internal sealed record ShellPolicyProjection
         InteractiveApproval = interactiveApproval;
         ApprovalContext = approvalContext;
         Candidates = candidates;
-        GrantCandidates = Array.AsReadOnly(candidates
-            .Where(static candidate =>
-                candidate.CanMatchStoredGrant
-                && !ApprovalPatternMatching.IsPureSideEffect(candidate.Candidate))
-            .ToArray());
-        PathFacts = pathFacts;
         ApprovedOneTimeKeys = approvedOneTimeKeys;
         ApprovedOneTimeToolName = approvedOneTimeToolName;
     }
@@ -109,13 +93,9 @@ internal sealed record ShellPolicyProjection
 
     internal IReadOnlyList<ShellPolicyCandidate> Candidates { get; }
 
-    internal IReadOnlyList<ShellPolicyCandidatePathFacts> PathFacts { get; }
-
     internal IReadOnlySet<string> ApprovedOneTimeKeys { get; }
 
     internal string? ApprovedOneTimeToolName { get; }
-
-    internal IReadOnlyList<ShellPolicyCandidate> GrantCandidates { get; }
 
     internal bool HasCausalIntent => Candidates.Any(static candidate =>
         candidate.Role != ShellPolicyCandidateRole.Ordinary);
@@ -265,7 +245,6 @@ internal sealed record ShellPolicyProjection
             context.RunScope.InteractiveApproval,
             contextCopy,
             candidateView,
-            ShellPolicyPathFacts.Create(candidateView, environment.PathStyle),
             context.Approval.OneTimeApprovedPatterns.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
             context.Approval.OneTimeApprovedToolName);
     }

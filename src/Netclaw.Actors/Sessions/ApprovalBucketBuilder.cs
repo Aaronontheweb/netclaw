@@ -8,57 +8,85 @@ using Netclaw.Security;
 
 namespace Netclaw.Actors.Sessions;
 
-internal sealed record ApprovalGrantContext
+internal abstract record ApprovalGrantScope
 {
-    private ApprovalGrantContext(
-        ApprovalDecision decision,
-        string? workingDirectory,
-        string sessionDirectory,
-        string? repositoryCommonDirectory)
+    private ApprovalGrantScope()
     {
-        Decision = decision;
-        WorkingDirectory = workingDirectory;
-        SessionDirectory = sessionDirectory;
-        RepositoryCommonDirectory = repositoryCommonDirectory;
     }
 
-    public ApprovalDecision Decision { get; }
+    internal sealed record Session : ApprovalGrantScope
+    {
+        private Session()
+        {
+        }
 
-    public string? WorkingDirectory { get; }
+        internal static Session Instance { get; } = new();
+    }
 
-    public string SessionDirectory { get; }
+    internal sealed record Folder : ApprovalGrantScope
+    {
+        private Folder(string? workingDirectory, string sessionDirectory)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(sessionDirectory);
+            WorkingDirectory = workingDirectory;
+            SessionDirectory = sessionDirectory;
+        }
 
-    public string? RepositoryCommonDirectory { get; }
+        internal string? WorkingDirectory { get; }
 
-    public bool IsPersistent => Decision is not ApprovalDecision.ApprovedSession;
+        internal string SessionDirectory { get; }
 
-    public static ApprovalGrantContext FromDecision(
+        internal static Folder Create(string? workingDirectory, string sessionDirectory) =>
+            new(workingDirectory, sessionDirectory);
+    }
+
+    internal sealed record Repository : ApprovalGrantScope
+    {
+        private Repository(string? workingDirectory, string commonDirectory)
+        {
+            ArgumentException.ThrowIfNullOrWhiteSpace(commonDirectory);
+            WorkingDirectory = workingDirectory;
+            CommonDirectory = commonDirectory;
+        }
+
+        internal string? WorkingDirectory { get; }
+
+        internal string CommonDirectory { get; }
+
+        internal static Repository Create(string? workingDirectory, string commonDirectory) =>
+            new(workingDirectory, commonDirectory);
+    }
+
+    internal sealed record Global : ApprovalGrantScope
+    {
+        private Global()
+        {
+        }
+
+        internal static Global Instance { get; } = new();
+    }
+
+    internal static ApprovalGrantScope FromDecision(
         ApprovalDecision decision,
         string? workingDirectory,
         string sessionDirectory,
         string? repositoryCommonDirectory)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionDirectory);
-        if (decision is not (
-                ApprovalDecision.ApprovedSession
-                or ApprovalDecision.ApprovedAlways
-                or ApprovalDecision.ApprovedRepository
-                or ApprovalDecision.ApprovedEverywhere))
+        return decision switch
         {
-            throw new ArgumentOutOfRangeException(
+            ApprovalDecision.ApprovedSession => Session.Instance,
+            ApprovalDecision.ApprovedAlways => Folder.Create(workingDirectory, sessionDirectory),
+            ApprovalDecision.ApprovedRepository when !string.IsNullOrWhiteSpace(repositoryCommonDirectory) =>
+                Repository.Create(workingDirectory, repositoryCommonDirectory),
+            ApprovalDecision.ApprovedRepository =>
+                throw new InvalidOperationException("The repository option lacks its offered identity."),
+            ApprovalDecision.ApprovedEverywhere => Global.Instance,
+            _ => throw new ArgumentOutOfRangeException(
                 nameof(decision),
                 decision,
-                "The approval decision cannot create a reusable grant.");
-        }
-
-        if (decision == ApprovalDecision.ApprovedRepository
-            && string.IsNullOrWhiteSpace(repositoryCommonDirectory))
-        {
-            throw new InvalidOperationException("The repository option lacks its offered identity.");
-        }
-
-        return new ApprovalGrantContext(
-            decision, workingDirectory, sessionDirectory, repositoryCommonDirectory);
+                "The approval decision cannot create a reusable grant."),
+        };
     }
 }
 
@@ -66,50 +94,61 @@ internal static class ApprovalBucketBuilder
 {
     public static IReadOnlyList<ToolApprovalGrant> BuildGrants(
         IReadOnlyList<ApprovalCandidate> candidates,
-        ApprovalGrantContext context)
+        ApprovalGrantScope scope)
     {
-        var grants = new List<ToolApprovalGrant>(candidates.Count);
         var grantCandidates = candidates
             .Where(static candidate => !ApprovalPatternMatching.IsPureSideEffect(candidate))
             .ToArray();
-        IReadOnlyList<GitRepositoryApprovalScope>? repositoryScopes = null;
-        if (context.Decision == ApprovalDecision.ApprovedRepository
-            && (!GitRepositoryApprovalScope.TryResolveCandidates(
-                    grantCandidates, context.WorkingDirectory, out repositoryScopes)
-                || !ToolApprovalEntryComparer.Equals(
-                    repositoryScopes![0].CommonDirectory, context.RepositoryCommonDirectory!)))
+        return scope switch
+        {
+            ApprovalGrantScope.Repository repository =>
+                BuildRepositoryGrants(grantCandidates, repository),
+            _ => BuildDirectoryGrants(grantCandidates, scope),
+        };
+    }
+
+    private static IReadOnlyList<ToolApprovalGrant> BuildRepositoryGrants(
+        IReadOnlyList<ApprovalCandidate> candidates,
+        ApprovalGrantScope.Repository repository)
+    {
+        if (!GitRepositoryApprovalScope.TryResolveCandidates(
+                candidates, repository.WorkingDirectory, out var repositoryScopes)
+            || !ToolApprovalEntryComparer.Equals(
+                repositoryScopes![0].CommonDirectory, repository.CommonDirectory))
         {
             throw new InvalidOperationException("The repository identity changed after the prompt.");
         }
 
-        var repositoryScopeIndex = 0;
+        var grants = new List<ToolApprovalGrant>(candidates.Count);
+        for (var index = 0; index < candidates.Count; index++)
+        {
+            var candidate = candidates[index];
+            var repositoryScope = repositoryScopes[index];
+            var resolvedCandidate = candidate with
+            {
+                Directory = repositoryScope.ResolvedDirectory,
+            };
+            grants.Add(new ToolApprovalGrant(resolvedCandidate, Directory: null)
+            {
+                Repository = repositoryScope.CommonDirectory,
+                RepositoryWorktree = repositoryScope.WorktreeRoot,
+            });
+        }
+
+        return grants;
+    }
+
+    private static IReadOnlyList<ToolApprovalGrant> BuildDirectoryGrants(
+        IReadOnlyList<ApprovalCandidate> candidates,
+        ApprovalGrantScope scope)
+    {
+        var grants = new List<ToolApprovalGrant>(candidates.Count);
         foreach (var candidate in candidates)
         {
-            if (ApprovalPatternMatching.IsPureSideEffect(candidate))
-            {
-                continue;
-            }
-
-            if (repositoryScopes is not null)
-            {
-                var repositoryScope = repositoryScopes[repositoryScopeIndex++];
-                var resolvedCandidate = candidate with
-                {
-                    Directory = repositoryScope.ResolvedDirectory,
-                };
-                grants.Add(new ToolApprovalGrant(resolvedCandidate, Directory: null)
-                {
-                    Repository = repositoryScope.CommonDirectory,
-                    RepositoryWorktree = repositoryScope.WorktreeRoot,
-                });
-                continue;
-            }
-
-            var effectiveDirectory = ResolveDirectory(
-                candidate,
-                context);
-            if (context.IsPersistent && effectiveDirectory is not null
-                && PathUtility.AreEquivalentPaths(effectiveDirectory, context.SessionDirectory))
+            var effectiveDirectory = ResolveDirectory(candidate, scope);
+            if (scope is ApprovalGrantScope.Folder folder
+                && effectiveDirectory is not null
+                && PathUtility.AreEquivalentPaths(effectiveDirectory, folder.SessionDirectory))
             {
                 continue;
             }
@@ -126,8 +165,8 @@ internal static class ApprovalBucketBuilder
     /// </summary>
     /// <remarks>
     /// Session-scope entries use <c>candidate.Directory</c> directly without
-    /// a working-directory fallback. The session approval dictionary
-    /// matches verb-only, so threading cwd through here creates buckets that the
+    /// a working-directory fallback. The session approval store matches without
+    /// folder scope, so threading cwd through here creates buckets that the
     /// session-owned guard can drop for standalone verbs such as curl or git status.
     ///
     /// Persistent scope still falls back to the working directory and applies
@@ -136,36 +175,23 @@ internal static class ApprovalBucketBuilder
     /// </remarks>
     public static Dictionary<string, List<string>> Build(
         IReadOnlyList<ApprovalCandidate> candidates,
-        ApprovalGrantContext context)
+        ApprovalGrantScope scope)
     {
-        if (context.Decision == ApprovalDecision.ApprovedRepository)
+        if (scope is ApprovalGrantScope.Repository)
             throw new InvalidOperationException("Repository grants require structured approval storage.");
 
         var grouping = new Dictionary<string, List<string>>(StringComparer.Ordinal);
-
-        foreach (var candidate in candidates)
+        foreach (var grant in BuildGrants(candidates, scope))
         {
-            if (ApprovalPatternMatching.IsPureSideEffect(candidate))
-                continue;
-
-            var effectiveDirectory = ResolveDirectory(
-                candidate,
-                context);
-            if (context.IsPersistent && effectiveDirectory is not null
-                && PathUtility.AreEquivalentPaths(effectiveDirectory, context.SessionDirectory))
-            {
-                continue;
-            }
-
-            var key = effectiveDirectory ?? string.Empty;
+            var key = grant.Directory ?? string.Empty;
             if (!grouping.TryGetValue(key, out var verbs))
             {
                 verbs = [];
                 grouping[key] = verbs;
             }
 
-            if (!verbs.Contains(candidate.Verb, StringComparer.OrdinalIgnoreCase))
-                verbs.Add(candidate.Verb);
+            if (!verbs.Contains(grant.Candidate.Verb, StringComparer.OrdinalIgnoreCase))
+                verbs.Add(grant.Candidate.Verb);
         }
 
         return grouping;
@@ -173,15 +199,15 @@ internal static class ApprovalBucketBuilder
 
     private static string? ResolveDirectory(
         ApprovalCandidate candidate,
-        ApprovalGrantContext context)
-        => context.Decision switch
+        ApprovalGrantScope scope)
+        => scope switch
         {
-            ApprovalDecision.ApprovedSession => candidate.Directory,
-            ApprovalDecision.ApprovedAlways => candidate.Directory ?? context.WorkingDirectory,
-            ApprovalDecision.ApprovedEverywhere => null,
+            ApprovalGrantScope.Session => candidate.Directory,
+            ApprovalGrantScope.Folder folder => candidate.Directory ?? folder.WorkingDirectory,
+            ApprovalGrantScope.Global => null,
             _ => throw new ArgumentOutOfRangeException(
-                nameof(context),
-                context.Decision,
+                nameof(scope),
+                scope,
                 "The grant decision is invalid."),
         };
 }

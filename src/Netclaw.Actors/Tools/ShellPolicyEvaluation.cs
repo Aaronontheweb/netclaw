@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Configuration;
 using Netclaw.Security;
 
 namespace Netclaw.Actors.Tools;
@@ -17,9 +18,14 @@ namespace Netclaw.Actors.Tools;
 /// </remarks>
 internal abstract record ToolAuthorizationResult
 {
-    private protected ToolAuthorizationResult(ToolAuthorizationDecision decision)
+    private protected ToolAuthorizationResult(
+        ToolAuthorizationDecision decision,
+        bool isAllowedResult)
     {
         ArgumentNullException.ThrowIfNull(decision);
+        if ((decision.Outcome == ToolAuthorizationOutcome.Allowed) != isAllowedResult)
+            throw new ArgumentException("The authorization result contradicts its decision.", nameof(decision));
+
         Decision = decision;
     }
 
@@ -30,16 +36,9 @@ internal abstract record ToolAuthorizationResult
         internal ShellExecution(
             ToolAuthorizationDecision decision,
             ShellCommandAnalysis analysis)
-            : base(decision)
+            : base(decision, isAllowedResult: true)
         {
             ArgumentNullException.ThrowIfNull(analysis);
-            if (decision.Outcome != ToolAuthorizationOutcome.Allowed)
-            {
-                throw new ArgumentException(
-                    "A shell execution result requires an allowed decision.",
-                    nameof(decision));
-            }
-
             Analysis = analysis;
         }
 
@@ -49,41 +48,36 @@ internal abstract record ToolAuthorizationResult
     internal sealed record DirectExecution : ToolAuthorizationResult
     {
         internal DirectExecution(ToolAuthorizationDecision decision)
-            : base(decision)
-        {
-            if (decision.Outcome != ToolAuthorizationOutcome.Allowed)
-            {
-                throw new ArgumentException(
-                    "A direct execution result requires an allowed decision.",
-                    nameof(decision));
-            }
-        }
+            : base(decision, isAllowedResult: true) { }
+    }
+
+    internal sealed record ShellValidation : ToolAuthorizationResult
+    {
+        internal ShellValidation(ToolAuthorizationDecision decision)
+            : base(decision, isAllowedResult: true) { }
     }
 
     internal sealed record Stopped : ToolAuthorizationResult
     {
         internal Stopped(ToolAuthorizationDecision decision)
-            : base(decision)
-        {
-            if (decision.Outcome == ToolAuthorizationOutcome.Allowed)
-            {
-                throw new ArgumentException(
-                    "An allowed decision cannot use a stopped result.",
-                    nameof(decision));
-            }
-        }
+            : base(decision, isAllowedResult: false) { }
     }
 
-    internal static ToolAuthorizationResult Create(
+    internal static ToolAuthorizationResult CreateDirect(ToolAuthorizationDecision decision)
+        => decision.Outcome == ToolAuthorizationOutcome.Allowed
+            ? new DirectExecution(decision)
+            : new Stopped(decision);
+
+    internal static ToolAuthorizationResult CreateShell(
         ToolAuthorizationDecision decision,
         ShellCommandAnalysis? authorizedAnalysis)
         => (decision.Outcome, authorizedAnalysis) switch
         {
             (ToolAuthorizationOutcome.Allowed, not null) => new ShellExecution(decision, authorizedAnalysis),
-            (ToolAuthorizationOutcome.Allowed, null) => new DirectExecution(decision),
+            (ToolAuthorizationOutcome.Allowed, null) => new ShellValidation(decision),
             (_, null) => new Stopped(decision),
             _ => throw new ArgumentException(
-                "A stopped result cannot carry a shell analysis.",
+                "A stopped shell result cannot carry analysis.",
                 nameof(authorizedAnalysis)),
         };
 
@@ -99,91 +93,141 @@ internal abstract record ToolAuthorizationResult
 /// </remarks>
 internal abstract record ShellPolicyPreflightResult
 {
-    private protected ShellPolicyPreflightResult(ToolAuthorizationDecision decision)
-    {
-        ArgumentNullException.ThrowIfNull(decision);
-        Decision = decision;
-    }
-
-    internal ToolAuthorizationDecision Decision { get; }
-
     internal sealed record Complete : ShellPolicyPreflightResult
     {
-        internal Complete(
-            ToolAuthorizationDecision decision,
-            ShellCommandAnalysis? authorizedAnalysis)
-            : base(decision)
+        internal Complete(ToolAuthorizationResult result)
         {
-            if (authorizedAnalysis is not null
-                && decision.Outcome != ToolAuthorizationOutcome.Allowed)
+            if (result is not (ToolAuthorizationResult.ShellExecution
+                or ToolAuthorizationResult.ShellValidation
+                or ToolAuthorizationResult.Stopped))
             {
                 throw new ArgumentException(
-                    "Only an immediate shell allow can carry analysis.",
-                    nameof(authorizedAnalysis));
+                    "A shell preflight cannot authorize direct execution.",
+                    nameof(result));
             }
-            AuthorizedAnalysis = authorizedAnalysis;
+
+            Result = result;
         }
 
-        internal ShellCommandAnalysis? AuthorizedAnalysis { get; }
+        internal ToolAuthorizationResult Result { get; }
     }
 
     internal sealed record Continue : ShellPolicyPreflightResult
     {
         internal Continue(
             ShellCommandAnalysis analysis,
-            ToolApprovalContext approvalContext,
-            ShellExecutionEnvironment environment)
-            : base(ToolAuthorizationDecision.RequiresApproval(approvalContext))
+            ToolApprovalContext approvalContext)
         {
             ArgumentNullException.ThrowIfNull(analysis);
             ArgumentNullException.ThrowIfNull(approvalContext);
-            ArgumentNullException.ThrowIfNull(environment);
 
             Analysis = analysis;
             ApprovalContext = approvalContext;
-            Environment = environment;
         }
 
         internal ShellCommandAnalysis Analysis { get; }
 
         internal ToolApprovalContext ApprovalContext { get; }
-
-        internal ShellExecutionEnvironment Environment { get; }
     }
 }
 
 internal sealed class ShellPolicyEvaluation
 {
-    private readonly ShellPolicyCoverageSource[] _coverage;
-    private readonly ShellPolicyDecisionTraceBuilder _trace = new();
-    private ShellApprovalMatchResult? _grantEvidence;
+    internal sealed class CandidateState(
+        ShellPolicyCandidate candidate,
+        ShellPolicyCandidatePathFacts pathFacts)
+    {
+        internal ShellPolicyCandidate Candidate { get; } = candidate;
+        internal ShellPolicyCandidatePathFacts PathFacts { get; } = pathFacts;
+        internal ShellGrantCandidateResult? GrantEvidence { get; private set; }
+        internal int? GrantEvidenceOrder { get; private set; }
+        internal ShellCoverageKind Coverage { get; private set; }
 
-    internal ShellPolicyEvaluation(ShellPolicyProjection projection)
+        internal void ValidateActorEvidence()
+        {
+            if (Coverage != ShellCoverageKind.Uncovered
+                || GrantEvidence is not null
+                || GrantEvidenceOrder is not null)
+            {
+                throw new InvalidOperationException("Shell candidate already has coverage evidence.");
+            }
+        }
+
+        internal void ApplyActorEvidence(ShellGrantCandidateResult evidence, int order)
+        {
+            ArgumentNullException.ThrowIfNull(evidence);
+            if (evidence.CandidateId != Candidate.Id || order < 0)
+                throw new InvalidOperationException("Invalid shell candidate approval evidence.");
+
+            ValidateActorEvidence();
+            (GrantEvidence, GrantEvidenceOrder, Coverage) = (evidence, order, evidence.Coverage);
+        }
+
+        internal void Cover(ShellCoverageKind coverage)
+        {
+            if (coverage is not (ShellCoverageKind.OneTime
+                or ShellCoverageKind.ReviewedSafeReal
+                or ShellCoverageKind.ReviewedSafeIntent
+                or ShellCoverageKind.ApprovalExemptSideEffect))
+            {
+                throw new InvalidOperationException("Invalid shell candidate coverage.");
+            }
+
+            if (Coverage != ShellCoverageKind.Uncovered)
+                throw new InvalidOperationException("Shell candidate coverage was assigned twice.");
+
+            Coverage = coverage;
+        }
+    }
+
+    private readonly IReadOnlyList<CandidateState> _candidates;
+    private readonly ShellPolicyDecisionTraceBuilder _trace;
+    private bool _hasGrantEvidence;
+
+    internal ShellPolicyEvaluation(
+        ShellPolicyProjection projection,
+        ShellPolicyDecisionTraceBuilder trace)
     {
         ArgumentNullException.ThrowIfNull(projection);
+        ArgumentNullException.ThrowIfNull(trace);
 
         Projection = projection;
-        _coverage = new ShellPolicyCoverageSource[projection.Candidates.Count];
+        _trace = trace;
+        var pathFacts = ShellPolicyPathFacts.Create(
+            projection.Candidates,
+            projection.Environment.PathStyle);
+        _candidates = Array.AsReadOnly(projection.Candidates
+            .Select((candidate, index) => new CandidateState(candidate, pathFacts[index]))
+            .ToArray());
     }
 
     internal ShellPolicyProjection Projection { get; }
 
     internal IReadOnlyList<ShellPolicyCandidate> Candidates => Projection.Candidates;
 
-    internal bool AllCovered => !_coverage.Contains(ShellPolicyCoverageSource.Uncovered);
+    internal IReadOnlyList<CandidateState> CandidateStates => _candidates;
+
+    internal IEnumerable<CandidateState> GrantCandidates =>
+        _candidates.Where(static state => state.Candidate.CanRequestStoredGrant);
+
+    internal bool AllCovered => _candidates.All(static state =>
+        state.Coverage != ShellCoverageKind.Uncovered);
 
     internal IReadOnlyList<ShellPolicyCandidate> UncoveredCandidates =>
-        Array.AsReadOnly(Projection.Candidates
-            .Where((_, index) => _coverage[index] == ShellPolicyCoverageSource.Uncovered)
+        Array.AsReadOnly(_candidates
+            .Where(static state => state.Coverage == ShellCoverageKind.Uncovered)
+            .Select(static state => state.Candidate)
             .ToArray());
 
-    internal ShellApprovalMatchResult? GrantEvidence => _grantEvidence;
+    internal ApprovalStoreFailure? PersistentStoreFailure { get; private set; }
 
     internal IReadOnlyList<ToolApprovalMatch> ApprovalMatches =>
-        _grantEvidence?.Candidates
-            .Where(static result => result.Coverage != ShellCoverageKind.Uncovered)
-            .Select(result => result.FormatMatch(Candidates[result.CandidateId.Value].Candidate))
-            .ToArray() ?? [];
+        _candidates
+            .Where(static state => state.GrantEvidence is
+                { Coverage: not ShellCoverageKind.Uncovered })
+            .OrderBy(static state => state.GrantEvidenceOrder)
+            .Select(static state => state.GrantEvidence!.FormatMatch(state.Candidate.Candidate))
+            .ToArray();
 
     internal ToolApprovalContext GetUncoveredApprovalContext(
         IReadOnlyCollection<string> sessionOwnedDirectories)
@@ -201,53 +245,59 @@ internal sealed class ShellPolicyEvaluation
                 Projection.Environment.PathStyle);
     }
 
-    internal ShellPolicyCoverageSource CoverageFor(ShellPolicyCandidateId candidateId)
-    {
-        var index = candidateId.Value;
-        if ((uint)index >= (uint)_coverage.Length)
-            throw new ArgumentOutOfRangeException(nameof(candidateId));
-
-        return _coverage[index];
-    }
-
     internal bool IsCovered(ShellPolicyCandidateId candidateId)
     {
-        return CoverageFor(candidateId) != ShellPolicyCoverageSource.Uncovered;
+        var index = candidateId.Value;
+        if ((uint)index >= (uint)_candidates.Count)
+            throw new ArgumentOutOfRangeException(nameof(candidateId));
+
+        return _candidates[index].Coverage != ShellCoverageKind.Uncovered;
     }
 
     internal void ApplyActorEvidence(ShellApprovalMatchResult evidence)
     {
         ArgumentNullException.ThrowIfNull(evidence);
-        if (_grantEvidence is not null)
+        if (_hasGrantEvidence)
             throw new InvalidOperationException("Invalid shell approval evidence.");
 
-        _grantEvidence = evidence;
-        foreach (var candidateEvidence in evidence.Candidates)
+        var currentCandidates = GrantCandidates
+            .Select(state => new ShellGrantCandidate(
+                state.Candidate.Id,
+                state.Candidate.Candidate,
+                Projection.ApprovalContext.Cwd))
+            .ToArray();
+        evidence = ShellApprovalMatchResult.Create(
+            currentCandidates,
+            evidence.PersistentStoreFailure,
+            evidence.Candidates);
+
+        var states = new CandidateState[evidence.Candidates.Count];
+        for (var order = 0; order < evidence.Candidates.Count; order++)
         {
+            var candidateEvidence = evidence.Candidates[order];
             var candidateId = candidateEvidence.CandidateId;
             if ((uint)candidateId.Value >= (uint)Candidates.Count)
                 throw new InvalidOperationException("Invalid shell approval evidence.");
 
-            var candidate = Candidates[candidateId.Value];
-            if (candidateEvidence.Coverage != ShellCoverageKind.Uncovered)
-            {
-                Cover(
-                    candidate,
-                    ToCoverageSource(candidateEvidence.Coverage),
-                    candidateEvidence.GrantCreatedAt);
-            }
-            else
-            {
-                _trace.AddActorEvidence(candidate, candidateEvidence);
-            }
+            var state = _candidates[candidateId.Value];
+            state.ValidateActorEvidence();
+            states[order] = state;
         }
 
+        PersistentStoreFailure = evidence.PersistentStoreFailure;
+        _hasGrantEvidence = true;
+        for (var order = 0; order < evidence.Candidates.Count; order++)
+        {
+            var candidateEvidence = evidence.Candidates[order];
+            var state = states[order];
+            state.ApplyActorEvidence(candidateEvidence, order);
+            _trace.AddActorEvidence(state.Candidate, candidateEvidence);
+        }
     }
 
     internal void Cover(
         ShellPolicyCandidate candidate,
-        ShellPolicyCoverageSource source,
-        DateTimeOffset? grantTimestamp = null)
+        ShellCoverageKind coverage)
     {
         ArgumentNullException.ThrowIfNull(candidate);
 
@@ -255,25 +305,15 @@ internal sealed class ShellPolicyEvaluation
         if ((uint)index >= (uint)Candidates.Count)
             throw new InvalidOperationException("Invalid shell candidate ID.");
 
-        if (!ReferenceEquals(candidate, Projection.Candidates[index]))
+        var state = _candidates[index];
+        if (!ReferenceEquals(candidate, state.Candidate))
             throw new InvalidOperationException("Shell candidate facts changed.");
 
-        if (_coverage[index] != ShellPolicyCoverageSource.Uncovered)
-            throw new InvalidOperationException("Shell candidate coverage was assigned twice.");
-
-        if (!Enum.IsDefined(source)
-            || source == ShellPolicyCoverageSource.Uncovered
-            || grantTimestamp is not null
-            && source is not
-                (ShellPolicyCoverageSource.PersistentGlobal
-                or ShellPolicyCoverageSource.PersistentFolder
-                or ShellPolicyCoverageSource.PersistentRepository))
-        {
-            throw new InvalidOperationException("Invalid shell candidate coverage.");
-        }
-
-        _trace.AddCoverage(source, candidate, grantTimestamp);
-        _coverage[index] = source;
+        state.Cover(coverage);
+        _trace.AddCoverage(
+            state.Candidate,
+            state.Coverage,
+            state.GrantEvidence?.GrantCreatedAt);
     }
 
     internal ToolAuthorizationDecision Complete(
@@ -298,16 +338,4 @@ internal sealed class ShellPolicyEvaluation
         return decision.WithShellPolicyTrace(_trace.Complete(decision));
     }
 
-    internal ToolAuthorizationDecision InternalFailure() => Complete(
-        ToolAuthorizationDecision.Deny("internal_policy_failure"));
-
-    private static ShellPolicyCoverageSource ToCoverageSource(ShellCoverageKind coverage)
-        => coverage switch
-        {
-            ShellCoverageKind.Session => ShellPolicyCoverageSource.Session,
-            ShellCoverageKind.PersistentGlobal => ShellPolicyCoverageSource.PersistentGlobal,
-            ShellCoverageKind.PersistentFolder => ShellPolicyCoverageSource.PersistentFolder,
-            ShellCoverageKind.PersistentRepository => ShellPolicyCoverageSource.PersistentRepository,
-            _ => throw new InvalidOperationException("Invalid actor coverage kind."),
-        };
 }
