@@ -48,6 +48,55 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
     {
     }
 
+    [Fact]
+    public async Task Duplicate_source_message_is_acknowledged_without_a_second_turn()
+    {
+        var sessionId = new SessionId("admission/journal-before-ack");
+        var manager = ActorRegistry.Get<SessionManagerActorKey>();
+        var subscriber = CreateTestProbe("admission-subscriber");
+        await JoinSessionAsync(manager, subscriber, sessionId);
+
+        var source = new MessageSource
+        {
+            ChannelType = ChannelType.SignalR,
+            SenderId = new SenderId("operator-1"),
+            ChannelId = "operator-channel",
+            MessageId = "source-event-1",
+            TurnId = new Netclaw.Actors.Protocol.TurnId("source-turn-1"),
+            Audience = TrustAudience.Personal,
+            Boundary = TrustBoundary.Personal,
+            Principal = PrincipalClassification.Operator,
+            Provenance = new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Trusted),
+            ReceivedAt = _timeProvider.GetUtcNow()
+        };
+
+        await manager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Finish the operator task",
+            Source = source
+        }, TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        await subscriber.FishForMessageAsync<TurnCompleted>(
+            _ => true,
+            TimeSpan.FromSeconds(3),
+            cancellationToken: TestContext.Current.CancellationToken);
+        var callCount = _fakeChatClient.CallCount;
+
+        var duplicateAck = await manager.Ask<CommandAck>(new SendUserMessage
+        {
+            SessionId = sessionId,
+            Content = "Finish the operator task",
+            Source = source
+        }, TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken);
+
+        Assert.Equal(sessionId, duplicateAck.SessionId);
+        await subscriber.ExpectNoMsgAsync(
+            TimeSpan.FromMilliseconds(250),
+            TestContext.Current.CancellationToken);
+        Assert.Equal(callCount, _fakeChatClient.CallCount);
+    }
+
     protected override void ConfigureSessionServices(IServiceCollection services)
     {
         services.AddSingleton<IChatClientProvider>(new SingleClientProvider(_fakeChatClient));
