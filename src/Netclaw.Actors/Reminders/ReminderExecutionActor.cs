@@ -115,15 +115,21 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
     /// <summary>
     /// Builds the execution actor for a <c>netclaw reminder run</c> manual
     /// invocation. There is no scheduler envelope for a manual run — see
-    /// <see cref="_envelope"/>.
+    /// <see cref="_envelope"/>. <paramref name="startedAt"/> is the manager's
+    /// own <c>StartManualExecution</c> timestamp, passed in rather than
+    /// re-derived from <paramref name="timeProvider"/> here: the manager needs
+    /// to know the exact session ID (derived from this timestamp — see
+    /// <see cref="OccurrenceTimeUtc"/>) before this actor finishes
+    /// initializing, so both must agree on the same instant.
     /// </summary>
     public static Props CreateManualProps(
         Guid executionId,
         ReminderDefinition definition,
         ISessionPipeline pipeline,
-        TimeProvider timeProvider) =>
+        TimeProvider timeProvider,
+        DateTimeOffset startedAt) =>
         Props.Create(() => new ReminderExecutionActor(
-            executionId, definition, pipeline, timeProvider, envelope: null, ReminderExecutionSource.Manual));
+            executionId, definition, pipeline, timeProvider, envelope: null, ReminderExecutionSource.Manual, startedAt));
 
     public ReminderExecutionActor(
         Guid executionId,
@@ -131,14 +137,15 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
         ISessionPipeline pipeline,
         TimeProvider timeProvider,
         ReminderEnvelope<ReminderPayload>? envelope,
-        ReminderExecutionSource source)
+        ReminderExecutionSource source,
+        DateTimeOffset? dispatchedAtOverride = null)
     {
         _executionId = executionId;
         _definition = definition;
         _timeProvider = timeProvider;
         _envelope = envelope;
         _source = source;
-        _dispatchedAt = timeProvider.GetUtcNow();
+        _dispatchedAt = dispatchedAtOverride ?? timeProvider.GetUtcNow();
         _log = Context.GetLogger();
         _handle = new SessionPipelineHandle(pipeline, _log, "reminder-exec");
 
@@ -201,7 +208,14 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
                 new SessionPipelineOptions
                 {
                     ChannelType = Channels.ChannelType.Reminder,
-                    Filter = OutputFilter.TextStreaming | OutputFilter.ToolCalls
+                    // Both Text and TextStreaming: some providers emit only a
+                    // final assembled TextOutput with no intermediate
+                    // TextDeltaOutput, which left ExecutionOutputAccumulator's
+                    // buffer empty for `netclaw reminder run`'s reply text.
+                    // ExecutionOutputAccumulator already guards against double
+                    // counting (_sawTextDelta) when a provider streams deltas
+                    // AND a final TextOutput, so subscribing to both is safe.
+                    Filter = OutputFilter.Text | OutputFilter.TextStreaming | OutputFilter.ToolCalls
                 },
                 output => self.Tell(new ExecutionOutput(output)),
                 (_, failure) => self.Tell(new OutputStreamTerminated(failure)));
@@ -553,7 +567,7 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
                     _log.Info(
                         $"ReminderExecution Completed: execution_id={_executionId} reminder_id={_definition.Id} title={_definition.Title} success={success} output_length={result.Length} notify_attempted={_accumulator.NotifyAttempted} notify_failed={_accumulator.NotifyFailed} dispatched_at={_dispatchedAt} completed_at={_timeProvider.GetUtcNow()}");
 
-                    ReportOutcome(success, notifyFailureMessage);
+                    ReportOutcome(success, notifyFailureMessage, replyText: result);
                     break;
                 }
 
@@ -565,7 +579,7 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
                         _log.Error(_accumulator.LastErrorCause, "{0}\n{1}", failedMsg, _accumulator.LastErrorCause.ToString());
                     else
                         _log.Warning("{0}", failedMsg);
-                    ReportOutcome(false, _accumulator.LastErrorMessage);
+                    ReportOutcome(false, _accumulator.LastErrorMessage, replyText: _accumulator.GetAccumulatedText());
                     break;
                 }
         }
@@ -603,7 +617,7 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
         ReportOutcome(false, reason);
     }
 
-    private void ReportOutcome(bool success, string? errorMessage = null)
+    private void ReportOutcome(bool success, string? errorMessage = null, string? replyText = null)
     {
         if (_completed || _settlementStarted)
             return;
@@ -635,7 +649,8 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
             _definition.Id,
             success,
             history,
-            errorMessage));
+            errorMessage,
+            replyText));
     }
 
     private void HandleExecutionAccepted(ReminderExecutionAccepted accepted)

@@ -52,6 +52,30 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     private readonly ActiveExecutionTracker _activeExecutions = new();
     private readonly Dictionary<ReminderId, int> _skipCounts = [];
 
+    /// <summary>
+    /// Callers waiting on <see cref="AwaitReminderRunCommand"/> for a manual
+    /// run that has not settled yet, keyed by execution ID. Populated by
+    /// <see cref="HandleAwaitRun"/>, consumed (and removed) by
+    /// <see cref="SettleManualExecution"/>.
+    /// </summary>
+    private readonly Dictionary<Guid, IActorRef> _pendingManualRunReplies = [];
+
+    /// <summary>
+    /// Settled manual-run results with no waiter registered yet, keyed by
+    /// execution ID. Closes the narrow race where a manual execution settles
+    /// between the accept ack and the caller's follow-up
+    /// <see cref="AwaitReminderRunCommand"/> — without this buffer that
+    /// caller would wait out the full <see cref="ReminderProtocol.ManualRunMaxWaitTimeout"/>
+    /// for an answer the manager already has. Entries are removed as soon as
+    /// a waiter claims them; <see cref="PruneStaleManualRunResults"/> reclaims
+    /// any a caller never came back for (e.g. its HTTP request was aborted
+    /// right after the accept ack).
+    /// </summary>
+    private readonly Dictionary<Guid, (DateTimeOffset SettledAt, ReminderRunNowResponse Result)> _settledManualRunResults = [];
+
+    /// <summary>How long an unclaimed settled manual-run result is kept before it is pruned.</summary>
+    private static readonly TimeSpan SettledManualRunResultRetention = TimeSpan.FromMinutes(5);
+
     // Uniqueness source for execution child actor names. A wall-clock
     // millisecond suffix collided when two fires for one reminder landed in
     // the same millisecond and threw InvalidActorNameException. The actor is
@@ -86,6 +110,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         ReceiveAsync<ListRemindersCommand>(HandleListAsync);
         ReceiveAsync<GetReminderCommand>(HandleGetAsync);
         Receive<RunReminderNowCommand>(HandleRunNow);
+        Receive<AwaitReminderRunCommand>(HandleAwaitRun);
 
         ReceiveAsync<ReminderEnvelope<ReminderPayload>>(HandleReminderFiredAsync);
         ReceiveAsync<ReminderExecutionCompleted>(HandleExecutionOutcomeAsync);
@@ -540,7 +565,10 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     /// Runs an existing reminder now, outside its schedule. Gates in order:
     /// Operator authority, scheduling enabled, reminder exists, reminder
     /// enabled, not expired, not already executing. Each rejection is fail-fast
-    /// — no execution actor starts and no history is appended.
+    /// — no execution actor starts and no history is appended. On acceptance,
+    /// this replies with an immediate ack (execution ID, session ID, delivery
+    /// target) — the caller sends a follow-up <see cref="AwaitReminderRunCommand"/>
+    /// to wait for the run to settle. See <see cref="HandleAwaitRun"/>.
     /// </summary>
     private void HandleRunNow(RunReminderNowCommand cmd)
     {
@@ -612,10 +640,104 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             return;
         }
 
-        StartManualExecution(definition);
-        _log.Info("Manual run started for reminder '{0}'", cmd.Id.Value);
-        replyTo.Tell(new ReminderRunNowResponse(cmd.Id, Success: true));
+        var startedAt = _timeProvider.GetUtcNow();
+        var sessionId = ComputeManualSessionId(definition, startedAt);
+        var deliveryTarget = DescribeDeliveryTarget(definition);
+        var executionId = StartManualExecution(definition, startedAt);
+
+        _log.Info("Manual run started for reminder '{0}': execution_id={1}", cmd.Id.Value, executionId);
+        replyTo.Tell(new ReminderRunNowResponse(
+            cmd.Id,
+            Success: true,
+            ExecutionId: executionId,
+            StartedAt: startedAt,
+            SessionId: sessionId,
+            DeliveryTarget: deliveryTarget));
     }
+
+    /// <summary>
+    /// Waits for a manual run to settle: replies now if it already has,
+    /// registers the caller to be replied to when it does, or fails closed if
+    /// the execution ID is unrecognized. Called as the second half of the
+    /// <c>netclaw reminder run</c> round trip, right after the accept ack from
+    /// <see cref="HandleRunNow"/>.
+    /// </summary>
+    private void HandleAwaitRun(AwaitReminderRunCommand cmd)
+    {
+        var replyTo = Sender;
+
+        PruneStaleManualRunResults();
+
+        if (_settledManualRunResults.Remove(cmd.ExecutionId, out var settled))
+        {
+            replyTo.Tell(settled.Result);
+            return;
+        }
+
+        if (_activeExecutions.TryGet(cmd.Id, out var execution) && execution.ExecutionId == cmd.ExecutionId)
+        {
+            _pendingManualRunReplies[cmd.ExecutionId] = replyTo;
+            return;
+        }
+
+        // Neither still running nor recently settled: an unrecognized or
+        // stale execution ID. Fail closed rather than leaving the caller to
+        // wait out the full timeout for an answer that will never come.
+        replyTo.Tell(new ReminderRunNowResponse(
+            cmd.Id,
+            Success: false,
+            ExecutionId: cmd.ExecutionId,
+            ErrorMessage: $"No manual run with execution id '{cmd.ExecutionId}' is active or recently completed for reminder '{cmd.Id.Value}'."));
+    }
+
+    /// <summary>
+    /// Removes settled manual-run results older than
+    /// <see cref="SettledManualRunResultRetention"/>. Runs on every
+    /// <see cref="HandleAwaitRun"/> call — cheap, since the buffer only ever
+    /// holds entries from the narrow accept-ack-to-await race.
+    /// </summary>
+    private void PruneStaleManualRunResults()
+    {
+        if (_settledManualRunResults.Count == 0)
+            return;
+
+        var cutoff = _timeProvider.GetUtcNow() - SettledManualRunResultRetention;
+        List<Guid>? stale = null;
+        foreach (var (executionId, entry) in _settledManualRunResults)
+        {
+            if (entry.SettledAt < cutoff)
+                (stale ??= []).Add(executionId);
+        }
+
+        if (stale is null)
+            return;
+
+        foreach (var executionId in stale)
+            _settledManualRunResults.Remove(executionId);
+    }
+
+    /// <summary>
+    /// The session ID a manual execution will use, computed the same way
+    /// <see cref="ReminderExecutionActor"/> itself derives it: the reminder's
+    /// fixed session for CurrentSession delivery, or a timestamp-keyed session
+    /// for Channel/None delivery. Both sides use <paramref name="startedAt"/>
+    /// (not their own clock) so they always agree.
+    /// </summary>
+    private static string ComputeManualSessionId(ReminderDefinition definition, DateTimeOffset startedAt) =>
+        !string.IsNullOrWhiteSpace(definition.Delivery.SessionId)
+            ? definition.Delivery.SessionId
+            : $"reminder/{definition.Id}/{startedAt.ToUnixTimeMilliseconds()}";
+
+    /// <summary>Human-readable delivery target for a run result, or "none".</summary>
+    private static string DescribeDeliveryTarget(ReminderDefinition definition) => definition.Delivery.Kind switch
+    {
+        DeliveryKind.None => "none",
+        DeliveryKind.CurrentSession => $"current session ({definition.Delivery.SessionId ?? "unknown"})",
+        DeliveryKind.Channel => ReminderExecutionActor.ResolveChannelDeliveryTarget(definition) is { } target
+            ? $"{target.ChannelKey}:{target.DestinationDisplayName ?? target.DestinationId}"
+            : $"{definition.Delivery.Transport ?? "unknown"}:{definition.Delivery.Address ?? "unknown"}",
+        _ => "unknown"
+    };
 
     private async Task HandleReminderFiredAsync(ReminderEnvelope<ReminderPayload> envelope)
     {
@@ -926,16 +1048,52 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     private void SettleManualExecution(ReminderExecutionCompleted outcome, ReminderDefinition? definition)
     {
         var title = definition?.Title ?? outcome.Id.Value;
+        var (replyText, replyTextTrimmed) = TrimReplyText(outcome.ReplyText);
+        var errorMessage = outcome.Success ? null : outcome.ErrorMessage ?? outcome.History.ErrorMessage;
+
+        var result = new ReminderRunNowResponse(
+            outcome.Id,
+            Success: outcome.Success,
+            ErrorMessage: errorMessage,
+            ExecutionId: outcome.ExecutionId,
+            StartedAt: outcome.History.FiredAt,
+            DurationMs: outcome.History.DurationMs,
+            SessionId: outcome.History.SessionId,
+            DeliveryTarget: definition is not null ? DescribeDeliveryTarget(definition) : "none",
+            ReplyText: replyText,
+            ReplyTextTrimmed: replyTextTrimmed);
+
         if (outcome.Success)
-        {
             _log.Info("Manual run of reminder '{0}' completed successfully", outcome.Id.Value);
+        else
+            _log.Warning(
+                "Manual run of reminder '{0}' ('{1}') failed: {2}",
+                outcome.Id.Value, title, errorMessage ?? "Manual reminder run failed.");
+
+        if (_pendingManualRunReplies.Remove(outcome.ExecutionId, out var replyTo))
+        {
+            replyTo.Tell(result);
             return;
         }
 
-        var reason = string.IsNullOrWhiteSpace(outcome.ErrorMessage)
-            ? "Manual reminder run failed."
-            : outcome.ErrorMessage;
-        _log.Warning("Manual run of reminder '{0}' ('{1}') failed: {2}", outcome.Id.Value, title, reason);
+        // No caller has asked yet (a very tight race right after the accept
+        // ack) — buffer the result so HandleAwaitRun finds it instead of the
+        // caller waiting out the full ManualRunMaxWaitTimeout.
+        _settledManualRunResults[outcome.ExecutionId] = (_timeProvider.GetUtcNow(), result);
+    }
+
+    /// <summary>
+    /// Caps a manual run's reply text to a length sane for a terminal or
+    /// JSON payload, flagging when it truncated.
+    /// </summary>
+    private const int ReplyTextMaxLength = 4000;
+
+    private static (string? Text, bool Trimmed) TrimReplyText(string? text)
+    {
+        if (string.IsNullOrEmpty(text) || text.Length <= ReplyTextMaxLength)
+            return (text, false);
+
+        return (text[..ReplyTextMaxLength], true);
     }
 
     private async Task AppendHistorySafelyAsync(ReminderId id, HistoryRecord history)
@@ -1408,12 +1566,14 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     /// <summary>
     /// Starts a manual (<c>netclaw reminder run</c>) execution. Mirrors
     /// <see cref="StartExecution"/> but carries no scheduler envelope — see
-    /// <see cref="ActiveExecutionTracker.AddManual"/>.
+    /// <see cref="ActiveExecutionTracker.AddManual"/>. <paramref name="startedAt"/>
+    /// comes from the caller (<see cref="HandleRunNow"/>), which already used
+    /// it to compute the session ID reported in the accept ack — see
+    /// <see cref="ReminderExecutionActor.CreateManualProps"/>.
     /// </summary>
-    private void StartManualExecution(ReminderDefinition definition)
+    private Guid StartManualExecution(ReminderDefinition definition, DateTimeOffset startedAt)
     {
         var executionId = Guid.NewGuid();
-        var startedAt = _timeProvider.GetUtcNow();
         _activeExecutions.AddManual(definition.Id, executionId, startedAt);
 
         var actorName = $"exec-{SanitizeActorName(definition.Id.Value)}-{++_executionSequence}";
@@ -1422,7 +1582,8 @@ public sealed partial class ReminderManagerActor : ReceiveActor
                 executionId,
                 definition,
                 _pipeline,
-                _timeProvider),
+                _timeProvider,
+                startedAt),
             actorName);
         Context.WatchWith(
             executionActor,
@@ -1431,6 +1592,8 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         _log.Info(
             "Started manual execution actor for reminder '{0}': {1}",
             definition.Id, executionActor.Path);
+
+        return executionId;
     }
 
     private async Task<ScheduleAttempt> ScheduleDefinitionAsync(ReminderDefinition definition, bool rescheduleFromNow)
