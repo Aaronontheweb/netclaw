@@ -381,6 +381,32 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         return ReminderAudienceAuthorizationResult.Success(effectiveAudience);
     }
 
+    /// <summary>
+    /// True when a caller at <paramref name="callerAudience"/> may run a
+    /// reminder whose stored audience is <paramref name="reminderAudience"/>.
+    /// Personal is the ceiling: a Personal caller may run Personal, Team, and
+    /// Public reminders; a Team caller may run Team and Public reminders only;
+    /// a Public caller may run Public reminders only. Used by
+    /// <see cref="HandleRunNow"/> — the same rule that scopes reminder run
+    /// authority also scopes list/cancel/history/set in the reminder tool
+    /// suite (see the audience-scope companion change); this method is the
+    /// single place that rule lives for the run path.
+    /// </summary>
+    /// <remarks>
+    /// A reminder audience outside the enum's known range is treated as
+    /// Personal, the most restrictive tier. This never happens today —
+    /// <c>ReminderDefinitionStore</c> rejects a definition with no persisted
+    /// audience at load time (see <c>LegacyTrustFieldGuard</c>) — but the
+    /// normalization keeps this check safe if that guarantee ever weakens.
+    /// </remarks>
+    private static bool IsReminderInCallerScope(TrustAudience reminderAudience, TrustAudience callerAudience)
+    {
+        var normalizedReminderAudience = Enum.IsDefined(reminderAudience)
+            ? reminderAudience
+            : TrustAudience.Personal;
+        return normalizedReminderAudience <= callerAudience;
+    }
+
     private static ReminderBoundaryValidationResult ValidateRequestedBoundary(
         TrustBoundary requestedBoundary,
         TrustAudience effectiveAudience)
@@ -563,29 +589,38 @@ public sealed partial class ReminderManagerActor : ReceiveActor
 
     /// <summary>
     /// Runs an existing reminder now, outside its schedule. Gates in order:
-    /// Operator authority, scheduling enabled, reminder exists, reminder
-    /// enabled, not expired, not already executing. Each rejection is fail-fast
-    /// — no execution actor starts and no history is appended. On acceptance,
-    /// this replies with an immediate ack (execution ID, session ID, delivery
-    /// target) — the caller sends a follow-up <see cref="AwaitReminderRunCommand"/>
-    /// to wait for the run to settle. See <see cref="HandleAwaitRun"/>.
+    /// authorization context present, scheduling enabled, reminder exists and
+    /// is in the caller's audience scope, reminder enabled, not expired, not
+    /// already executing. Each rejection is fail-fast — no execution actor
+    /// starts and no history is appended. On acceptance, this replies with an
+    /// immediate ack (execution ID, session ID, delivery target) — the caller
+    /// sends a follow-up <see cref="AwaitReminderRunCommand"/> to wait for the
+    /// run to settle. See <see cref="HandleAwaitRun"/>.
     /// </summary>
+    /// <remarks>
+    /// <see cref="RunReminderNowCommand.Authorization"/> carries one of two
+    /// shapes, both <see cref="ReminderAudienceAuthorizationContext"/>: the
+    /// operator form (the daemon endpoint's <c>SourceAudience</c> is always
+    /// <see cref="TrustAudience.Personal"/> — the ceiling of the hierarchy, so
+    /// the scope check below never rejects an operator call), or a session form
+    /// carrying the calling session's own audience (see <see cref="RunReminderTool"/>).
+    /// One check below serves both — no separate operator branch is needed.
+    /// </remarks>
     private void HandleRunNow(RunReminderNowCommand cmd)
     {
         var replyTo = Sender;
 
-        // Defense in depth: the daemon endpoint already gates this to Operator
-        // callers before it ever asks the manager, but the manager is the actor
-        // boundary every caller (endpoint today, any future caller) must cross.
-        // A missing authorization context fails closed instead of trusting the
-        // caller checked first.
-        if (cmd.Authorization?.SourceAudience is null)
+        // Defense in depth: every caller (the daemon endpoint, the run_reminder
+        // tool, any future caller) must resolve an authorization context before
+        // asking the manager. A missing context fails closed instead of
+        // trusting the caller checked first.
+        if (cmd.Authorization?.SourceAudience is not { } callerAudience)
         {
             replyTo.Tell(new ReminderRunNowResponse(
                 cmd.Id,
                 Success: false,
                 Error: ReminderRunError.Unauthorized,
-                ErrorMessage: "Running a reminder now requires Operator authority."));
+                ErrorMessage: "Running a reminder now requires operator authority or a session audience."));
             return;
         }
 
@@ -600,7 +635,11 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         }
 
         var definition = _definitionStore.Get(cmd.Id);
-        if (definition is null)
+
+        // A reminder outside the caller's audience scope must look exactly
+        // like a missing one — same error code, same message — so a caller
+        // cannot learn that an out-of-scope reminder exists.
+        if (definition is null || !IsReminderInCallerScope(definition.Audience, callerAudience))
         {
             replyTo.Tell(new ReminderRunNowResponse(
                 cmd.Id,
