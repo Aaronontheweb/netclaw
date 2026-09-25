@@ -24,9 +24,8 @@ public sealed partial class GetReminderHistoryTool : NetclawTool<GetReminderHist
 {
     private const int MaxRecordsHardCap = 100;
 
-    private readonly ReminderHistoryStore _historyStore;
     private readonly SchedulingConfig _schedulingConfig;
-    private readonly IActorRef? _reminderManager;
+    private readonly IActorRef _reminderManager;
 
     public record Params(
         [property: Description("The reminder ID to fetch history for (use list_reminders to find IDs).")]
@@ -35,19 +34,15 @@ public sealed partial class GetReminderHistoryTool : NetclawTool<GetReminderHist
         int? Last = null);
 
     /// <summary>
-    /// Constructs the tool. <paramref name="reminderManager"/> is optional only for
-    /// a pre-existing direct-store unit test that predates the manager round trip;
-    /// production registration (<c>ToolRegistrationExtensions.WithReminderTools</c>)
-    /// always supplies it. When it is absent, the tool refuses the call instead of
-    /// falling back to an unscoped read of <paramref name="historyStore"/> — history
-    /// for an id the caller cannot see must never be returned.
+    /// Constructs the tool. History always reads through
+    /// <paramref name="reminderManager"/>, the same way the other reminder tools do,
+    /// so the manager's audience check applies here too — history for an id the
+    /// caller cannot see must never be returned.
     /// </summary>
     public GetReminderHistoryTool(
-        ReminderHistoryStore historyStore,
         SchedulingConfig schedulingConfig,
-        IActorRef? reminderManager = null)
+        IActorRef reminderManager)
     {
-        _historyStore = historyStore;
         _schedulingConfig = schedulingConfig;
         _reminderManager = reminderManager;
     }
@@ -59,9 +54,6 @@ public sealed partial class GetReminderHistoryTool : NetclawTool<GetReminderHist
 
         if (string.IsNullOrWhiteSpace(args.ReminderId))
             return "Error: 'reminder_id' is required.";
-
-        if (_reminderManager is null)
-            return "Error: Reminder history is not available — no reminder manager is configured.";
 
         var id = new ReminderId(args.ReminderId);
         var maxRecords = Math.Clamp(args.Last ?? 20, 1, MaxRecordsHardCap);

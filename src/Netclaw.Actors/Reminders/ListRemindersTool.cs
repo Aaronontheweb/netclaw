@@ -42,8 +42,8 @@ public sealed partial class ListRemindersTool : NetclawTool<ListRemindersTool.Pa
 
         var response = await _reminderManager.Ask<ReminderListResponse>(
             new ListRemindersCommand(
-                includeDisabled,
-                new ReminderAudienceAuthorizationContext(context.Audience, context.SessionId ?? context.ChannelType)),
+                new ReminderAudienceAuthorizationContext(context.Audience, context.SessionId ?? context.ChannelType),
+                includeDisabled),
             TimeSpan.FromSeconds(10),
             ct);
 
