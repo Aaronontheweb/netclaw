@@ -322,18 +322,21 @@ public static partial class ReminderProtocol
     /// <summary>
     /// Caller identity for an audience-gated reminder command. The manager compares
     /// <see cref="SourceAudience"/> against a reminder's stored audience before the
-    /// command may read or act on it — see
-    /// <see cref="ReminderManagerActor.CanAccessAudience"/>, the one place that
+    /// command may read or act on it. See
+    /// <see cref="ReminderManagerActor.CanAccessAudience"/> for the one place that
     /// comparison happens.
     /// <para>
-    /// This parameter is optional only so pre-existing direct-actor callers (tests
-    /// and other in-process code that already hold an <see cref="IActorRef"/> to the
-    /// manager) keep compiling. It is not optional in practice: every tool
-    /// (<c>list_reminders</c>, <c>cancel_reminder</c>, <c>get_reminder_history</c>,
+    /// <see cref="ListRemindersCommand"/>, <see cref="GetReminderCommand"/>,
+    /// <see cref="CancelReminderCommand"/>, <see cref="GetReminderStatusQuery"/>,
+    /// and <see cref="GetReminderHistoryQuery"/> all require this context. Every
+    /// tool (<c>list_reminders</c>, <c>cancel_reminder</c>, <c>get_reminder_history</c>,
     /// <c>set_reminder</c>) and every daemon HTTP endpoint under
-    /// <c>/api/reminders</c> builds and passes a real context — a missing
-    /// <see cref="SourceAudience"/> resolves no reminder at all (see
-    /// <see cref="ReminderManagerActor.CanAccessAudience"/>), it never widens access.
+    /// <c>/api/reminders</c> builds and passes a real one.
+    /// </para>
+    /// <para>
+    /// A context with a null <see cref="SourceAudience"/> still denies all access
+    /// (see <see cref="ReminderManagerActor.CanAccessAudience"/>). Only a real
+    /// audience can see or act on a reminder.
     /// </para>
     /// </summary>
     public sealed record ReminderAudienceAuthorizationContext(
@@ -349,7 +352,7 @@ public static partial class ReminderProtocol
     /// </summary>
     public sealed record CancelReminderCommand(
         ReminderId Id,
-        ReminderAudienceAuthorizationContext? Authorization = null) : IReminderCommand, INoSerializationVerificationNeeded;
+        ReminderAudienceAuthorizationContext Authorization) : IReminderCommand, INoSerializationVerificationNeeded;
 
     /// <summary>
     /// Permanently deletes a reminder definition, its schedule, and history from disk.
@@ -370,8 +373,8 @@ public static partial class ReminderProtocol
     /// reminder is omitted, not flagged, so its existence is not disclosed.
     /// </summary>
     public sealed record ListRemindersCommand(
-        bool IncludeDisabled = true,
-        ReminderAudienceAuthorizationContext? Authorization = null) : IReminderQuery, INoSerializationVerificationNeeded;
+        ReminderAudienceAuthorizationContext Authorization,
+        bool IncludeDisabled = true) : IReminderQuery, INoSerializationVerificationNeeded;
 
     // ===== Queries =====
 
@@ -382,7 +385,7 @@ public static partial class ReminderProtocol
     /// </summary>
     public sealed record GetReminderCommand(
         ReminderId Id,
-        ReminderAudienceAuthorizationContext? Authorization = null) : IReminderQuery, INoSerializationVerificationNeeded;
+        ReminderAudienceAuthorizationContext Authorization) : IReminderQuery, INoSerializationVerificationNeeded;
 
     /// <summary>
     /// Fetches recent execution history for one reminder. The caller may read it
@@ -392,7 +395,7 @@ public static partial class ReminderProtocol
     public sealed record GetReminderHistoryQuery(
         ReminderId Id,
         int MaxRecords,
-        ReminderAudienceAuthorizationContext? Authorization = null) : IReminderQuery, INoSerializationVerificationNeeded;
+        ReminderAudienceAuthorizationContext Authorization) : IReminderQuery, INoSerializationVerificationNeeded;
 
     // ===== Responses =====
 
@@ -484,7 +487,7 @@ public static partial class ReminderProtocol
     /// </summary>
     public sealed record GetReminderStatusQuery(
         ReminderId Id,
-        ReminderAudienceAuthorizationContext? Authorization = null) : IReminderQuery, INoSerializationVerificationNeeded;
+        ReminderAudienceAuthorizationContext Authorization) : IReminderQuery, INoSerializationVerificationNeeded;
 
     /// <summary>
     /// Response to <see cref="GetReminderStatusQuery"/>: per-reminder health for an
