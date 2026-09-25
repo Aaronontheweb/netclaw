@@ -134,9 +134,10 @@ An operator can run an existing reminder now, ahead of its schedule:
 netclaw reminder run <id>
 ```
 
-This command needs the daemon and Operator authority. It is not an agent
-tool — direct the operator to run it themselves; do not try to call it as a
-tool.
+This command needs the daemon and Operator authority. It is a CLI command,
+not an agent tool — direct the operator to run it themselves. An agent that
+wants to run an existing reminder from inside a session uses the
+`run_reminder` tool instead; see "Agent tool: run_reminder" below.
 
 The command waits for the run to finish, then prints a result block:
 
@@ -189,17 +190,54 @@ Rules:
   runs (5 consecutive failures).
 - If the reminder is already active, the manual run fails with a clear
   error. It does not queue.
-- Offer a manual run only when `delivery_kind` is `channel` or `none`. Do not
-  offer it for `delivery_kind=current_session` — that mode returns to this
-  same session, and a manual run would add a confusing extra turn.
+- Do not offer the CLI command for `delivery_kind=current_session` — the
+  operator's terminal is not the reminder's target session, so they cannot
+  see the reply arrive. Use `run_reminder` from inside the target session
+  instead (see below).
 - Do not call a manual run a "dry run." It sends the real prompt to the real
   target and records real history.
 - Do not promise that a manual run skips tool approval prompts. It runs
   through the same approval gate as a scheduled fire.
 
+### Agent tool: run_reminder
+
+`run_reminder(id)` runs an existing reminder now, from inside a session. Use
+it when the user asks to test or try a reminder that already exists — for a
+brand-new reminder that does not exist yet, see "Test a reminder inside a
+session" below instead.
+
+The tool sends the reminder's real prompt to its real delivery target and
+waits for the run to finish, the same way `netclaw reminder run` does. It
+returns status (`ok` / `failed` / still running), duration, session ID,
+delivery target, and the reply text — or the error.
+
+Rules:
+
+- The schedule does not change. A one-shot reminder stays scheduled at its
+  original fire time. A recurring reminder keeps its next fire time.
+- The run is recorded in the reminder's history as `manual`, the same as a
+  CLI-triggered run — `get_reminder_history` shows it.
+- **Audience rule.** A session may run a reminder only when the reminder's
+  audience is at or below the session's own audience: a Personal session can
+  run a Personal, Team, or Public reminder; a Team session can run a Team or
+  Public reminder only. A reminder outside the session's scope is reported
+  as not found — the tool never confirms that an out-of-scope reminder
+  exists.
+- **Same-session delivery.** If the reminder's `delivery_kind` is
+  `current_session` and its target session is this same session, the reply
+  cannot arrive during this turn — this turn is still running the tool
+  call, so the reminder's reply queues behind it. The tool starts the run,
+  reports that the reply arrives as a new turn after this one ends, and does
+  not wait for it. It never waits until timeout because of its own caller.
+- A reminder that is disabled, expired, or already executing is reported the
+  same way it is for `netclaw reminder run`; see the rejections list above.
+
 ### Test a reminder inside a session
 
-An agent can test the reminder mechanism inside the current conversation.
+This technique tests the reminder mechanism itself with a new, disposable
+reminder. To test a reminder that already exists, use `run_reminder`
+instead (see above).
+
 Call `set_reminder` with a short one-shot schedule and
 `delivery_kind=current_session`:
 
@@ -226,7 +264,7 @@ minted with broader audience than the creator currently holds; lowering the
 audience is always allowed.
 
 Other scheduling tools: `list_reminders`, `cancel_reminder`,
-`get_reminder_history`.
+`get_reminder_history`, `run_reminder`.
 
 ## Proactive channel messaging
 
