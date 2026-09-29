@@ -4,12 +4,14 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Json;
 using Netclaw.Cli.Mcp;
 using Netclaw.Cli.Tui.Config;
 using Netclaw.Cli.Tests.Tui.Wizard;
 using Netclaw.Configuration;
+using Netclaw.Media;
 using Xunit;
 
 namespace Netclaw.Cli.Tests.Tui.Config;
@@ -225,6 +227,64 @@ public sealed class SecurityAccessViewModelTests : WizardStepTestBase
         Assert.Equal("Customized", vm.AudienceOverrideMarker(TrustAudience.Team));
         Assert.Equal("", vm.AudienceOverrideMarker(TrustAudience.Public));
         Assert.Equal("Customized overrides", vm.SelectedAudienceOverrideStatus);
+    }
+
+    [Fact]
+    public void Disabled_tool_group_round_trips_to_the_narrowed_daemon_profile()
+    {
+        // Cross-boundary proof: the TUI writes a narrowed Team allowlist, and the daemon binder
+        // must produce the same narrowed list. Before the fix, the daemon kept all Team defaults.
+        File.WriteAllText(Context.Paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Security": { "DeploymentPosture": "Team" }
+            }
+            """);
+
+        using var vm = new SecurityAccessViewModel(Context.Paths);
+        vm.SelectedAudienceIndex.Value = 1;
+        vm.OpenSelectedAudienceProfile();
+        vm.SelectedAudienceRowIndex.Value = (int)AudienceProfileRowKind.WebAccess;
+
+        vm.ActivateSelectedAudienceProfileRow();
+
+        var runtimeTeam = ToolAudienceProfileDefaults.GetResolvedProfile(
+            BindDaemonToolConfig().AudienceProfiles,
+            TrustAudience.Team);
+        var expected = ToolAudienceProfileToolCatalog.TeamDefaultAllowedTools
+            .Except(ToolAudienceProfileToolCatalog.WebTools)
+            .ToArray();
+        Assert.Equal(expected, runtimeTeam.AllowedTools);
+        Assert.DoesNotContain(ToolAudienceProfileToolCatalog.WebSearch, runtimeTeam.AllowedTools);
+        Assert.DoesNotContain(ToolAudienceProfileToolCatalog.WebFetch, runtimeTeam.AllowedTools);
+    }
+
+    [Fact]
+    public void Narrowed_incoming_attachments_round_trip_to_the_daemon_team_profile()
+    {
+        // The TUI writes "Images" as one category and "None" as an empty list with zero caps.
+        // Before the fix, the daemon kept the five Team defaults, and "None" stopped startup.
+        File.WriteAllText(Context.Paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Security": { "DeploymentPosture": "Team" }
+            }
+            """);
+
+        using var vm = new SecurityAccessViewModel(Context.Paths);
+        vm.SelectedAudienceIndex.Value = 1;
+        vm.OpenSelectedAudienceProfile();
+        vm.SelectedAudienceRowIndex.Value = (int)AudienceProfileRowKind.IncomingAttachments;
+
+        vm.ChangeSelectedAudienceProfileRow(-1);
+        Assert.Equal(
+            [AttachmentCategory.Image],
+            BindDaemonToolConfig().AudienceProfiles.Team.ChannelAttachments.AllowedCategories);
+
+        vm.ChangeSelectedAudienceProfileRow(-1);
+        Assert.Empty(BindDaemonToolConfig().AudienceProfiles.Team.ChannelAttachments.AllowedCategories);
     }
 
     [Fact]
@@ -494,5 +554,17 @@ public sealed class SecurityAccessViewModelTests : WizardStepTestBase
     private sealed class SecurityAccessConfigRoot
     {
         public ToolConfig Tools { get; set; } = new();
+    }
+
+    // Reads netclaw.json through the daemon provider chain and the daemon Tools binder.
+    private ToolConfig BindDaemonToolConfig()
+    {
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(Context.Paths.NetclawConfigPath, optional: true, reloadOnChange: false)
+            .AddJsonFile(Context.Paths.SecretsPath, optional: true, reloadOnChange: false)
+            .AddEnvironmentVariables($"NETCLAW_TEST_{Guid.NewGuid():N}_")
+            .Build();
+
+        return ToolConfig.BindFromConfiguration(configuration.GetSection("Tools"));
     }
 }

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Configuration
+
+- **Configured tool lists now replace the defaults.** Before this change, the daemon added configured `Tools` list items to the built-in defaults. An operator could not narrow an audience tool allowlist, file roots, `GlobalReadRoots`, attachment categories, or `WebFetch.HttpAllowList`. Now the configured list is the complete list, and `[]` means empty. **Upgrade impact:** if `netclaw.json` already has a narrowed list, the daemon now applies that narrow list. For example, `"Team": { "AllowedTools": ["file_read", "file_list"] }` removes `web_fetch`, `file_write`, and the other Team defaults. Run `netclaw doctor` to see the lists that the daemon will apply.
+
 ### Shell authorization
 
 - **Static shell assignments can use exact reusable approvals.** Netclaw binds each grant to a digest of the complete Bash or PowerShell assignment facts.

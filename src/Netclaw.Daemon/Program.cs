@@ -584,16 +584,7 @@ static void ConfigureDaemonServices(
     var sessionConfig = SessionConfig.BindFromConfiguration(configuration.GetSection("Session"));
     services.AddSingleton(sessionConfig);
 
-    // Tools (auto-bound, no required properties)
-    var toolConfig = configuration.GetSection("Tools")
-        .Get<ToolConfig>() ?? new ToolConfig();
-    var attachmentErrors = toolConfig.AudienceProfiles.ValidateChannelAttachments();
-    if (attachmentErrors.Count > 0)
-    {
-        throw new InvalidOperationException(
-            "Invalid Tools.AudienceProfiles.ChannelAttachments configuration: "
-            + string.Join("; ", attachmentErrors));
-    }
+    var toolConfig = ToolConfig.BindFromConfiguration(configuration.GetSection("Tools"));
     services.AddSingleton(toolConfig);
 
     var securityPolicyConfig = configuration.GetSection("Security")

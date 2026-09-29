@@ -3,6 +3,8 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Microsoft.Extensions.Configuration;
+
 namespace Netclaw.Configuration;
 
 /// <summary>
@@ -32,4 +34,24 @@ public sealed class ToolConfig
     /// and cannot be approved. Added to the compiled-in defaults.
     /// </summary>
     public List<string> HardDenyPatterns { get; set; } = [];
+
+    /// <summary>
+    /// Binds the daemon <c>Tools</c> section and validates the channel attachment policy.
+    /// A configured list replaces the default list, so an operator can narrow tool grants,
+    /// read roots, attachment categories, and the HTTP allow list. See
+    /// <see cref="ConfigurationListBinder"/> for the list rules.
+    /// </summary>
+    public static ToolConfig BindFromConfiguration(IConfigurationSection section)
+    {
+        var toolConfig = ConfigurationListBinder.Get<ToolConfig>(section);
+        var attachmentErrors = toolConfig.AudienceProfiles.ValidateChannelAttachments();
+        if (attachmentErrors.Count > 0)
+        {
+            throw new InvalidOperationException(
+                "Invalid Tools.AudienceProfiles.ChannelAttachments configuration: "
+                + string.Join("; ", attachmentErrors));
+        }
+
+        return toolConfig;
+    }
 }

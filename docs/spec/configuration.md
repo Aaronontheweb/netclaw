@@ -244,6 +244,20 @@ shape, confirm that strict-default fallback is active, or verify that
 | `MaxOutputChars` | int | `32000` | Maximum characters captured from tool output. |
 | `AudienceProfiles` | object | built-in defaults | Per-audience tool, MCP server, and filesystem permissions. Default tool grants are monotonic — `public` ⊆ `team` ⊆ `personal`. `public` gets read-only file tools only (`file_read`, `file_list`, `attach_file`) — no file mutation and no outbound web tools; `team` adds file mutation, web (`web_search`/`web_fetch`), scheduling, and skill tools but not `shell_execute`, webhook tools, or any MCP server; `personal` defaults to unrestricted interactive tool/file access and all MCP servers. `public` and `team` file operations remain bounded by configured trusted roots, including the shared Netclaw sessions root, until the operator opts in to broader roots. |
 
+List values in `Tools` replace the built-in default lists. They do not add to them.
+The daemon binder (`ToolConfig.BindFromConfiguration`) applies these rules:
+
+- An absent key keeps the default list.
+- A configured list replaces the default list. For example,
+  `"Team": { "AllowedTools": ["file_read", "file_list"] }` grants Team only those two tools.
+- An empty array (`[]`) or an empty `NETCLAW_*` environment variable gives an empty list.
+- A scalar value for a list key stops daemon startup with an error that names the key.
+- JSON `null` keeps the default list. The schema rejects `null`, so `netclaw doctor` reports it.
+
+These rules apply to `AllowedTools`, `AllowedMcpServers`, `ReadFiles.Roots`,
+`WriteFiles.Roots`, `AttachFiles.Roots`, `ChannelAttachments.AllowedCategories`,
+`GlobalReadRoots`, `WebFetch.HttpAllowList`, and `HardDenyPatterns`.
+
 ### MCP Servers
 
 ```json
