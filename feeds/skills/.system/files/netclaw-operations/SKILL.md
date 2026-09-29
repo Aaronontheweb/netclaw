@@ -629,6 +629,9 @@ add to it. This applies to `AllowedTools`, `ReadFiles`/`WriteFiles`/`AttachFiles
 - The daemon stops at startup when a list key has a scalar value, when an item is not
   valid (for example an unknown attachment category), or when an empty `NETCLAW_*`
   variable and a config file both set the same list. The error names the key.
+- A Public or Team `AllowedTools` list that exactly matches an older Netclaw default gets
+  the current default, with a startup warning. `netclaw doctor --fix` writes the current
+  list after a backup. Any other list is applied as written.
 - The daemon reads `netclaw.json`, `secrets.json`, and `NETCLAW_*` variables.
   `netclaw doctor` reads only `netclaw.json`, so it can show a different list.
 

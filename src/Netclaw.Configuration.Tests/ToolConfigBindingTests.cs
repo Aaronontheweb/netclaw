@@ -286,6 +286,117 @@ public sealed class ToolConfigBindingTests : IDisposable
         Assert.Empty(toolConfig.AudienceProfiles.Team.ChannelAttachments.AllowedCategories);
     }
 
+    public static TheoryData<TrustAudience, string[]> LegacyDefaultLists()
+    {
+        var data = new TheoryData<TrustAudience, string[]>();
+        foreach (var legacy in ToolAudienceProfileToolCatalog.LegacyPublicDefaultAllowedTools)
+            data.Add(TrustAudience.Public, [.. legacy]);
+        foreach (var legacy in ToolAudienceProfileToolCatalog.LegacyTeamDefaultAllowedTools)
+            data.Add(TrustAudience.Team, [.. legacy]);
+        return data;
+    }
+
+    [Theory]
+    [MemberData(nameof(LegacyDefaultLists))]
+    public void Legacy_default_allowlist_maps_to_the_current_default_with_a_warning(
+        TrustAudience audience,
+        string[] legacyTools)
+    {
+        // Reverse the order: the match is order-insensitive.
+        var toolConfig = Bind(AllowedToolsJson(audience, [.. legacyTools.Reverse()]), out var warnings);
+
+        var profile = ToolAudienceProfileDefaults.GetResolvedProfile(toolConfig.AudienceProfiles, audience);
+        var current = ToolAudienceProfileDefaults.CurrentDefaultAllowedTools(audience);
+        Assert.Equal(current, profile.AllowedTools);
+        var warning = Assert.Single(warnings);
+        Assert.Contains($"Tools.AudienceProfiles.{audience}.AllowedTools is an older Netclaw default list", warning, StringComparison.Ordinal);
+        Assert.Contains("netclaw doctor --fix", warning, StringComparison.Ordinal);
+        foreach (var missing in current.Except(legacyTools))
+            Assert.Contains(missing, warning, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("removed")]
+    [InlineData("extra")]
+    [InlineData("repeated")]
+    public void Allowlist_that_differs_from_a_legacy_default_is_applied_as_written(string change)
+    {
+        // A hand-edited list is operator intent. The daemon must never widen it.
+        string[] legacy = [.. ToolAudienceProfileToolCatalog.LegacyTeamDefaultAllowedTools[1]];
+        string[] configured = change switch
+        {
+            "removed" => [.. legacy.Where(tool => tool != ToolAudienceProfileToolCatalog.WebFetch)],
+            "extra" => [.. legacy, ToolAudienceProfileToolCatalog.SetWebhook],
+            _ => [.. legacy, ToolAudienceProfileToolCatalog.FileRead]
+        };
+
+        var toolConfig = Bind(AllowedToolsJson(TrustAudience.Team, configured), out var warnings);
+
+        Assert.Equal(configured, toolConfig.AudienceProfiles.Team.AllowedTools);
+        Assert.Empty(warnings);
+    }
+
+    [Fact]
+    public void Netclaw_0_25_4_init_config_round_trips_to_the_current_runtime_profiles()
+    {
+        // The Public and Team profiles that `netclaw init` 0.25.4 wrote for a Team posture.
+        var toolConfig = Bind(
+            """
+            {
+              "configVersion": 1,
+              "Tools": {
+                "AudienceProfiles": {
+                  "Public": {
+                    "ToolsMode": "Allowlist",
+                    "AllowedTools": ["file_read", "file_list", "attach_file"],
+                    "McpServersMode": "Allowlist",
+                    "AllowedMcpServers": [],
+                    "ReadFiles": { "Mode": "Roots", "Roots": ["{session_dir}"] },
+                    "WriteFiles": { "Mode": "Roots", "Roots": ["{session_dir}"] },
+                    "AttachFiles": { "Mode": "Roots", "Roots": ["{session_dir}"] },
+                    "ChannelAttachments": { "AllowedCategories": ["Image"], "MaxFileBytes": 26214400, "MaxFilesPerMessage": 10 }
+                  },
+                  "Team": {
+                    "ToolsMode": "Allowlist",
+                    "AllowedTools": [
+                      "file_read", "file_list", "file_write", "file_edit", "attach_file",
+                      "web_search", "web_fetch", "skill_manage", "set_reminder",
+                      "list_reminders", "cancel_reminder", "get_reminder_history",
+                      "set_working_directory"
+                    ],
+                    "McpServersMode": "Allowlist",
+                    "AllowedMcpServers": [],
+                    "ReadFiles": { "Mode": "Roots", "Roots": ["{session_dir}"] },
+                    "WriteFiles": { "Mode": "Roots", "Roots": ["{session_dir}"] },
+                    "AttachFiles": { "Mode": "Roots", "Roots": ["{session_dir}"] },
+                    "ChannelAttachments": { "AllowedCategories": ["Image", "Pdf", "Document", "Archive", "Media"], "MaxFileBytes": 26214400, "MaxFilesPerMessage": 10 }
+                  },
+                  "Personal": { "ToolsMode": "All", "McpServersMode": "All" },
+                  "GlobalReadRoots": ["{skills_dir}", "{identity_dir}", "{workspaces_dir}"]
+                }
+              }
+            }
+            """,
+            out var warnings);
+
+        var defaults = new ToolConfig().AudienceProfiles;
+        Assert.Equal(defaults.Public.AllowedTools, toolConfig.AudienceProfiles.Public.AllowedTools);
+        Assert.Equal(defaults.Team.AllowedTools, toolConfig.AudienceProfiles.Team.AllowedTools);
+        Assert.Contains(ToolAudienceProfileToolCatalog.ToolOutputRead, toolConfig.AudienceProfiles.Team.AllowedTools);
+        Assert.Equal(2, warnings.Count);
+    }
+
+    private static string AllowedToolsJson(TrustAudience audience, IEnumerable<string> tools)
+        => $$"""
+            {
+              "Tools": {
+                "AudienceProfiles": {
+                  "{{audience}}": { "ToolsMode": "Allowlist", "AllowedTools": [{{string.Join(", ", tools.Select(tool => $"\"{tool}\""))}}] }
+                }
+              }
+            }
+            """;
+
     [Theory]
     [InlineData(typeof(SecurityPolicyConfig))]
     [InlineData(typeof(WebhooksConfig))]

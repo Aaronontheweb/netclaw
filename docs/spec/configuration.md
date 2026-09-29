@@ -263,6 +263,21 @@ applies these rules:
 - An item that is not a valid value, for example `"AllowedCategories": ["Bogus"]`, stops
   daemon startup with an error that names the item and its value.
 
+Older installs: `netclaw init` 0.8.0 to 0.25.4 wrote the complete Public and Team default
+`AllowedTools` lists. Later releases added tools to those defaults, for example `file_search`
+and `tool_output_read` in 0.26.0. The old binder added the current defaults to the stored list,
+so those installs ran with the current defaults. To keep that behavior, the daemon applies
+this rule:
+
+- A Public or Team `AllowedTools` list that exactly matches an older shipped default (same
+  tools in any order, no extra, missing, or repeated tool) maps to the current default. The
+  daemon logs a startup warning that names the audience, the tool changes, and the fix.
+- A list that differs in any way is applied as written. The daemon never widens it.
+- `netclaw doctor` reports each such list. `netclaw doctor --fix` writes a backup to
+  `netclaw.json.legacy-tool-defaults.bak`, then writes the current default list.
+- `ToolAudienceProfileToolCatalog.LegacyPublicDefaultAllowedTools` and
+  `LegacyTeamDefaultAllowedTools` hold the older lists as policy data.
+
 These rules apply to every list under `Tools`, which includes `AllowedTools`,
 `AllowedMcpServers`, `ReadFiles.Roots`, `WriteFiles.Roots`, `AttachFiles.Roots`,
 `ChannelAttachments.AllowedCategories`, `McpServerToolGrants` values, `GlobalReadRoots`,

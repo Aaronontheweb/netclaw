@@ -44,7 +44,12 @@ public sealed class ToolConfig
     /// </summary>
     public static ToolConfig BindFromConfiguration(IConfigurationSection section, out IReadOnlyList<string> warnings)
     {
-        var toolConfig = ConfigurationListBinder.Get<ToolConfig>(section, out warnings);
+        var toolConfig = ConfigurationListBinder.Get<ToolConfig>(section, out var bindingWarnings);
+        var allWarnings = new List<string>(bindingWarnings);
+        MapLegacyDefaultAllowedTools(toolConfig.AudienceProfiles.Public, TrustAudience.Public, allWarnings);
+        MapLegacyDefaultAllowedTools(toolConfig.AudienceProfiles.Team, TrustAudience.Team, allWarnings);
+        warnings = allWarnings;
+
         var attachmentErrors = toolConfig.AudienceProfiles.ValidateChannelAttachments();
         if (attachmentErrors.Count > 0)
         {
@@ -54,5 +59,25 @@ public sealed class ToolConfig
         }
 
         return toolConfig;
+    }
+
+    // `netclaw init` wrote the complete default list, and the old binder added the current
+    // defaults to it. Replacement binding would silently remove tools that later releases
+    // added to the default, such as tool_output_read. Only an exact older default list maps to
+    // the current default. A list that differs in any way is operator intent, so the daemon
+    // applies it as written and never widens it.
+    private static void MapLegacyDefaultAllowedTools(
+        ToolAudienceProfile profile,
+        TrustAudience audience,
+        List<string> warnings)
+    {
+        if (profile.ToolsMode != ToolProfileMode.Allowlist
+            || !ToolAudienceProfileDefaults.IsLegacyDefaultAllowedTools(audience, profile.AllowedTools))
+        {
+            return;
+        }
+
+        warnings.Add(ToolAudienceProfileDefaults.DescribeLegacyDefaultAllowedTools(audience, profile.AllowedTools));
+        profile.AllowedTools = [.. ToolAudienceProfileDefaults.CurrentDefaultAllowedTools(audience)];
     }
 }
