@@ -4,7 +4,6 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.ComponentModel;
-using System.Text;
 using System.Text.RegularExpressions;
 using Netclaw.Actors.Skills;
 using Netclaw.Configuration;
@@ -36,12 +35,19 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
     private const int MaxNameLength = 64;
     private const int MaxDescriptionLength = 1024;
     private const string AtomicTempSuffix = ".tmp";
+    private const string LinkDeniedMessage = "Symlink traversal is not allowed in skill file paths.";
 
     private readonly SkillRegistry _skillRegistry;
     private readonly NetclawPaths _paths;
     private readonly ISkillContentScanner _scanner;
     private readonly SkillInventoryRefresher _inventoryRefresher;
     private readonly ToolPathPolicy _protectedPaths;
+
+    /// <summary>
+    /// Test seam. Tests use it to change the file system at an exact stage of a mutation.
+    /// Production code does not set it.
+    /// </summary>
+    internal Action<SkillMutationStage>? StageHookForTesting { get; init; }
 
     public record Params(
         [property: Description("Action to perform: create, edit, patch, delete, write_file, remove_file")]
@@ -78,16 +84,28 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
     protected override async Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)
     {
         var action = args.Action.Trim().ToLowerInvariant();
-        return action switch
+        try
         {
-            "create" => await CreateAsync(args, ct),
-            "edit" => await EditAsync(args, ct),
-            "patch" => await PatchAsync(args, ct),
-            "delete" => Delete(args),
-            "write_file" => await WriteFileAsync(args, ct),
-            "remove_file" => RemoveFile(args),
-            _ => $"Unknown action '{action}'. Valid actions: create, edit, patch, delete, write_file, remove_file."
-        };
+            return action switch
+            {
+                "create" => await CreateAsync(args, ct),
+                "edit" => await EditAsync(args, ct),
+                "patch" => await PatchAsync(args, ct),
+                "delete" => Delete(args),
+                "write_file" => await WriteFileAsync(args, ct),
+                "remove_file" => RemoveFile(args),
+                _ => $"Unknown action '{action}'. Valid actions: create, edit, patch, delete, write_file, remove_file."
+            };
+        }
+        catch (UnsafePathException)
+        {
+            // The use-time check found a link that appeared after GuardMutationTarget.
+            return LinkDeniedMessage;
+        }
+        catch (PlatformNotSupportedException)
+        {
+            return "skill_manage cannot change skill files safely on this platform. The operation was not done.";
+        }
     }
 
     private async Task<string> CreateAsync(Params args, CancellationToken ct)
@@ -129,13 +147,14 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
                 return $"Skill '{name}' already exists. Use 'edit' to modify it.";
 
             // Orphaned file — overwrite and register it
-            AtomicWrite(skillPath, args.Content);
+            StageHookForTesting?.Invoke(SkillMutationStage.Checked);
+            AtomicWrite(skillPath, args.Content, createDirectory: true);
             RescanAndUpdateIndex();
             return $"Skill '{name}' created at {skillDir} (replaced orphaned file)";
         }
 
-        Directory.CreateDirectory(skillDir);
-        AtomicWrite(skillPath, args.Content);
+        StageHookForTesting?.Invoke(SkillMutationStage.Checked);
+        AtomicWrite(skillPath, args.Content, createDirectory: true);
         var rescan = RescanAndUpdateIndex();
 
         var message = $"Skill '{name}' created at {skillDir}";
@@ -190,7 +209,8 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         if (!scanResult.IsAllowed)
             return $"Content scan rejected: {scanResult.Reason}";
 
-        AtomicWrite(skill.FilePath, args.Content);
+        StageHookForTesting?.Invoke(SkillMutationStage.Checked);
+        AtomicWrite(skill.FilePath, args.Content, createDirectory: false);
         var rescan = RescanAndUpdateIndex();
 
         var message = $"Skill '{name}' updated.";
@@ -231,10 +251,21 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         var targetError = GuardMutationTarget(skill.SkillDirectory, targetPath, atomicWrite: true);
         if (targetError is not null) return targetError;
 
+        StageHookForTesting?.Invoke(SkillMutationStage.Checked);
         if (!File.Exists(targetPath))
             return $"File not found: {args.FilePath ?? "SKILL.md"}";
 
-        var content = File.ReadAllText(targetPath);
+        // One directory handle serves the read and the write, also across the scan.
+        using var directory = OpenParentDirectory(targetPath, createMissing: false);
+        if (directory is null)
+            return $"File not found: {args.FilePath ?? "SKILL.md"}";
+        StageHookForTesting?.Invoke(SkillMutationStage.DirectoryOpened);
+
+        var targetName = Path.GetFileName(targetPath);
+        var content = directory.ReadAllText(targetName);
+        if (content is null)
+            return $"File not found: {args.FilePath ?? "SKILL.md"}";
+
         var occurrences = CountOccurrences(content, args.OldString);
 
         if (occurrences == 0)
@@ -265,7 +296,7 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
 
         if (targetPath == skill.FilePath)
         {
-            AtomicWrite(targetPath, newContent);
+            directory.WriteAllTextAtomic(targetName, newContent, targetName + AtomicTempSuffix);
 
             var message = "Patch applied.";
             if (scanResult.Verdict == ScanVerdict.Warning)
@@ -274,7 +305,7 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
             return AppendScanWarnings(message, RescanAndUpdateIndex());
         }
 
-        AtomicWrite(targetPath, newContent);
+        directory.WriteAllTextAtomic(targetName, newContent, targetName + AtomicTempSuffix);
         var warning = scanResult.Verdict == ScanVerdict.Warning
             ? $" (warning: {scanResult.Reason})"
             : string.Empty;
@@ -298,21 +329,30 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         var targetError = GuardMutationTarget(skill.SkillDirectory, deleteTarget, atomicWrite: false);
         if (targetError is not null) return targetError;
 
+        StageHookForTesting?.Invoke(SkillMutationStage.Checked);
         if (skill.IsFlatFile)
         {
             // Flat-file skill: delete the single .md file
-            File.Delete(skill.FilePath);
+            using var directory = OpenParentDirectory(skill.FilePath, createMissing: false)
+                ?? throw new DirectoryNotFoundException($"The directory of skill '{name}' does not exist.");
+            StageHookForTesting?.Invoke(SkillMutationStage.DirectoryOpened);
+            directory.DeleteFile(Path.GetFileName(skill.FilePath));
         }
         else
         {
-            Directory.Delete(skill.SkillDirectory, recursive: true);
+            using (var parentDirectory = OpenParentDirectory(skill.SkillDirectory, createMissing: false)
+                       ?? throw new DirectoryNotFoundException($"The directory of skill '{name}' does not exist."))
+            {
+                StageHookForTesting?.Invoke(SkillMutationStage.DirectoryOpened);
+                parentDirectory.DeleteTree(Path.GetFileName(skill.SkillDirectory));
+            }
 
             // Clean empty parent category directories
             var parent = Path.GetDirectoryName(skill.SkillDirectory);
-            if (parent is not null && parent != _paths.SkillsDirectory
-                && Directory.Exists(parent) && !Directory.EnumerateFileSystemEntries(parent).Any())
+            if (parent is not null && parent != _paths.SkillsDirectory)
             {
-                Directory.Delete(parent);
+                using var categoryParent = OpenParentDirectory(parent, createMissing: false);
+                categoryParent?.DeleteEmptyDirectory(Path.GetFileName(parent));
             }
         }
 
@@ -351,9 +391,8 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         if (!scanResult.IsAllowed)
             return $"Content scan rejected: {scanResult.Reason}";
 
-        var dir = Path.GetDirectoryName(fullPath)!;
-        Directory.CreateDirectory(dir);
-        AtomicWrite(fullPath, args.FileContent);
+        StageHookForTesting?.Invoke(SkillMutationStage.Checked);
+        AtomicWrite(fullPath, args.FileContent, createDirectory: true);
         var rescan = RescanAndUpdateIndex();
 
         var message = $"File written: {normalizedPath}";
@@ -386,17 +425,25 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         var targetError = GuardMutationTarget(skill.SkillDirectory, fullPath, atomicWrite: false);
         if (targetError is not null) return targetError;
 
+        StageHookForTesting?.Invoke(SkillMutationStage.Checked);
         if (!File.Exists(fullPath))
             return $"File not found: {normalizedPath}";
 
-        File.Delete(fullPath);
+        using (var directory = OpenParentDirectory(fullPath, createMissing: false))
+        {
+            if (directory is null)
+                return $"File not found: {normalizedPath}";
+            StageHookForTesting?.Invoke(SkillMutationStage.DirectoryOpened);
+            if (!directory.DeleteFile(Path.GetFileName(fullPath)))
+                return $"File not found: {normalizedPath}";
+        }
 
         // Clean empty subdirectories
         var dir = Path.GetDirectoryName(fullPath);
-        if (dir is not null && dir != skill.SkillDirectory
-            && Directory.Exists(dir) && !Directory.EnumerateFileSystemEntries(dir).Any())
+        if (dir is not null && dir != skill.SkillDirectory)
         {
-            Directory.Delete(dir);
+            using var parentDirectory = OpenParentDirectory(dir, createMissing: false);
+            parentDirectory?.DeleteEmptyDirectory(Path.GetFileName(dir));
         }
 
         return AppendScanWarnings($"File removed: {normalizedPath}", RescanAndUpdateIndex());
@@ -500,9 +547,15 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
     /// The link walk starts below the native skills root. The operator owns that
     /// root, and OS links above it (macOS <c>/var</c>) are not traversal. When
     /// <paramref name="atomicWrite"/> is true, the check also covers the
-    /// <c>.tmp</c> file that <see cref="AtomicWrite"/> writes first, because
-    /// <see cref="File.WriteAllText(string, string?)"/> follows a link at that name.
+    /// <c>.tmp</c> file that <see cref="AtomicWrite"/> writes first.
     /// A failure to inspect the path denies the operation.
+    /// <para>
+    /// This check reads path names, and a link can appear after it. The file
+    /// operations therefore do not trust it: they run through
+    /// <see cref="SafeFileSystemMutation"/>, which checks each directory again at use
+    /// time and does not follow a link. This check gives an early, clear denial and
+    /// applies the protected-path policy.
+    /// </para>
     /// </remarks>
     private string? GuardMutationTarget(string skillRoot, string targetPath, bool atomicWrite)
     {
@@ -517,7 +570,7 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
             foreach (var path in paths)
             {
                 if (PathUtility.ContainsSymlinkSegment(_paths.SkillsDirectory, path))
-                    return "Symlink traversal is not allowed in skill file paths.";
+                    return LinkDeniedMessage;
             }
 
             foreach (var path in paths)
@@ -535,11 +588,35 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         }
     }
 
-    private static void AtomicWrite(string path, string content)
+    /// <summary>
+    /// Writes <paramref name="content"/> to <c>path.tmp</c>, then renames it to
+    /// <paramref name="path"/>. The operations are relative to a directory handle
+    /// that <see cref="SafeFileSystemMutation"/> opened without link traversal, so a
+    /// link that appears after <see cref="GuardMutationTarget"/> cannot redirect them.
+    /// </summary>
+    private void AtomicWrite(string path, string content, bool createDirectory)
     {
-        var tempPath = path + AtomicTempSuffix;
-        File.WriteAllText(tempPath, content, Encoding.UTF8);
-        File.Move(tempPath, path, overwrite: true);
+        using var directory = OpenParentDirectory(path, createDirectory)
+            ?? throw new DirectoryNotFoundException("The skill directory does not exist.");
+        StageHookForTesting?.Invoke(SkillMutationStage.DirectoryOpened);
+        var name = Path.GetFileName(path);
+        directory.WriteAllTextAtomic(name, content, name + AtomicTempSuffix);
+    }
+
+    /// <summary>
+    /// Opens the directory that contains <paramref name="path"/>, one segment at a
+    /// time below the native skills root, with no link traversal. Returns
+    /// <c>null</c> when a directory is missing and <paramref name="createMissing"/>
+    /// is false.
+    /// </summary>
+    private VerifiedDirectory? OpenParentDirectory(string path, bool createMissing)
+    {
+        var parent = Path.GetDirectoryName(path)
+            ?? throw new ArgumentException("The path has no parent directory.", nameof(path));
+        // GuardMutationTarget keeps every target below the skills root. A ".." segment
+        // here is rejected by SafeFileSystemMutation, so the operation fails closed.
+        var relative = Path.GetRelativePath(_paths.SkillsDirectory, parent);
+        return SafeFileSystemMutation.OpenDirectory(_paths.SkillsDirectory, relative, createMissing);
     }
 
     private Netclaw.Actors.Skills.SkillScanResult RescanAndUpdateIndex()
@@ -577,4 +654,18 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
             ? text
             : string.Concat(text.AsSpan(0, index), newValue, text.AsSpan(index + oldValue.Length));
     }
+}
+
+/// <summary>
+/// The stages of a <c>skill_manage</c> mutation that a test can intercept.
+/// </summary>
+internal enum SkillMutationStage
+{
+    /// <summary>The path checks passed. No file system change was done yet.</summary>
+    Checked,
+
+    /// <summary>
+    /// The directory of the target is open and checked. The file operation is next.
+    /// </summary>
+    DirectoryOpened,
 }

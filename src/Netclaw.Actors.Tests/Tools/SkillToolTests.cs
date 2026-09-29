@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.Logging.Abstractions;
+using System.Runtime.Versioning;
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Skills;
 using Netclaw.Actors.SubAgents;
@@ -987,7 +988,9 @@ public class SkillToolTests : IDisposable
         Assert.Single(_registry.GetScanIssues());
     }
 
-    private SkillManageTool CreateManageTool(ISkillContentScanner? scanner = null)
+    private SkillManageTool CreateManageTool(
+        ISkillContentScanner? scanner = null,
+        Action<SkillMutationStage>? stageHook = null)
     {
         var feeds = new SkillFeedsConfig();
         if (Directory.Exists(_paths.ServerFeedsDirectory))
@@ -1003,7 +1006,10 @@ public class SkillToolTests : IDisposable
             _registry,
             new SkillIndexPublisher(_registry, _indexLayer, static (_, _) => true));
         return new SkillManageTool(
-            _registry, _paths, scanner ?? new NoOpSkillContentScanner(), refresher, CreateProtectedPathPolicy());
+            _registry, _paths, scanner ?? new NoOpSkillContentScanner(), refresher, CreateProtectedPathPolicy())
+        {
+            StageHookForTesting = stageHook,
+        };
     }
 
     // Mirrors the daemon write-deny entries that a skill mutation can reach.
@@ -1435,6 +1441,244 @@ public class SkillToolTests : IDisposable
 
         Assert.StartsWith(ProtectedDeniedMessage, result);
         Assert.True(File.Exists(Path.Combine(_paths.SystemSkillsDirectory, "sys-kept", "SKILL.md")));
+    }
+
+    // --- Time-of-check to time-of-use: a link that appears after the path checks ---
+    //
+    // The stage hook runs the attacker step at an exact point: after the path
+    // checks and before the file system use. The tests do not depend on timing.
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    [InlineData("write_file")]
+    [InlineData("patch")]
+    [InlineData("remove_file")]
+    public async Task SkillManage_directory_swapped_to_link_after_check_does_not_touch_outside(string action)
+    {
+        WriteLinkTestSkill();
+        WriteFile("link-test", "references/notes.md", "inside original");
+        var outsideDir = CreateOutsideDirectory();
+        var outsideFile = Path.Combine(outsideDir, "notes.md");
+        File.WriteAllText(outsideFile, "outside original");
+        var references = Path.Combine(_paths.SkillsDirectory, "link-test", "references");
+
+        var tool = CreateManageTool(stageHook: stage =>
+        {
+            if (stage == SkillMutationStage.Checked)
+                ReplaceDirectoryWithLink(references, outsideDir);
+        });
+        var result = await tool.ExecuteAsync(ResourceActionInput(action, "link-test"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        // The outside state is the security property. Check it first.
+        Assert.Equal(["notes.md"], Directory.EnumerateFileSystemEntries(outsideDir).Select(Path.GetFileName));
+        Assert.Equal("outside original", File.ReadAllText(outsideFile));
+        Assert.StartsWith(LinkDeniedMessage, result);
+        Assert.DoesNotContain(outsideDir, result);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    public async Task SkillManage_create_into_directory_linked_after_check_is_denied()
+    {
+        var outsideDir = CreateOutsideDirectory();
+        var skillDir = Path.Combine(_paths.SkillsDirectory, "race-new");
+
+        var tool = CreateManageTool(stageHook: stage =>
+        {
+            if (stage == SkillMutationStage.Checked)
+                Directory.CreateSymbolicLink(skillDir, outsideDir);
+        });
+        var result = await tool.ExecuteAsync(ToolInput.Create(
+            "Action", "create", "Name", "race-new",
+            "Content", "---\nname: race-new\ndescription: New.\n---\n# New"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outsideDir));
+        Assert.StartsWith(LinkDeniedMessage, result);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    public async Task SkillManage_link_at_temp_path_after_check_does_not_write_outside()
+    {
+        WriteLinkTestSkill();
+        var outsideFile = Path.Combine(CreateOutsideDirectory(), "config.json");
+        File.WriteAllText(outsideFile, "original");
+        var skillFile = Path.Combine(_paths.SkillsDirectory, "link-test", "SKILL.md");
+        const string newContent = "---\nname: link-test\ndescription: Changed.\n---\n# Changed";
+
+        var tool = CreateManageTool(stageHook: stage =>
+        {
+            if (stage == SkillMutationStage.Checked)
+                File.CreateSymbolicLink(skillFile + ".tmp", outsideFile);
+        });
+        var result = await tool.ExecuteAsync(ToolInput.Create(
+            "Action", "edit", "Name", "link-test", "Content", newContent), PersonalCtx, TestContext.Current.CancellationToken);
+
+        // The write replaces the planted link entry. It does not follow it.
+        Assert.Equal("original", File.ReadAllText(outsideFile));
+        Assert.StartsWith("Skill 'link-test' updated.", result);
+        Assert.Equal(newContent, File.ReadAllText(skillFile));
+        Assert.False(File.Exists(skillFile + ".tmp") || new FileInfo(skillFile + ".tmp").LinkTarget is not null);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    public async Task SkillManage_delete_through_category_linked_after_check_is_denied()
+    {
+        WriteNestedSkill("race-cat", "victim", """
+            ---
+            name: victim
+            description: Victim skill.
+            ---
+            # Victim
+            """);
+        ScanSkills();
+        var outsideDir = CreateOutsideDirectory();
+        var outsideKeep = Path.Combine(outsideDir, "victim", "keep.txt");
+        Directory.CreateDirectory(Path.GetDirectoryName(outsideKeep)!);
+        File.WriteAllText(outsideKeep, "keep");
+        var category = Path.Combine(_paths.SkillsDirectory, "race-cat");
+
+        var tool = CreateManageTool(stageHook: stage =>
+        {
+            if (stage == SkillMutationStage.Checked)
+                ReplaceDirectoryWithLink(category, outsideDir);
+        });
+        var result = await tool.ExecuteAsync(ToolInput.Create(
+            "Action", "delete", "Name", "victim"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.True(File.Exists(outsideKeep), "The delete removed a file outside the skill.");
+        Assert.StartsWith(LinkDeniedMessage, result);
+    }
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    [InlineData("write_file", "planted")]
+    [InlineData("patch", "inside planted")]
+    [InlineData("remove_file", null)]
+    public async Task SkillManage_directory_swapped_after_open_keeps_change_in_opened_directory(
+        string action, string? expectedInside)
+    {
+        // The directory handle is already open when the link appears. The change
+        // must go to the directory that was opened, not through the new link.
+        WriteLinkTestSkill();
+        WriteFile("link-test", "references/notes.md", "inside original");
+        var outsideDir = CreateOutsideDirectory();
+        var outsideFile = Path.Combine(outsideDir, "notes.md");
+        File.WriteAllText(outsideFile, "outside original");
+        var references = Path.Combine(_paths.SkillsDirectory, "link-test", "references");
+
+        var tool = CreateManageTool(stageHook: stage =>
+        {
+            if (stage == SkillMutationStage.DirectoryOpened)
+                ReplaceDirectoryWithLink(references, outsideDir);
+        });
+        var result = await tool.ExecuteAsync(ResourceActionInput(action, "link-test"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.Equal(["notes.md"], Directory.EnumerateFileSystemEntries(outsideDir).Select(Path.GetFileName));
+        Assert.Equal("outside original", File.ReadAllText(outsideFile));
+        var openedFile = Path.Combine(references + ".moved", "notes.md");
+        if (expectedInside is null)
+        {
+            Assert.StartsWith("File removed: references/notes.md", result);
+            Assert.False(File.Exists(openedFile));
+        }
+        else
+        {
+            Assert.DoesNotContain(LinkDeniedMessage, result);
+            Assert.Equal(expectedInside, File.ReadAllText(openedFile));
+        }
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    public async Task SkillManage_delete_removes_link_that_appears_in_tree_without_following_it()
+    {
+        WriteSkill("tree-test", """
+            ---
+            name: tree-test
+            description: Tree test.
+            ---
+            # Tree Test
+            """);
+        WriteFile("tree-test", "scripts/run.sh", "echo run");
+        ScanSkills();
+        var outsideDir = CreateOutsideDirectory();
+        var outsideKeep = Path.Combine(outsideDir, "keep.txt");
+        File.WriteAllText(outsideKeep, "keep");
+        var skillDir = Path.Combine(_paths.SkillsDirectory, "tree-test");
+
+        var tool = CreateManageTool(stageHook: stage =>
+        {
+            if (stage == SkillMutationStage.DirectoryOpened)
+                ReplaceDirectoryWithLink(Path.Combine(skillDir, "scripts"), outsideDir);
+        });
+        var result = await tool.ExecuteAsync(ToolInput.Create(
+            "Action", "delete", "Name", "tree-test"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.Equal("keep", File.ReadAllText(outsideKeep));
+        Assert.StartsWith("Skill 'tree-test' deleted.", result);
+        Assert.False(Directory.Exists(skillDir) || File.Exists(skillDir));
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    public async Task SkillManage_delete_of_skill_directory_swapped_after_open_is_denied()
+    {
+        WriteLinkTestSkill();
+        var outsideDir = CreateOutsideDirectory();
+        var outsideKeep = Path.Combine(outsideDir, "keep.txt");
+        File.WriteAllText(outsideKeep, "keep");
+        var skillDir = Path.Combine(_paths.SkillsDirectory, "link-test");
+
+        var tool = CreateManageTool(stageHook: stage =>
+        {
+            if (stage == SkillMutationStage.DirectoryOpened)
+                ReplaceDirectoryWithLink(skillDir, outsideDir);
+        });
+        var result = await tool.ExecuteAsync(ToolInput.Create(
+            "Action", "delete", "Name", "link-test"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.Equal("keep", File.ReadAllText(outsideKeep));
+        Assert.StartsWith(LinkDeniedMessage, result);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "Unix file modes exist only on POSIX systems.")]
+    [SlopwatchSuppress("SW001", "Unix file modes exist only on POSIX systems.")]
+    [UnsupportedOSPlatform("windows")]
+    public async Task SkillManage_new_file_gets_the_default_file_mode()
+    {
+        // openat reads its mode as a variadic argument. Apple arm64 passes that
+        // argument on the stack, so a wrong call gives a random mode.
+        WriteLinkTestSkill();
+        var skillDir = Path.Combine(_paths.SkillsDirectory, "link-test");
+        var reference = Path.Combine(skillDir, "reference-mode.txt");
+        File.WriteAllText(reference, "reference");
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "write_file", "Name", "link-test",
+            "FilePath", "notes.txt", "FileContent", "notes"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.StartsWith("File written: notes.txt", result);
+        Assert.Equal(File.GetUnixFileMode(reference), File.GetUnixFileMode(Path.Combine(skillDir, "notes.txt")));
+    }
+
+    private static Dictionary<string, object?> ResourceActionInput(string action, string skillName) => action switch
+    {
+        "write_file" => ToolInput.Create("Action", action, "Name", skillName,
+            "FilePath", "references/notes.md", "FileContent", "planted"),
+        "patch" => ToolInput.Create("Action", action, "Name", skillName,
+            "FilePath", "references/notes.md", "OldString", "original", "NewString", "planted"),
+        _ => ToolInput.Create("Action", action, "Name", skillName,
+            "FilePath", "references/notes.md"),
+    };
+
+    // The attacker step: move the real directory away and put a link to an
+    // outside directory at its name.
+    private static void ReplaceDirectoryWithLink(string directory, string linkTarget)
+    {
+        Directory.Move(directory, directory + ".moved");
+        Directory.CreateSymbolicLink(directory, linkTarget);
     }
 
     private void WriteLinkTestSkill()
