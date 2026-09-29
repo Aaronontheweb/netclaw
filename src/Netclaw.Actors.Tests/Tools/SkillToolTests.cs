@@ -11,6 +11,7 @@ using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Telemetry;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Configuration;
 using Netclaw.Security;
 using Netclaw.Security.Skills;
 using Netclaw.Tests.Utilities;
@@ -1006,17 +1007,9 @@ public class SkillToolTests : IDisposable
             _registry, _paths, scanner ?? new NoOpSkillContentScanner(), refresher, CreateProtectedPathPolicy());
     }
 
-    // Mirrors the daemon write-deny entries that a skill mutation can reach.
+    // Use the production factory so the test deny list cannot drift from the daemon.
     private ToolPathPolicy CreateProtectedPathPolicy()
-        => new(
-        [
-            _paths.ConfigDirectory,
-            _paths.SecretsPath,
-            _paths.KeysDirectory,
-            _paths.SystemSkillsDirectory,
-            _paths.ServerFeedsDirectory,
-            _paths.ToolingShadowDirectory,
-        ]);
+        => DaemonToolPathPolicyFactory.Create(_paths, ShellExecutionEnvironmentDefaults.Bash);
 
     private static SubAgentSpawner CreateSubAgentSpawner()
     {
@@ -1435,6 +1428,67 @@ public class SkillToolTests : IDisposable
 
         Assert.StartsWith(ProtectedDeniedMessage, result);
         Assert.True(File.Exists(Path.Combine(_paths.SystemSkillsDirectory, "sys-kept", "SKILL.md")));
+    }
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task SkillManage_create_through_linked_skill_directory_is_denied(bool liveLink)
+    {
+        ScanSkills();
+        var outsideDir = CreateOutsideDirectory();
+        var linkTarget = liveLink ? outsideDir : Path.Combine(outsideDir, "missing");
+        Directory.CreateSymbolicLink(Path.Combine(_paths.SkillsDirectory, "new-skill"), linkTarget);
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "create", "Name", "new-skill",
+            "Content", "---\nname: new-skill\ndescription: New.\n---\n# New"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.StartsWith(LinkDeniedMessage, result);
+        Assert.DoesNotContain(outsideDir, result);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outsideDir));
+    }
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SkillManage_delete_through_linked_directory_is_denied(bool linkCategory)
+    {
+        // The scan accepts a real directory. A link then replaces the skill root or
+        // its category directory before the delete runs.
+        var skillParent = linkCategory
+            ? Path.Combine(_paths.SkillsDirectory, "team")
+            : _paths.SkillsDirectory;
+        var content = """
+            ---
+            name: del-skill
+            description: Delete test.
+            ---
+            # Delete
+            """;
+        if (linkCategory)
+            WriteNestedSkill("team", "del-skill", content);
+        else
+            WriteSkill("del-skill", content);
+        ScanSkills();
+
+        var outsideDir = CreateOutsideDirectory();
+        var outsideSkill = linkCategory ? Path.Combine(outsideDir, "del-skill") : outsideDir;
+        Directory.CreateDirectory(outsideSkill);
+        File.WriteAllText(Path.Combine(outsideSkill, "SKILL.md"), content);
+        File.WriteAllText(Path.Combine(outsideSkill, "keep.txt"), "keep");
+        var linkPath = linkCategory ? skillParent : Path.Combine(skillParent, "del-skill");
+        Directory.Delete(linkPath, recursive: true);
+        Directory.CreateSymbolicLink(linkPath, outsideDir);
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "delete", "Name", "del-skill"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.StartsWith(LinkDeniedMessage, result);
+        Assert.Equal("keep", File.ReadAllText(Path.Combine(outsideSkill, "keep.txt")));
+        Assert.NotNull(new DirectoryInfo(linkPath).LinkTarget);
     }
 
     private void WriteLinkTestSkill()
