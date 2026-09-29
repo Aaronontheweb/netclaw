@@ -36,6 +36,8 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
     private const int MaxNameLength = 64;
     private const int MaxDescriptionLength = 1024;
     private const string AtomicTempSuffix = ".tmp";
+    private const string LinkDeniedError = "Symlink traversal is not allowed in skill file paths.";
+    private const string UnverifiedTargetError = "Could not verify the target path. The operation was not done.";
 
     private readonly SkillRegistry _skillRegistry;
     private readonly NetclawPaths _paths;
@@ -129,13 +131,15 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
                 return $"Skill '{name}' already exists. Use 'edit' to modify it.";
 
             // Orphaned file — overwrite and register it
-            AtomicWrite(skillPath, args.Content);
+            var orphanWriteError = AtomicWrite(skillPath, args.Content);
+            if (orphanWriteError is not null) return orphanWriteError;
             RescanAndUpdateIndex();
             return $"Skill '{name}' created at {skillDir} (replaced orphaned file)";
         }
 
         Directory.CreateDirectory(skillDir);
-        AtomicWrite(skillPath, args.Content);
+        var writeError = AtomicWrite(skillPath, args.Content);
+        if (writeError is not null) return writeError;
         var rescan = RescanAndUpdateIndex();
 
         var message = $"Skill '{name}' created at {skillDir}";
@@ -190,7 +194,8 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         if (!scanResult.IsAllowed)
             return $"Content scan rejected: {scanResult.Reason}";
 
-        AtomicWrite(skill.FilePath, args.Content);
+        var writeError = AtomicWrite(skill.FilePath, args.Content);
+        if (writeError is not null) return writeError;
         var rescan = RescanAndUpdateIndex();
 
         var message = $"Skill '{name}' updated.";
@@ -263,10 +268,11 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         if (!scanResult.IsAllowed)
             return $"Content scan rejected: {scanResult.Reason}";
 
+        var writeError = AtomicWrite(targetPath, newContent);
+        if (writeError is not null) return writeError;
+
         if (targetPath == skill.FilePath)
         {
-            AtomicWrite(targetPath, newContent);
-
             var message = "Patch applied.";
             if (scanResult.Verdict == ScanVerdict.Warning)
                 message += $" (warning: {scanResult.Reason})";
@@ -274,7 +280,6 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
             return AppendScanWarnings(message, RescanAndUpdateIndex());
         }
 
-        AtomicWrite(targetPath, newContent);
         var warning = scanResult.Verdict == ScanVerdict.Warning
             ? $" (warning: {scanResult.Reason})"
             : string.Empty;
@@ -353,7 +358,8 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
 
         var dir = Path.GetDirectoryName(fullPath)!;
         Directory.CreateDirectory(dir);
-        AtomicWrite(fullPath, args.FileContent);
+        var writeError = AtomicWrite(fullPath, args.FileContent);
+        if (writeError is not null) return writeError;
         var rescan = RescanAndUpdateIndex();
 
         var message = $"File written: {normalizedPath}";
@@ -517,7 +523,7 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
             foreach (var path in paths)
             {
                 if (PathUtility.ContainsSymlinkSegment(_paths.SkillsDirectory, path))
-                    return "Symlink traversal is not allowed in skill file paths.";
+                    return LinkDeniedError;
             }
 
             foreach (var path in paths)
@@ -531,15 +537,76 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
                                        or ArgumentException or NotSupportedException)
         {
-            return "Could not verify the target path. The operation was not done.";
+            return UnverifiedTargetError;
         }
     }
 
-    private static void AtomicWrite(string path, string content)
+    /// <summary>
+    /// Writes <paramref name="content"/> to <c>path + ".tmp"</c> and then moves that
+    /// file over <paramref name="path"/>. Returns an error, or null on success.
+    /// </summary>
+    /// <remarks>
+    /// The temp file opens with <see cref="FileMode.CreateNew"/> (O_CREAT|O_EXCL on
+    /// POSIX, CREATE_NEW on Windows). That open fails when any entry has the name,
+    /// including a live or dangling link, so a link that appears after
+    /// <see cref="GuardMutationTarget"/> cannot redirect the write. A crash can leave
+    /// a stale regular temp file. Only a regular file is removed, and the open then
+    /// runs again with the same exclusive mode. The rename replaces a link at
+    /// <paramref name="path"/> and does not follow it.
+    /// </remarks>
+    internal static string? AtomicWrite(string path, string content)
     {
         var tempPath = path + AtomicTempSuffix;
-        File.WriteAllText(tempPath, content, Encoding.UTF8);
+        var stream = TryCreateTempFile(tempPath);
+        if (stream is null)
+        {
+            if (!TryRemoveStaleTempFile(tempPath))
+                return UnverifiedTargetError;
+
+            stream = TryCreateTempFile(tempPath);
+            if (stream is null)
+                return UnverifiedTargetError;
+        }
+
+        using (var writer = new StreamWriter(stream, Encoding.UTF8))
+            writer.Write(content);
+
         File.Move(tempPath, path, overwrite: true);
+        return null;
+    }
+
+    private static FileStream? TryCreateTempFile(string tempPath)
+    {
+        try
+        {
+            return new FileStream(tempPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+    }
+
+    private static bool TryRemoveStaleTempFile(string tempPath)
+    {
+        try
+        {
+            // File.Exists is true for a dangling link, and the attributes of a link
+            // describe the link itself. A link or a directory stays and fails the write.
+            if (!File.Exists(tempPath))
+                return false;
+
+            var attributes = File.GetAttributes(tempPath);
+            if ((attributes & (FileAttributes.ReparsePoint | FileAttributes.Directory)) != 0)
+                return false;
+
+            File.Delete(tempPath);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 
     private Netclaw.Actors.Skills.SkillScanResult RescanAndUpdateIndex()

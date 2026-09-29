@@ -1589,6 +1589,73 @@ public class SkillToolTests : IDisposable
         Assert.True((File.GetAttributes(category) & FileAttributes.ReparsePoint) != 0);
     }
 
+    // The atomic write must not follow a link at "<target>.tmp", even when the
+    // link appears after GuardMutationTarget runs. These tests call the write
+    // helper directly, so no guard runs first.
+    private const string UnverifiedTargetMessage = "Could not verify the target path.";
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void AtomicWrite_does_not_follow_a_link_at_the_temp_name(bool liveLink)
+    {
+        var outsideDir = CreateOutsideDirectory();
+        var outsideFile = Path.Combine(outsideDir, "config.json");
+        if (liveLink)
+            File.WriteAllText(outsideFile, "original");
+        var skillDir = Path.Combine(_paths.SkillsDirectory, "race-skill");
+        Directory.CreateDirectory(skillDir);
+        var target = Path.Combine(skillDir, "guide.md");
+        File.CreateSymbolicLink(target + ".tmp", outsideFile);
+
+        var result = SkillManageTool.AtomicWrite(target, "attacker text");
+
+        Assert.NotNull(result);
+        Assert.StartsWith(UnverifiedTargetMessage, result);
+        Assert.False(File.Exists(target));
+        Assert.NotNull(new FileInfo(target + ".tmp").LinkTarget);
+        if (liveLink)
+            Assert.Equal("original", File.ReadAllText(outsideFile));
+        else
+            Assert.Empty(Directory.EnumerateFileSystemEntries(outsideDir));
+    }
+
+    [Fact(SkipType = typeof(TestPlatform), SkipUnless = nameof(TestPlatform.IsWindows),
+        Skip = "This case uses native Windows junction semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native Windows junction semantics.")]
+    public async Task AtomicWrite_does_not_use_a_junction_at_the_temp_name()
+    {
+        var outsideDir = CreateOutsideDirectory();
+        var skillDir = Path.Combine(_paths.SkillsDirectory, "race-skill");
+        Directory.CreateDirectory(skillDir);
+        var target = Path.Combine(skillDir, "guide.md");
+        await WindowsJunction.CreateAsync(target + ".tmp", outsideDir, TestContext.Current.CancellationToken);
+
+        var result = SkillManageTool.AtomicWrite(target, "attacker text");
+
+        Assert.NotNull(result);
+        Assert.StartsWith(UnverifiedTargetMessage, result);
+        Assert.False(File.Exists(target));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outsideDir));
+    }
+
+    [Fact]
+    public void AtomicWrite_replaces_a_stale_regular_temp_file()
+    {
+        // A crash can leave a regular temp file. It must not block later writes.
+        var skillDir = Path.Combine(_paths.SkillsDirectory, "stale-skill");
+        Directory.CreateDirectory(skillDir);
+        var target = Path.Combine(skillDir, "guide.md");
+        File.WriteAllText(target + ".tmp", "stale partial write");
+
+        var result = SkillManageTool.AtomicWrite(target, "fresh text");
+
+        Assert.Null(result);
+        Assert.Equal("fresh text", File.ReadAllText(target));
+        Assert.False(File.Exists(target + ".tmp"));
+    }
+
     private void WriteLinkTestSkill()
     {
         WriteSkill("link-test", """
