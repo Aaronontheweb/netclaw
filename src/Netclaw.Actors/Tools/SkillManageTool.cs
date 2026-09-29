@@ -511,9 +511,9 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
             if (!PathUtility.IsWithinRoot(targetPath, skillRoot))
                 return "Resolved path is outside the skill directory.";
 
-            var paths = atomicWrite
-                ? new[] { targetPath, targetPath + AtomicTempSuffix }
-                : [targetPath];
+            List<string> paths = [targetPath];
+            if (atomicWrite)
+                paths.Add(targetPath + AtomicTempSuffix);
             foreach (var path in paths)
             {
                 if (PathUtility.ContainsSymlinkSegment(_paths.SkillsDirectory, path))
