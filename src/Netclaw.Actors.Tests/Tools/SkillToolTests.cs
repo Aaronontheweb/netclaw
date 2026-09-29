@@ -1491,6 +1491,104 @@ public class SkillToolTests : IDisposable
         Assert.NotNull(new DirectoryInfo(linkPath).LinkTarget);
     }
 
+    // Windows variants: a directory junction needs no administrator rights, so
+    // the Windows CI runner executes these attacks. POSIX hosts skip them.
+
+    [Fact(SkipType = typeof(TestPlatform), SkipUnless = nameof(TestPlatform.IsWindows),
+        Skip = "This case uses native Windows junction semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native Windows junction semantics.")]
+    public async Task SkillManage_write_through_junction_directory_is_denied()
+    {
+        WriteLinkTestSkill();
+        var outsideDir = CreateOutsideDirectory();
+        var ct = TestContext.Current.CancellationToken;
+        await WindowsJunction.CreateAsync(
+            Path.Combine(_paths.SkillsDirectory, "link-test", "references"), outsideDir, ct);
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "write_file", "Name", "link-test",
+            "FilePath", "references/new.txt", "FileContent", "planted"), PersonalCtx, ct);
+
+        Assert.StartsWith(LinkDeniedMessage, result);
+        Assert.DoesNotContain(outsideDir, result, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outsideDir));
+    }
+
+    [Fact(SkipType = typeof(TestPlatform), SkipUnless = nameof(TestPlatform.IsWindows),
+        Skip = "This case uses native Windows junction semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native Windows junction semantics.")]
+    public async Task SkillManage_junction_at_atomic_temp_path_is_denied()
+    {
+        // A junction can only name a directory, but it is still a link at the
+        // "<target>.tmp" name. The operation must fail before any write.
+        WriteLinkTestSkill();
+        var outsideDir = CreateOutsideDirectory();
+        var references = Path.Combine(_paths.SkillsDirectory, "link-test", "references");
+        Directory.CreateDirectory(references);
+        var ct = TestContext.Current.CancellationToken;
+        await WindowsJunction.CreateAsync(Path.Combine(references, "guide.md.tmp"), outsideDir, ct);
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "write_file", "Name", "link-test",
+            "FilePath", "references/guide.md", "FileContent", "overwritten"), PersonalCtx, ct);
+
+        Assert.StartsWith(LinkDeniedMessage, result);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outsideDir));
+        Assert.False(File.Exists(Path.Combine(references, "guide.md")));
+    }
+
+    [Fact(SkipType = typeof(TestPlatform), SkipUnless = nameof(TestPlatform.IsWindows),
+        Skip = "This case uses native Windows junction semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native Windows junction semantics.")]
+    public async Task SkillManage_create_through_junction_skill_directory_is_denied()
+    {
+        ScanSkills();
+        var outsideDir = CreateOutsideDirectory();
+        var ct = TestContext.Current.CancellationToken;
+        await WindowsJunction.CreateAsync(Path.Combine(_paths.SkillsDirectory, "new-skill"), outsideDir, ct);
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "create", "Name", "new-skill",
+            "Content", "---\nname: new-skill\ndescription: New.\n---\n# New"), PersonalCtx, ct);
+
+        Assert.StartsWith(LinkDeniedMessage, result);
+        Assert.DoesNotContain(outsideDir, result, StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outsideDir));
+    }
+
+    [Fact(SkipType = typeof(TestPlatform), SkipUnless = nameof(TestPlatform.IsWindows),
+        Skip = "This case uses native Windows junction semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native Windows junction semantics.")]
+    public async Task SkillManage_delete_through_junction_category_directory_is_denied()
+    {
+        var content = """
+            ---
+            name: del-skill
+            description: Delete test.
+            ---
+            # Delete
+            """;
+        WriteNestedSkill("team", "del-skill", content);
+        ScanSkills();
+
+        var outsideDir = CreateOutsideDirectory();
+        var outsideSkill = Path.Combine(outsideDir, "del-skill");
+        Directory.CreateDirectory(outsideSkill);
+        File.WriteAllText(Path.Combine(outsideSkill, "SKILL.md"), content);
+        File.WriteAllText(Path.Combine(outsideSkill, "keep.txt"), "keep");
+        var category = Path.Combine(_paths.SkillsDirectory, "team");
+        Directory.Delete(category, recursive: true);
+        var ct = TestContext.Current.CancellationToken;
+        await WindowsJunction.CreateAsync(category, outsideDir, ct);
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "delete", "Name", "del-skill"), PersonalCtx, ct);
+
+        Assert.StartsWith(LinkDeniedMessage, result);
+        Assert.Equal("keep", File.ReadAllText(Path.Combine(outsideSkill, "keep.txt")));
+        Assert.True((File.GetAttributes(category) & FileAttributes.ReparsePoint) != 0);
+    }
+
     private void WriteLinkTestSkill()
     {
         WriteSkill("link-test", """
