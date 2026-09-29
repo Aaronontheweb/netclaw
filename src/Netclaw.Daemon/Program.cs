@@ -399,10 +399,7 @@ static NetclawPaths ConfigureConfigServices(
     // 1. netclaw.json (base config, optional)
     // 2. secrets.json (credentials overlay, optional)
     // 3. NETCLAW_* environment variables (highest priority)
-    configuration
-        .AddJsonFile(bootstrapPaths.NetclawConfigPath, optional: true, reloadOnChange: false)
-        .AddJsonFile(bootstrapPaths.SecretsPath, optional: true, reloadOnChange: false)
-        .AddEnvironmentVariables("NETCLAW_");
+    configuration.AddNetclawDaemonSources(bootstrapPaths);
 
     // Re-create paths with config-driven overrides (e.g. custom workspaces directory).
     var workspacesDir = configuration.GetValue<string>("Workspaces:Directory");
@@ -584,8 +581,7 @@ static void ConfigureDaemonServices(
     var sessionConfig = SessionConfig.BindFromConfiguration(configuration.GetSection("Session"));
     services.AddSingleton(sessionConfig);
 
-    var toolConfig = ToolConfig.BindFromConfiguration(configuration.GetSection("Tools"));
-    services.AddSingleton(toolConfig);
+    var toolConfig = services.AddDaemonToolConfig(configuration);
 
     var securityPolicyConfig = configuration.GetSection("Security")
         .Get<SecurityPolicyConfig>() ?? new SecurityPolicyConfig();

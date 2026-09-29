@@ -5,12 +5,14 @@
 // -----------------------------------------------------------------------
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Json;
 using Netclaw.Cli.Mcp;
 using Netclaw.Cli.Tui.Config;
 using Netclaw.Cli.Tests.Tui.Wizard;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Configuration;
 using Netclaw.Media;
 using Xunit;
 
@@ -560,11 +562,10 @@ public sealed class SecurityAccessViewModelTests : WizardStepTestBase
     private ToolConfig BindDaemonToolConfig()
     {
         var configuration = new ConfigurationBuilder()
-            .AddJsonFile(Context.Paths.NetclawConfigPath, optional: true, reloadOnChange: false)
-            .AddJsonFile(Context.Paths.SecretsPath, optional: true, reloadOnChange: false)
-            .AddEnvironmentVariables($"NETCLAW_TEST_{Guid.NewGuid():N}_")
+            .AddNetclawDaemonSources(Context.Paths)
             .Build();
+        var services = new ServiceCollection();
 
-        return ToolConfig.BindFromConfiguration(configuration.GetSection("Tools"));
+        return services.AddDaemonToolConfig(configuration);
     }
 }

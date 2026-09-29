@@ -4,7 +4,6 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Collections;
-using System.ComponentModel;
 using System.Reflection;
 using Microsoft.Extensions.Configuration;
 using Netclaw.Media;
@@ -165,25 +164,105 @@ public sealed class ToolConfigBindingTests : IDisposable
             }
             """));
 
-        Assert.Contains("Tools:AudienceProfiles:Team:AllowedTools", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("Tools.AudienceProfiles.Team.AllowedTools", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("null")]
+    [InlineData("{}")]
+    public void Json_null_or_empty_object_for_a_list_binds_an_empty_list_with_a_warning(string value)
+    {
+        // Owner decision: null and {} mean an empty list. Every list with default items is an
+        // allow list, so an empty list grants less. The daemon logs each warning at startup.
+        var toolConfig = Bind(
+            $$"""
+            {
+              "Tools": {
+                "AudienceProfiles": {
+                  "Team": { "AllowedTools": {{value}} },
+                  "GlobalReadRoots": {{value}}
+                }
+              }
+            }
+            """,
+            out var warnings);
+
+        Assert.Empty(toolConfig.AudienceProfiles.Team.AllowedTools);
+        Assert.Empty(toolConfig.AudienceProfiles.GlobalReadRoots);
+        Assert.Equal(2, warnings.Count);
+        Assert.Contains(
+            "Tools.AudienceProfiles.Team.AllowedTools is null or an empty object; treating it as an empty list.",
+            warnings);
+        Assert.Contains(
+            "Tools.AudienceProfiles.GlobalReadRoots is null or an empty object; treating it as an empty list.",
+            warnings);
     }
 
     [Fact]
-    public void Json_null_for_a_list_keeps_the_default_list()
+    public void Configured_lists_produce_no_warnings()
     {
-        // Documents current behavior. The JSON provider stores null as a key with a null
-        // value, which IConfiguration treats as absent. The schema rejects null for these
-        // arrays, so `netclaw doctor` reports it.
-        var toolConfig = Bind(
+        Bind(
             """
             {
               "Tools": {
-                "AudienceProfiles": { "GlobalReadRoots": null }
+                "AudienceProfiles": { "Team": { "AllowedTools": ["file_read"] }, "GlobalReadRoots": [] }
               }
             }
-            """);
+            """,
+            out var warnings);
 
-        Assert.Equal(new ToolConfig().AudienceProfiles.GlobalReadRoots, toolConfig.AudienceProfiles.GlobalReadRoots);
+        Assert.Empty(warnings);
+    }
+
+    [Fact]
+    public void Empty_environment_variable_and_json_items_fail_loudly()
+    {
+        // IConfiguration merges sources, so the JSON items would win over the empty variable.
+        // The operator asked for an empty list, so a silent non-empty list is a misconfiguration.
+        var prefix = $"NETCLAW_TEST_{Guid.NewGuid():N}_";
+        var variable = prefix + "Tools__AudienceProfiles__Team__AllowedTools";
+        Environment.SetEnvironmentVariable(variable, string.Empty);
+        try
+        {
+            var ex = Assert.Throws<InvalidOperationException>(() => Bind(
+                """
+                {
+                  "Tools": {
+                    "AudienceProfiles": { "Team": { "AllowedTools": ["file_read", "file_list"] } }
+                  }
+                }
+                """,
+                out _,
+                prefix));
+
+            Assert.Contains("Tools.AudienceProfiles.Team.AllowedTools", ex.Message, StringComparison.Ordinal);
+            Assert.Contains("list items and also an empty or scalar value", ex.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(variable, null);
+        }
+    }
+
+    [Theory]
+    [InlineData("Bogus")]
+    [InlineData("99")]
+    public void Unknown_enum_item_fails_loudly(string category)
+    {
+        // The Microsoft binder drops an item that it cannot convert, which turned ["Bogus"] into [].
+        var ex = Assert.Throws<InvalidOperationException>(() => Bind(
+            $$"""
+            {
+              "Tools": {
+                "AudienceProfiles": {
+                  "Team": { "ChannelAttachments": { "AllowedCategories": ["Image", "{{category}}"] } }
+                }
+              }
+            }
+            """));
+
+        Assert.Contains("Tools.AudienceProfiles.Team.ChannelAttachments.AllowedCategories.1", ex.Message, StringComparison.Ordinal);
+        Assert.Contains($"'{category}'", ex.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -222,49 +301,91 @@ public sealed class ToolConfigBindingTests : IDisposable
     public void Config_types_bound_without_the_list_binder_have_no_default_list_items(Type configType)
     {
         // The daemon binds these types with the plain Microsoft binder. That is safe only while
-        // each default list is empty. A default list item needs ConfigurationListBinder.
-        var itemsByPath = new List<string>();
-        CollectDefaultListItems(Activator.CreateInstance(configType)!, configType.Name, itemsByPath);
+        // each default list is empty. A default list item needs ConfigurationListBinder and a
+        // new decision about what null and {} mean for that list.
+        var findings = new List<string>();
+        WalkConfigGraph(Activator.CreateInstance(configType)!, configType.Name, findings, checkReplaceable: false);
 
-        Assert.Empty(itemsByPath);
+        Assert.Empty(findings);
     }
 
-    private static void CollectDefaultListItems(object target, string path, List<string> itemsByPath)
+    [Fact]
+    public void Tool_config_lists_with_default_items_are_the_reviewed_allow_lists()
     {
-        foreach (var property in target.GetType().GetProperties(
-                     BindingFlags.Public | BindingFlags.Instance))
+        // ConfigurationListBinder turns null and {} into an empty list. That is safe only for
+        // allow lists. A new list with default items must be reviewed and added here.
+        var findings = new List<string>();
+        WalkConfigGraph(new ToolConfig(), nameof(ToolConfig), findings, checkReplaceable: true);
+
+        Assert.Equal(
+        [
+            "ToolConfig.AudienceProfiles.Public.AllowedTools",
+            "ToolConfig.AudienceProfiles.Public.ReadFiles.Roots",
+            "ToolConfig.AudienceProfiles.Public.WriteFiles.Roots",
+            "ToolConfig.AudienceProfiles.Public.AttachFiles.Roots",
+            "ToolConfig.AudienceProfiles.Public.ChannelAttachments.AllowedCategories",
+            "ToolConfig.AudienceProfiles.Team.AllowedTools",
+            "ToolConfig.AudienceProfiles.Team.ReadFiles.Roots",
+            "ToolConfig.AudienceProfiles.Team.WriteFiles.Roots",
+            "ToolConfig.AudienceProfiles.Team.AttachFiles.Roots",
+            "ToolConfig.AudienceProfiles.Team.ChannelAttachments.AllowedCategories",
+            "ToolConfig.AudienceProfiles.Personal.ChannelAttachments.AllowedCategories",
+            "ToolConfig.AudienceProfiles.GlobalReadRoots",
+            "ToolConfig.WebFetch.HttpAllowList"
+        ], findings);
+    }
+
+    // Records each list with default items. With checkReplaceable, it also records each list
+    // that ConfigurationListBinder cannot replace, so the guard fails before startup does.
+    private static void WalkConfigGraph(object target, string path, List<string> findings, bool checkReplaceable)
+    {
+        foreach (var property in target.GetType().GetProperties(BindingFlags.Public | BindingFlags.Instance))
         {
-            if (property.GetIndexParameters().Length > 0 || property.GetValue(target) is not { } value)
+            if (property.GetIndexParameters().Length > 0)
                 continue;
 
             var propertyPath = $"{path}.{property.Name}";
-            if (value is IEnumerable items and not string)
+            var propertyType = property.PropertyType;
+            var value = property.GetValue(target);
+            if (ConfigurationListBinder.IsList(propertyType))
             {
-                if (items.Cast<object>().Any())
-                    itemsByPath.Add(propertyPath);
+                if (checkReplaceable && property.SetMethod?.IsPublic != true)
+                    findings.Add($"{propertyPath} (no public setter)");
+                if (value is IEnumerable items && items.Cast<object>().Any())
+                    findings.Add(propertyPath);
             }
-            else if (property.PropertyType.IsClass
-                     && property.PropertyType != typeof(string)
-                     && !TypeDescriptor.GetConverter(property.PropertyType)
-                         .CanConvertFrom(typeof(string)))
+            else if (ConfigurationListBinder.IsDictionary(propertyType))
             {
-                CollectDefaultListItems(value, propertyPath, itemsByPath);
+                if (value is IEnumerable entries && entries.Cast<object>().Any())
+                    findings.Add(propertyPath);
+            }
+            else if (value is not null && ConfigurationListBinder.IsNestedObject(propertyType))
+            {
+                WalkConfigGraph(value, propertyPath, findings, checkReplaceable);
             }
         }
     }
 
     private ToolConfig Bind(string netclawJson, string environmentPrefix = "NETCLAW_TEST_UNUSED_")
+        => Bind(netclawJson, out _, environmentPrefix);
+
+    private ToolConfig Bind(
+        string netclawJson,
+        out IReadOnlyList<string> warnings,
+        string environmentPrefix = "NETCLAW_TEST_UNUSED_")
     {
         var configPath = Path.Combine(_dir.Path, "netclaw.json");
         File.WriteAllText(configPath, netclawJson);
 
         // Same provider chain as the daemon: netclaw.json, secrets.json, then environment variables.
+        // Daemon.Tests covers the daemon chain itself. This copy lets a test use a unique
+        // environment prefix, so parallel tests do not share process environment variables.
         var configuration = new ConfigurationBuilder()
             .AddJsonFile(configPath, optional: true, reloadOnChange: false)
             .AddJsonFile(Path.Combine(_dir.Path, "secrets.json"), optional: true, reloadOnChange: false)
             .AddEnvironmentVariables(environmentPrefix)
             .Build();
 
-        return ToolConfig.BindFromConfiguration(configuration.GetSection("Tools"));
+        return ToolConfig.BindFromConfiguration(configuration.GetSection("Tools"), out warnings);
     }
 }

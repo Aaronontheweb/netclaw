@@ -4,7 +4,10 @@
 
 ### Configuration
 
-- **Configured tool lists now replace the defaults.** Before this change, the daemon added configured `Tools` list items to the built-in defaults. An operator could not narrow an audience tool allowlist, file roots, `GlobalReadRoots`, attachment categories, or `WebFetch.HttpAllowList`. Now the configured list is the complete list, and `[]` means empty. **Upgrade impact:** if `netclaw.json` already has a narrowed list, the daemon now applies that narrow list. For example, `"Team": { "AllowedTools": ["file_read", "file_list"] }` removes `web_fetch`, `file_write`, and the other Team defaults. Run `netclaw doctor` to see the lists that the daemon will apply.
+- **Configured tool lists now replace the defaults.** Before this change, the daemon added configured `Tools` list items to the built-in defaults. An operator could not narrow an audience tool allowlist, file roots, `GlobalReadRoots`, attachment categories, or `WebFetch.HttpAllowList`. Now a configured list is the complete list.
+  - `[]`, `null`, and `{}` give an empty list. For `null` and `{}`, the daemon logs a startup warning that names the key.
+  - The daemon now stops at startup, with an error that names the key, when a list key has a scalar value, when a list item is not valid (for example `"AllowedCategories": ["Bogus"]`), or when an empty `NETCLAW_*` variable and a config file both set the same list.
+  - **Upgrade impact:** if `netclaw.json` already has a narrowed list, the daemon now applies that narrow list. For example, `"Team": { "AllowedTools": ["file_read", "file_list"] }` removes `web_fetch`, `file_write`, and the other Team defaults. To add one entry to a default list, write the complete list, for example `"GlobalReadRoots": ["{skills_dir}", "{identity_dir}", "{workspaces_dir}", "/srv/docs"]`. Check each `Tools` list in `netclaw.json`, `secrets.json`, and `NETCLAW_*` variables before you upgrade.
 
 ### Shell authorization
 

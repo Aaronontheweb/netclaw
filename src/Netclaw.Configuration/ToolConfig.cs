@@ -39,11 +39,12 @@ public sealed class ToolConfig
     /// Binds the daemon <c>Tools</c> section and validates the channel attachment policy.
     /// A configured list replaces the default list, so an operator can narrow tool grants,
     /// read roots, attachment categories, and the HTTP allow list. See
-    /// <see cref="ConfigurationListBinder"/> for the list rules.
+    /// <see cref="ConfigurationListBinder"/> for the list rules. The caller must log each
+    /// item in <paramref name="warnings"/> at startup.
     /// </summary>
-    public static ToolConfig BindFromConfiguration(IConfigurationSection section)
+    public static ToolConfig BindFromConfiguration(IConfigurationSection section, out IReadOnlyList<string> warnings)
     {
-        var toolConfig = ConfigurationListBinder.Get<ToolConfig>(section);
+        var toolConfig = ConfigurationListBinder.Get<ToolConfig>(section, out warnings);
         var attachmentErrors = toolConfig.AudienceProfiles.ValidateChannelAttachments();
         if (attachmentErrors.Count > 0)
         {
