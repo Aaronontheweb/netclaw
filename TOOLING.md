@@ -29,7 +29,7 @@
 
 ## Focused Mutation Tests
 
-The path-access, tool authorization, approval directory, reminder execution, shell analysis, and shell assignment mutation jobs run on each pull request, merge group, and `dev` push.
+The path-access, tool authorization, approval directory, reminder execution, skill_manage guard, shell analysis, and shell assignment mutation jobs run on each pull request, merge group, and `dev` push.
 Each Linux job runs in parallel with the normal test matrix.
 
 Focused mutation tests prove that deterministic tests reject a specific unsafe
@@ -51,6 +51,7 @@ coverage. They do not replace positive and negative behavior tests.
 | `ReminderManagerActor.HandleExecutionOutcomeAsync` | Only the current attempt can settle; the manager replies after settlement | 2 killed | `./scripts/run-reminder-execution-mutations.sh` |
 | `ActiveExecutionTracker.TryRemove` | Only the current owner can remove its guard; cleanup removes that guard | 2 killed | `./scripts/run-reminder-execution-mutations.sh` |
 | `McpArtifactMaterializer.TryAdmit` | Scanner approval and verified MIME both precede MCP artifact storage | 4 killed | `./scripts/run-mcp-artifact-admission-mutations.sh` |
+| `SkillManageTool.GuardMutationTarget` | A skill mutation cannot follow a link, write a protected path, or skip the atomic-write temp file | 3 killed | `./scripts/run-skill-manage-guard-mutations.sh` |
 
 Run the path-access check locally:
 
@@ -214,6 +215,38 @@ An explicit local deletion of that call must also make the cleanup cases fail be
 The final local run took 95 seconds after package restore.
 The separate CI job retains a 10-minute timeout and uploads `reminder-execution-mutation-report`.
 Its report directory is `artifacts/stryker/reminder-execution`.
+
+### Skill Manage Guard Gate
+
+Run the skill_manage guard gate:
+
+```bash
+./scripts/run-skill-manage-guard-mutations.sh
+```
+
+The script reuses the xUnit 2 harness and selects three decisions in
+`SkillManageTool.GuardMutationTarget`:
+
+| Decision | Expected mutant |
+|----------|-----------------|
+| Link check | Negate the `PathUtility.ContainsSymlinkSegment` result |
+| Protected-path check | Negate the `ToolPathPolicy.IsDenied` result |
+| Atomic-write temp file | Remove the statement that adds `<target>.tmp` to the checked paths |
+
+Each location must produce one killed mutant. The report must contain exactly three tested mutants.
+The gate fails if a marker is absent or duplicated, a mutant survives, or a mutant cannot compile.
+
+Four cases use a real temp skills tree and the production `DaemonToolPathPolicyFactory` deny list.
+A control write must succeed. A write through a linked directory, a write through a link at
+`<target>.tmp`, and a flat-file skill write into `.system` must fail and leave outside files unchanged.
+
+The gate omits the `catch` branch. No deterministic test can make the helpers throw yet,
+so a mutant that allows on error would survive.
+The gate does not prove the absence of a race between the check and the write.
+
+The local run took 1 minute 54 seconds after package restore.
+The separate CI job retains a 10-minute timeout and uploads `skill-manage-guard-mutation-report`.
+Its report directory is `artifacts/stryker/skill-manage-guard`.
 
 ### Shell Analysis Gate
 
