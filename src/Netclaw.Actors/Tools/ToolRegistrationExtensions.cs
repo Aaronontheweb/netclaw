@@ -98,7 +98,12 @@ public static class ToolRegistrationExtensions
             skillLoadLogger,
             subAgentLoader));
         registry.RegisterCore(new SkillReadResourceTool(skillRegistry, scanner, skillSyncConfig));
-        registry.Register(new SkillManageTool(skillRegistry, paths, scanner, inventoryRefresher));
+        registry.Register(new SkillManageTool(
+            skillRegistry,
+            paths,
+            scanner,
+            inventoryRefresher,
+            toolAccessPolicy.ProtectedPathPolicy));
         return registry;
     }
 

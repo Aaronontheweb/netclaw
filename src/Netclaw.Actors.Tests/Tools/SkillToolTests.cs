@@ -1003,8 +1003,20 @@ public class SkillToolTests : IDisposable
             _registry,
             new SkillIndexPublisher(_registry, _indexLayer, static (_, _) => true));
         return new SkillManageTool(
-            _registry, _paths, scanner ?? new NoOpSkillContentScanner(), refresher);
+            _registry, _paths, scanner ?? new NoOpSkillContentScanner(), refresher, CreateProtectedPathPolicy());
     }
+
+    // Mirrors the daemon write-deny entries that a skill mutation can reach.
+    private ToolPathPolicy CreateProtectedPathPolicy()
+        => new(
+        [
+            _paths.ConfigDirectory,
+            _paths.SecretsPath,
+            _paths.KeysDirectory,
+            _paths.SystemSkillsDirectory,
+            _paths.ServerFeedsDirectory,
+            _paths.ToolingShadowDirectory,
+        ]);
 
     private static SubAgentSpawner CreateSubAgentSpawner()
     {
@@ -1251,6 +1263,198 @@ public class SkillToolTests : IDisposable
             if (Directory.Exists(externalDir))
                 Directory.Delete(externalDir, recursive: true);
         }
+    }
+
+    // --- Link and protected-path checks for skill_manage mutations ---
+
+    public static bool IsPosix => !OperatingSystem.IsWindows();
+
+    // A rescan warning can repeat scanner text such as "Symlink traversal is not
+    // allowed for resource file". Match the tool's own denial as a prefix instead.
+    private const string LinkDeniedMessage = "Symlink traversal is not allowed in skill file paths.";
+    private const string ProtectedDeniedMessage = "The target path is protected.";
+
+    [Fact]
+    public async Task SkillManage_file_actions_succeed_inside_skill_directory()
+    {
+        // Control: the link and protected-path checks must not deny normal work.
+        WriteSkill("plain-skill", """
+            ---
+            name: plain-skill
+            description: Plain skill.
+            ---
+            # Plain
+            """);
+        ScanSkills();
+        var tool = CreateManageTool();
+        var ct = TestContext.Current.CancellationToken;
+        var resource = Path.Combine(_paths.SkillsDirectory, "plain-skill", "references", "notes.md");
+
+        var written = await tool.ExecuteAsync(ToolInput.Create(
+            "Action", "write_file", "Name", "plain-skill",
+            "FilePath", "references/notes.md", "FileContent", "first draft"), PersonalCtx, ct);
+        var patched = await tool.ExecuteAsync(ToolInput.Create(
+            "Action", "patch", "Name", "plain-skill", "FilePath", "references/notes.md",
+            "OldString", "first", "NewString", "second"), PersonalCtx, ct);
+        var patchedContent = File.ReadAllText(resource);
+        var removed = await tool.ExecuteAsync(ToolInput.Create(
+            "Action", "remove_file", "Name", "plain-skill",
+            "FilePath", "references/notes.md"), PersonalCtx, ct);
+
+        Assert.Contains("File written: references/notes.md", written);
+        Assert.StartsWith("Patch applied.", patched);
+        Assert.Equal("second draft", patchedContent);
+        Assert.Contains("File removed: references/notes.md", removed);
+        Assert.False(File.Exists(resource));
+    }
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    [InlineData("write_file")]
+    [InlineData("patch")]
+    [InlineData("remove_file")]
+    public async Task SkillManage_file_link_to_outside_file_is_denied(string action)
+    {
+        WriteLinkTestSkill();
+        var outsideFile = Path.Combine(CreateOutsideDirectory(), "secret.txt");
+        File.WriteAllText(outsideFile, "secret value");
+        var linkPath = Path.Combine(_paths.SkillsDirectory, "link-test", "references", "leak.md");
+        Directory.CreateDirectory(Path.GetDirectoryName(linkPath)!);
+        File.CreateSymbolicLink(linkPath, outsideFile);
+
+        var args = action switch
+        {
+            "write_file" => ToolInput.Create("Action", action, "Name", "link-test",
+                "FilePath", "references/leak.md", "FileContent", "replaced"),
+            "patch" => ToolInput.Create("Action", action, "Name", "link-test",
+                "FilePath", "references/leak.md", "OldString", "secret", "NewString", "replaced"),
+            _ => ToolInput.Create("Action", action, "Name", "link-test",
+                "FilePath", "references/leak.md")
+        };
+        var result = await CreateManageTool().ExecuteAsync(args, PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.StartsWith(LinkDeniedMessage, result);
+        Assert.DoesNotContain(outsideFile, result);
+        Assert.Equal("secret value", File.ReadAllText(outsideFile));
+        Assert.NotNull(new FileInfo(linkPath).LinkTarget);
+    }
+
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    public async Task SkillManage_write_through_directory_link_is_denied()
+    {
+        WriteLinkTestSkill();
+        var outsideDir = CreateOutsideDirectory();
+        Directory.CreateSymbolicLink(
+            Path.Combine(_paths.SkillsDirectory, "link-test", "references"), outsideDir);
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "write_file", "Name", "link-test",
+            "FilePath", "references/new.txt", "FileContent", "planted"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.StartsWith(LinkDeniedMessage, result);
+        Assert.DoesNotContain(outsideDir, result);
+        Assert.Empty(Directory.EnumerateFileSystemEntries(outsideDir));
+    }
+
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "Symbolic link creation requires native POSIX semantics.")]
+    [SlopwatchSuppress("SW001", "This regression requires native POSIX symbolic-link semantics.")]
+    [InlineData("write_file")]
+    [InlineData("edit")]
+    public async Task SkillManage_link_at_atomic_temp_path_is_denied(string action)
+    {
+        // The atomic write puts content in "<target>.tmp" first. A link at that
+        // name must not redirect the write to a file outside the skill.
+        WriteLinkTestSkill();
+        var outsideFile = Path.Combine(CreateOutsideDirectory(), "config.json");
+        File.WriteAllText(outsideFile, "original");
+        var skillDir = Path.Combine(_paths.SkillsDirectory, "link-test");
+        var tempLink = action == "edit"
+            ? Path.Combine(skillDir, "SKILL.md.tmp")
+            : Path.Combine(skillDir, "references", "guide.md.tmp");
+        Directory.CreateDirectory(Path.GetDirectoryName(tempLink)!);
+        File.CreateSymbolicLink(tempLink, outsideFile);
+
+        var args = action == "edit"
+            ? ToolInput.Create("Action", "edit", "Name", "link-test",
+                "Content", "---\nname: link-test\ndescription: Changed.\n---\n# Changed")
+            : ToolInput.Create("Action", "write_file", "Name", "link-test",
+                "FilePath", "references/guide.md", "FileContent", "overwritten");
+        var result = await CreateManageTool().ExecuteAsync(args, PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.StartsWith(LinkDeniedMessage, result);
+        Assert.Equal("original", File.ReadAllText(outsideFile));
+    }
+
+    [Fact]
+    public async Task SkillManage_write_into_protected_path_is_denied()
+    {
+        // A flat-file skill uses the skills root as its skill directory, so a
+        // text-only root check lets it reach the write-protected .system tier.
+        File.WriteAllText(Path.Combine(_paths.SkillsDirectory, "flat-skill.md"), """
+            ---
+            name: flat-skill
+            description: Flat skill.
+            ---
+            # Flat
+            """);
+        ScanSkills();
+        Assert.True(_registry.GetAll().Single(s => s.Name == "flat-skill").IsFlatFile);
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "write_file", "Name", "flat-skill",
+            "FilePath", ".system/planted/SKILL.md",
+            "FileContent", "---\nname: planted\ndescription: Planted.\n---\n# Planted"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.StartsWith(ProtectedDeniedMessage, result);
+        Assert.False(File.Exists(Path.Combine(_paths.SystemSkillsDirectory, "planted", "SKILL.md")));
+    }
+
+    [Fact]
+    public async Task SkillManage_remove_of_protected_path_is_denied()
+    {
+        File.WriteAllText(Path.Combine(_paths.SkillsDirectory, "flat-skill.md"), """
+            ---
+            name: flat-skill
+            description: Flat skill.
+            ---
+            # Flat
+            """);
+        WriteNestedSkill(".system", "sys-kept", """
+            ---
+            name: sys-kept
+            description: System skill.
+            ---
+            # System
+            """);
+        ScanSkills();
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "remove_file", "Name", "flat-skill",
+            "FilePath", ".system/sys-kept/SKILL.md"), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.StartsWith(ProtectedDeniedMessage, result);
+        Assert.True(File.Exists(Path.Combine(_paths.SystemSkillsDirectory, "sys-kept", "SKILL.md")));
+    }
+
+    private void WriteLinkTestSkill()
+    {
+        WriteSkill("link-test", """
+            ---
+            name: link-test
+            description: Link test.
+            ---
+            # Link Test
+            """);
+        ScanSkills();
+    }
+
+    private string CreateOutsideDirectory()
+    {
+        // Sibling of the skills directory: outside every skill, removed by Dispose.
+        var dir = Path.Combine(_skillsDir, $"outside-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(dir);
+        return dir;
     }
 
     private sealed class FakeMetrics : ISessionMetrics

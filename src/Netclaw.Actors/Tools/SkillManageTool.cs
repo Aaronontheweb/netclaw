@@ -35,11 +35,13 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
 
     private const int MaxNameLength = 64;
     private const int MaxDescriptionLength = 1024;
+    private const string AtomicTempSuffix = ".tmp";
 
     private readonly SkillRegistry _skillRegistry;
     private readonly NetclawPaths _paths;
     private readonly ISkillContentScanner _scanner;
     private readonly SkillInventoryRefresher _inventoryRefresher;
+    private readonly ToolPathPolicy _protectedPaths;
 
     public record Params(
         [property: Description("Action to perform: create, edit, patch, delete, write_file, remove_file")]
@@ -63,12 +65,14 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         SkillRegistry skillRegistry,
         NetclawPaths paths,
         ISkillContentScanner scanner,
-        SkillInventoryRefresher inventoryRefresher)
+        SkillInventoryRefresher inventoryRefresher,
+        ToolPathPolicy protectedPaths)
     {
         _skillRegistry = skillRegistry;
         _paths = paths;
         _scanner = scanner;
         _inventoryRefresher = inventoryRefresher;
+        _protectedPaths = protectedPaths ?? throw new ArgumentNullException(nameof(protectedPaths));
     }
 
     protected override async Task<string> ExecuteAsync(Params args, ToolInvocationContext context, CancellationToken ct)
@@ -112,6 +116,9 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
 
         var skillDir = Path.Combine(_paths.SkillsDirectory, name);
         var skillPath = Path.Combine(skillDir, "SKILL.md");
+
+        var targetError = GuardMutationTarget(skillDir, skillPath, atomicWrite: true);
+        if (targetError is not null) return targetError;
 
         if (File.Exists(skillPath))
         {
@@ -176,6 +183,9 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         var identityError = ValidateManagedIdentity(name, args.Content);
         if (identityError is not null) return identityError;
 
+        var targetError = GuardMutationTarget(skill.SkillDirectory, skill.FilePath, atomicWrite: true);
+        if (targetError is not null) return targetError;
+
         var scanResult = await _scanner.ScanAsync(name, args.Content, ct);
         if (!scanResult.IsAllowed)
             return $"Content scan rejected: {scanResult.Reason}";
@@ -216,6 +226,10 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
                 return SkillResourcePath.FormatManageError(fileError);
             targetPath = Path.Combine(skill.SkillDirectory, normalizedPath);
         }
+
+        // Check before the read: a link could otherwise copy an outside file into the skill.
+        var targetError = GuardMutationTarget(skill.SkillDirectory, targetPath, atomicWrite: true);
+        if (targetError is not null) return targetError;
 
         if (!File.Exists(targetPath))
             return $"File not found: {args.FilePath ?? "SKILL.md"}";
@@ -280,6 +294,10 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         var readOnlyError = GuardReadOnly(skill, "delete");
         if (readOnlyError is not null) return readOnlyError;
 
+        var deleteTarget = skill.IsFlatFile ? skill.FilePath : skill.SkillDirectory;
+        var targetError = GuardMutationTarget(skill.SkillDirectory, deleteTarget, atomicWrite: false);
+        if (targetError is not null) return targetError;
+
         if (skill.IsFlatFile)
         {
             // Flat-file skill: delete the single .md file
@@ -323,8 +341,8 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
             return SkillResourcePath.FormatManageError(fileError);
 
         var fullPath = Path.GetFullPath(Path.Combine(skill.SkillDirectory, normalizedPath));
-        if (!PathUtility.IsWithinRoot(fullPath, skill.SkillDirectory))
-            return "Resolved path is outside the skill directory.";
+        var targetError = GuardMutationTarget(skill.SkillDirectory, fullPath, atomicWrite: true);
+        if (targetError is not null) return targetError;
 
         var scanResult = await _scanner.ScanAsync(
             $"{name}:{normalizedPath}",
@@ -365,8 +383,8 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
             return SkillResourcePath.FormatManageError(fileError);
 
         var fullPath = Path.GetFullPath(Path.Combine(skill.SkillDirectory, normalizedPath));
-        if (!PathUtility.IsWithinRoot(fullPath, skill.SkillDirectory))
-            return "Resolved path is outside the skill directory.";
+        var targetError = GuardMutationTarget(skill.SkillDirectory, fullPath, atomicWrite: false);
+        if (targetError is not null) return targetError;
 
         if (!File.Exists(fullPath))
             return $"File not found: {normalizedPath}";
@@ -471,9 +489,55 @@ public sealed partial class SkillManageTool : NetclawTool<SkillManageTool.Params
         return !PathUtility.IsWithinRoot(skillPath, nativeRoot);
     }
 
+    /// <summary>
+    /// Returns an error when a skill mutation must not touch <paramref name="targetPath"/>.
+    /// A text check alone is not sufficient. A link inside the native skills tree can
+    /// send a write, patch, or delete to a file outside the skill, and a flat-file
+    /// skill uses the skills root as its directory, so a relative path can reach the
+    /// write-protected <c>.system</c> or <c>.server-feeds</c> tiers.
+    /// </summary>
+    /// <remarks>
+    /// The link walk starts below the native skills root. The operator owns that
+    /// root, and OS links above it (macOS <c>/var</c>) are not traversal. When
+    /// <paramref name="atomicWrite"/> is true, the check also covers the
+    /// <c>.tmp</c> file that <see cref="AtomicWrite"/> writes first, because
+    /// <see cref="File.WriteAllText(string, string?)"/> follows a link at that name.
+    /// A failure to inspect the path denies the operation.
+    /// </remarks>
+    private string? GuardMutationTarget(string skillRoot, string targetPath, bool atomicWrite)
+    {
+        try
+        {
+            if (!PathUtility.IsWithinRoot(targetPath, skillRoot))
+                return "Resolved path is outside the skill directory.";
+
+            var paths = atomicWrite
+                ? new[] { targetPath, targetPath + AtomicTempSuffix }
+                : [targetPath];
+            foreach (var path in paths)
+            {
+                if (PathUtility.ContainsSymlinkSegment(_paths.SkillsDirectory, path))
+                    return "Symlink traversal is not allowed in skill file paths.";
+            }
+
+            foreach (var path in paths)
+            {
+                if (_protectedPaths.IsDenied(path))
+                    return "The target path is protected. skill_manage cannot change it.";
+            }
+
+            return null;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException
+                                       or ArgumentException or NotSupportedException)
+        {
+            return "Could not verify the target path. The operation was not done.";
+        }
+    }
+
     private static void AtomicWrite(string path, string content)
     {
-        var tempPath = path + ".tmp";
+        var tempPath = path + AtomicTempSuffix;
         File.WriteAllText(tempPath, content, Encoding.UTF8);
         File.Move(tempPath, path, overwrite: true);
     }
