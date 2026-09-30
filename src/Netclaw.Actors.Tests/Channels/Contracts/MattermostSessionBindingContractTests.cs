@@ -216,8 +216,8 @@ public sealed class MattermostSessionBindingContractTests(ITestOutputHelper outp
     {
         var ct = TestContext.Current.CancellationToken;
         var sid = new SessionId("session-mm-file-output");
-        var paths = TestMattermostGatewayDeps.NewTestPaths();
-        var filePath = Path.Combine(paths.BasePath, $"mattermost-upload-{Guid.NewGuid():N}.txt");
+        await using var paths = TestMattermostGatewayDeps.NewTestPaths();
+        var filePath = Path.Join(paths.Paths.BasePath, $"mattermost-upload-{Guid.NewGuid():N}.txt");
         await File.WriteAllTextAsync(filePath, "hello mattermost", ct);
 
         var pipeline = new RecordingSessionPipeline(_ =>

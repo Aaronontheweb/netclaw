@@ -27,7 +27,8 @@ namespace Netclaw.Actors.Tests.Reminders;
 [Collection(ReminderActorTestCollection.Name)]
 public class ReminderManagerActorTests : TestKit
 {
-    private readonly string _basePath = Path.Combine(Path.GetTempPath(), $"netclaw-reminder-tests-{Guid.NewGuid():N}");
+    private readonly TestSessionTempDirectory _tempDir =
+        TestSessionTempDirectory.Create(prefix: "netclaw-reminder-tests-", createDirectoryTree: true);
     private readonly FakeTimeProvider _timeProvider = new(TimeProvider.System.GetUtcNow());
     private readonly TestShardRegionResolver _sharedResolver = new();
     private ReminderDefinitionStore _definitionStore = null!;
@@ -37,6 +38,21 @@ public class ReminderManagerActorTests : TestKit
 
     public ReminderManagerActorTests(ITestOutputHelper output) : base(output: output) { }
 
+    protected override async Task AfterAllAsync()
+    {
+        try
+        {
+            await base.AfterAllAsync();
+        }
+        finally
+        {
+            // Base teardown can throw (actor-system shutdown). Run temp cleanup
+            // in finally so a failed teardown does not recreate the /tmp leak
+            // (issue #2266).
+            await _tempDir.DisposeAsync();
+        }
+    }
+
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)
     {
         builder
@@ -45,8 +61,7 @@ public class ReminderManagerActorTests : TestKit
             .WithNetclawSerialization()
             .WithSerializationVerification();
 
-        var paths = new NetclawPaths(_basePath);
-        paths.EnsureDirectoriesExist();
+        var paths = _tempDir.Paths;
         _definitionStore = new ReminderDefinitionStore(paths);
         _notificationSink = new TestNotificationSink();
         var definitionStore = _definitionStore;
@@ -301,7 +316,7 @@ public class ReminderManagerActorTests : TestKit
             TimeSpan.FromSeconds(5),
             cancellationToken: TestContext.Current.CancellationToken);
 
-        var paths = new NetclawPaths(_basePath);
+        var paths = _tempDir.Paths;
         var restarted = Sys.ActorOf(
             CreateManagerProps(
                 new ReminderDefinitionStore(paths),
@@ -358,7 +373,7 @@ public class ReminderManagerActorTests : TestKit
             UpdatedAt = now.AddHours(-2)
         };
         _definitionStore.Save(zombie);
-        var historyStore = new ReminderHistoryStore(new NetclawPaths(_basePath));
+        var historyStore = new ReminderHistoryStore(_tempDir.Paths);
         await historyStore.AppendAsync(
             zombie.Id,
             new HistoryRecord(now.AddMinutes(-30), false, 100, "session-1", "recovery failed"));
@@ -1234,7 +1249,7 @@ public class ReminderManagerActorTests : TestKit
         await AwaitAssertAsync(async () =>
         {
             Assert.Null(_definitionStore.Get(definition.Id));
-            var historyStore = new ReminderHistoryStore(new NetclawPaths(_basePath));
+            var historyStore = new ReminderHistoryStore(_tempDir.Paths);
             Assert.Empty(await historyStore.ReadAsync(definition.Id, 10));
         }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
     }

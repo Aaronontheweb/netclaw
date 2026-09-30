@@ -35,8 +35,32 @@ public class SubAgentActorTests : TestKit
     private static readonly TimeSpan ApprovalAskTimeout = TimeSpan.FromSeconds(30);
     public static bool IsPosix => !OperatingSystem.IsWindows();
 
-    private static string TestPath(string category, string name) => Path.GetFullPath(
-        Path.Combine(Path.GetTempPath(), "netclaw-subagent-tests", category, name));
+    // Each call owns a unique temp directory (issue #2266); teardown disposes them all.
+    private readonly List<TestSessionTempDirectory> _tempDirs = [];
+
+    private string TestPath(string category, string name)
+    {
+        var dir = TestSessionTempDirectory.Create($"netclaw-subagent-test-{category}-{name}-");
+        _tempDirs.Add(dir);
+        return dir.Path;
+    }
+
+    protected override async Task AfterAllAsync()
+    {
+        try
+        {
+            await base.AfterAllAsync();
+        }
+        finally
+        {
+            // Base teardown can throw (actor-system shutdown). Run temp cleanup
+            // in finally so a failed teardown does not recreate the /tmp leak
+            // (issue #2266).
+            foreach (var dir in _tempDirs)
+                await dir.DisposeAsync();
+            _tempDirs.Clear();
+        }
+    }
 
     private static FunctionCallContent CreateToolCall(string callId, string name)
         => CreateToolCall(callId, name, new Dictionary<string, object?>());
@@ -2330,8 +2354,10 @@ public class SubAgentActorTests : TestKit
     [Fact]
     public async Task Another_child_tool_receipt_cannot_declare_project_scope()
     {
-        var originalProject = Path.GetFullPath(Path.Join(Path.GetTempPath(), "original-child-project"));
-        var forgedProject = Path.GetFullPath(Path.Join(Path.GetTempPath(), "forged-child-project"));
+        await using var originalProjectDir = TestSessionTempDirectory.Create("netclaw-original-child-");
+        await using var forgedProjectDir = TestSessionTempDirectory.Create("netclaw-forged-child-");
+        var originalProject = originalProjectDir.Path;
+        var forgedProject = forgedProjectDir.Path;
         var readTool = new FakeNetclawTool(
             FileReadTool.ToolName,
             "content",

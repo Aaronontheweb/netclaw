@@ -17,13 +17,19 @@ using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Tests.Hosting;
 using Netclaw.Configuration;
 using Netclaw.Security;
+using Netclaw.Tests.Utilities;
 using static Netclaw.Actors.Sessions.SessionProtocol;
 
 namespace Netclaw.Actors.Tests.Sessions;
 
 public abstract class LlmSessionTestBase : TestKit
 {
+    private TestSessionTempDirectory? _testTempDir;
+
     protected LlmSessionTestBase(ITestOutputHelper output) : base(output: output) { }
+
+    protected NetclawPaths TestPaths => _testTempDir?.Paths
+        ?? throw new InvalidOperationException("Test paths are not initialized.");
 
     /// <summary>
     /// Derived classes that want serialize-messages verification on top of the
@@ -101,7 +107,12 @@ public abstract class LlmSessionTestBase : TestKit
         // tests but a steady source of restart churn across the shared threadpool
         // that destabilizes real-process integration tests running in parallel.
         services.AddSingleton(TimeProvider.System);
-        services.AddTestNetclawPaths();
+        // Own a unique temp directory for this test and register it (plus its
+        // NetclawPaths) so SessionServices can construct. Disposed in
+        // AfterAllAsync so the /tmp tree is not leaked (issue #2266).
+        _testTempDir = TestSessionTempDirectory.Create();
+        services.AddSingleton(_testTempDir);
+        services.AddSingleton(_testTempDir.Paths);
         services.AddSingleton(SecurityPolicyDefaults.Resolve(null));
         services.AddSingleton<BackgroundJobDefinitionStore>();
         // WithNetclawActors() starts ReminderManagerActor, which resolves these
@@ -120,4 +131,20 @@ public abstract class LlmSessionTestBase : TestKit
     }
 
     protected virtual void ConfigureSessionServices(IServiceCollection services) { }
+
+    protected override async Task AfterAllAsync()
+    {
+        try
+        {
+            await base.AfterAllAsync();
+        }
+        finally
+        {
+            // Base teardown can throw (actor-system / host shutdown). Run temp
+            // cleanup in finally so a failed teardown does not recreate the
+            // /tmp leak (issue #2266).
+            if (_testTempDir is not null)
+                await _testTempDir.DisposeAsync();
+        }
+    }
 }
