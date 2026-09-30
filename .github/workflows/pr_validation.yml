@@ -521,6 +521,11 @@ jobs:
               if [[ "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
                 echo "New branch push: compare with the merge base of origin/dev."
                 python3 scripts/check-approval-outcome-direction.py --base-ref origin/dev
+              elif ! git merge-base --is-ancestor "$PUSH_BEFORE_SHA" HEAD 2>/dev/null; then
+                # A force push (for example, GitHub rebasing a stacked PR) replaces
+                # the history. The previous head is then not in this clone.
+                echo "Force push: $PUSH_BEFORE_SHA is not an ancestor of HEAD. Compare with the merge base of origin/dev."
+                python3 scripts/check-approval-outcome-direction.py --base-ref origin/dev
               else
                 python3 scripts/check-approval-outcome-direction.py --base-rev "$PUSH_BEFORE_SHA"
               fi ;;
