@@ -1853,13 +1853,14 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
 
     /// <summary>
     /// When a stored OAuth record can no longer produce a working access token, the SDK
-    /// 2.0 refresh path fails silently: a refresh is only attempted when the cached token
-    /// container matches the live provider on all four binding fields — AuthorizationServer,
-    /// ClientId, ClientSecret, and TokenEndpointAuthMethod — and even then the actual
-    /// refresh HTTP response is swallowed (returned as a null access token, surfaced as a
-    /// generic "null authorization result" failure). This method makes the failure
-    /// diagnosable by reporting exactly which binding field is missing or mismatched and
-    /// whether a refresh token existed to redeem at all.
+    /// falls through to interactive authorization and reports only a generic failure. SDK
+    /// 2.x sends a refresh grant only when a refresh token and a client id exist and the
+    /// stored authorization server is the exact string the resource advertises. Netclaw
+    /// builds the token container and the provider options from one identity, so the client
+    /// secret and the token endpoint auth method cannot block the refresh. A public client has
+    /// no secret by design. This line reports the stored fields that block a refresh. When
+    /// none block it, <see cref="OAuthRefreshGrantHandler"/> logs the token endpoint
+    /// response if the authorization server rejected the grant.
     /// </summary>
     private void LogOAuthRefreshFailureDiagnostics(string serverName, string? resourceUrl)
     {
@@ -1879,40 +1880,35 @@ internal sealed class McpClientManager : IHostedService, IDisposable, IMcpToolIn
                 return;
             }
 
-            var hasConfiguredClientSecret = _serverEntries.TryGetValue(serverName, out var entry)
+            var entry = _serverEntries.GetValueOrDefault(serverName);
+            var hasConfiguredClientSecret = entry is not null
                                             && !string.IsNullOrWhiteSpace(entry.OAuthClientId)
                                             && !entry.OAuthClientSecret.IsNullOrEmpty();
-            var missing = new List<string>();
+            var blockers = new List<string>();
+            if (record.RefreshToken is null)
+                blockers.Add("RefreshToken");
+            if (string.IsNullOrWhiteSpace(entry?.OAuthClientId) && string.IsNullOrWhiteSpace(record.ClientId))
+                blockers.Add("ClientId");
             if (string.IsNullOrWhiteSpace(record.AuthorizationServer))
-                missing.Add("AuthorizationServer");
-            if (string.IsNullOrWhiteSpace(record.ClientId))
-                missing.Add("ClientId");
-            if (record.ClientSecret is null && !hasConfiguredClientSecret)
-                missing.Add("ClientSecret");
-            if (string.IsNullOrWhiteSpace(record.TokenEndpointAuthMethod))
-                missing.Add("TokenEndpointAuthMethod");
-
-            var hasRefreshToken = record.RefreshToken is not null;
-            var hasAccessToken = record.AccessToken is not null;
-            var expiresAt = record.ExpiresAt;
+                blockers.Add("AuthorizationServer");
 
             _logger.LogWarning(
                 "OAuth refresh failure diagnostics for MCP server '{Name}': stored record has refreshToken={HasRefresh}, " +
                 "accessToken={HasAccess}, expiresAt={ExpiresAt:o}, dynamicClientRegistration={Dcr}, " +
-                "configuredClientSecret={HasConfiguredClientSecret}, bindingFieldsMissing=[{Missing}], " +
-                "authorizationServer={AuthServer}. " +
-                "The SDK 2.0 refresh gate requires AuthorizationServer, ClientId, ClientSecret, and " +
-                "TokenEndpointAuthMethod to all match the live provider; missing fields mean refresh is " +
-                "never attempted and every expiration falls through to interactive auth (the 'null " +
-                "authorization result' symptom).",
+                "clientSecret={HasClientSecret}, configuredClientSecret={HasConfiguredClientSecret}, " +
+                "authorizationServer={AuthServer}, refreshBlockedByMissing=[{Missing}]. " +
+                "A missing field stops the SDK before it sends a refresh grant. With no missing field, the SDK " +
+                "sends the grant only if the advertised authorization server equals the stored one exactly; a " +
+                "rejected grant is logged separately with the token endpoint error.",
                 serverName,
-                hasRefreshToken,
-                hasAccessToken,
-                expiresAt,
+                record.RefreshToken is not null,
+                record.AccessToken is not null,
+                record.ExpiresAt,
                 record.DynamicClientRegistration,
+                record.ClientSecret is not null,
                 hasConfiguredClientSecret,
-                string.Join(", ", missing),
-                record.AuthorizationServer ?? "<null>");
+                record.AuthorizationServer ?? "<null>",
+                string.Join(", ", blockers));
         }
         catch (Exception diagEx)
         {
@@ -2434,8 +2430,58 @@ internal interface IMcpClientRuntime
 
 internal sealed class McpClientRuntime : IMcpClientRuntime
 {
+    private readonly ILogger _logger;
+    private readonly TimeProvider _timeProvider;
+    private readonly HttpMessageHandler _primaryHandler;
+
+    public McpClientRuntime(ILogger<McpClientRuntime> logger, TimeProvider timeProvider)
+        : this(logger, timeProvider, McpHttpClientFactory.SharedPrimaryHandler)
+    {
+    }
+
+    /// <summary>
+    /// Builds the runtime over <paramref name="primaryHandler"/>, which the runtime never
+    /// disposes. Tests pass an in-memory server here to drive the production handler chain.
+    /// </summary>
+    internal McpClientRuntime(ILogger logger, TimeProvider timeProvider, HttpMessageHandler primaryHandler)
+    {
+        _logger = logger;
+        _timeProvider = timeProvider;
+        _primaryHandler = primaryHandler;
+    }
+
     public IClientTransport CreateHttpTransport(HttpClientTransportOptions options)
-        => new HttpClientTransport(options, McpHttpClientFactory.Shared);
+        => new HttpClientTransport(
+            options,
+            CreateHttpClient(options.OAuth?.TokenCache as McpOAuthTokenCache),
+            ownsHttpClient: true);
+
+    /// <summary>
+    /// Builds the HTTP client of one connection. Each connection gets its own
+    /// <see cref="OAuthRefreshGrantHandler"/> bound to its token cache, and disposing the
+    /// client disposes that handler. All connections share the process connection pool,
+    /// which <see cref="SharedHandlerLease"/> keeps open.
+    /// </summary>
+    internal HttpClient CreateHttpClient(McpOAuthTokenCache? tokenCache)
+        => McpHttpClientFactory.Create(
+            new OAuthRefreshGrantHandler(_logger, _timeProvider, tokenCache)
+            {
+                InnerHandler = new SharedHandlerLease { InnerHandler = _primaryHandler },
+            },
+            disposeHandler: true);
+
+    /// <summary>
+    /// Forwards to a handler that other connections share. Disposing the lease leaves the
+    /// shared handler open.
+    /// </summary>
+    private sealed class SharedHandlerLease : DelegatingHandler
+    {
+        protected override void Dispose(bool disposing)
+        {
+            // DelegatingHandler.Dispose disposes the inner handler. The shared pool outlives
+            // every connection, so the lease deliberately does not call the base method.
+        }
+    }
 
     public Task<McpClient> CreateAsync(
         IClientTransport transport,

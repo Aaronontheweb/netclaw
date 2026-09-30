@@ -8,6 +8,11 @@
 - **Shell launch facts stay aligned with parser facts.** Netclaw probes Bash versions and uses isolated PowerShell processes for bounded assignment analysis.
 - **Finite PowerShell loops can reuse exact grants.** Netclaw checks all public path facts before it reuses a stored verb.
 
+### MCP OAuth
+
+- **A reconnect no longer loses a rotated refresh token.** Netclaw sends one refresh grant at a time for each MCP server, and each connection redeems the newest stored refresh token. A connection from before an explicit authorization cannot replace the credentials of that authorization ([#2263](https://github.com/netclaw-dev/netclaw/issues/2263)).
+- **Rejected refresh grants are logged.** The daemon logs the token endpoint status and the OAuth `error` fields when an authorization server rejects a refresh. The refresh diagnostic line no longer reports an absent client secret as a blocker ([#2263](https://github.com/netclaw-dev/netclaw/issues/2263)).
+
 ## 0.27.1-beta.1 (2026-09-24)
 
 A small tail of MCP improvements on top of stable 0.27.0 - the headline is that MCP tools can now deliver real file artifacts to you, not just text markers.

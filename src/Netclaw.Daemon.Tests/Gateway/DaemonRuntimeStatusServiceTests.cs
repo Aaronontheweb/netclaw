@@ -301,7 +301,7 @@ public sealed class DaemonRuntimeStatusServiceTests : IAsyncLifetime
             new DaemonConfig(),
             NullNotificationSink.Instance,
             TimeProvider.System,
-            new McpClientRuntime(),
+            new McpClientRuntime(NullLogger<McpClientRuntime>.Instance, TimeProvider.System),
             dependencies.ArtifactMaterializer,
             NullLogger<McpClientManager>.Instance,
             new SessionConfig());
