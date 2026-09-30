@@ -27,6 +27,10 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
     private static readonly DateTimeOffset Start =
         new(2026, 8, 28, 12, 0, 0, TimeSpan.Zero);
 
+    // A real devices.json write does CreateFile, FlushFileBuffers, and MoveFileEx.
+    // On a loaded Windows runner, the IOCP completion can take longer than the 3 s default.
+    private static readonly TimeSpan RegistryWriteTimeout = TimeSpan.FromSeconds(10);
+
     private readonly DisposableTempDir _dir = new();
     private readonly FakeTimeProvider _time = new(Start);
     private NetclawPaths _paths = null!;
@@ -110,16 +114,24 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
     public async Task Generate_code_replaces_the_prior_code()
     {
         var ct = TestContext.Current.CancellationToken;
-        var actor = ActorRegistry.Get<PairingActor>();
+        var devices = new ConcurrentQueue<PairedDevice>();
+        var actor = CreateControlledActor((device, _) =>
+        {
+            devices.Enqueue(device);
+            return Task.CompletedTask;
+        });
         var first = await GenerateCodeAsync(actor, ct);
         var second = await GenerateCodeAsync(actor, ct);
 
-        var staleResult = await ExchangeCodeAsync(actor, first.FormattedCode, "laptop", ct);
-        var currentResult = await ExchangeCodeAsync(actor, second.FormattedCode, "laptop", ct);
+        var staleResult = await ExchangeCodeAsync(actor, first.FormattedCode, "laptop", RemainingOrDefault, ct);
+        var currentResult = await ExchangeCodeAsync(actor, second.FormattedCode, "laptop", RemainingOrDefault, ct);
 
         Assert.Equal(PairingExchangeStatus.InvalidCode, staleResult.Status);
         Assert.Equal(PairingExchangeStatus.Success, currentResult.Status);
         Assert.Null(await GetPendingExpiryAsync(actor, ct));
+        var stored = Assert.Single(devices);
+        Assert.Equal("laptop", stored.Name);
+        Assert.True(PairedDevice.VerifyToken(currentResult.Token!, stored));
     }
 
     [Fact]
@@ -157,17 +169,24 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
     public async Task Exchange_accepts_case_and_separator_variants_then_consumes_code()
     {
         var ct = TestContext.Current.CancellationToken;
-        var actor = ActorRegistry.Get<PairingActor>();
+        var devices = new ConcurrentQueue<PairedDevice>();
+        var actor = CreateControlledActor((device, _) =>
+        {
+            devices.Enqueue(device);
+            return Task.CompletedTask;
+        });
         var code = await GenerateCodeAsync(actor, ct);
         var normalizedVariant = code.FormattedCode.Replace("-", string.Empty).ToLowerInvariant();
 
-        var first = await ExchangeCodeAsync(actor, normalizedVariant, " laptop ", ct);
-        var second = await ExchangeCodeAsync(actor, code.FormattedCode, "phone", ct);
+        var first = await ExchangeCodeAsync(actor, normalizedVariant, " laptop ", RemainingOrDefault, ct);
+        var second = await ExchangeCodeAsync(actor, code.FormattedCode, "phone", RemainingOrDefault, ct);
 
         Assert.Equal(PairingExchangeStatus.Success, first.Status);
         Assert.False(string.IsNullOrWhiteSpace(first.Token));
         Assert.Equal(PairingExchangeStatus.NoCode, second.Status);
-        Assert.Equal("laptop", Assert.Single(await _registry.ListAsync(ct)).Name);
+        var stored = Assert.Single(devices);
+        Assert.Equal("laptop", stored.Name);
+        Assert.True(PairedDevice.VerifyToken(first.Token!, stored));
     }
 
     [Fact]
@@ -179,13 +198,13 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
         await _registry.AddAsync(existingDevice, ct);
         var code = await GenerateCodeAsync(actor, ct);
 
-        var duplicate = await ExchangeCodeAsync(actor, code.FormattedCode, "LAPTOP", ct);
+        var duplicate = await ExchangeCodeAsync(actor, code.FormattedCode, "LAPTOP", RegistryWriteTimeout, ct);
 
         Assert.Equal(PairingExchangeStatus.DuplicateName, duplicate.Status);
         Assert.Contains("already exists", duplicate.Error, StringComparison.Ordinal);
         Assert.Equal(code.ExpiresAt, await GetPendingExpiryAsync(actor, ct));
 
-        var retry = await ExchangeCodeAsync(actor, code.FormattedCode, "phone", ct);
+        var retry = await ExchangeCodeAsync(actor, code.FormattedCode, "phone", RegistryWriteTimeout, ct);
         Assert.Equal(PairingExchangeStatus.Success, retry.Status);
         Assert.Equal(2, (await _registry.ListAsync(ct)).Count);
     }
@@ -196,11 +215,11 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
         var ct = TestContext.Current.CancellationToken;
         var actor = ActorRegistry.Get<PairingActor>();
 
-        var absent = await ExchangeCodeAsync(actor, "0000-0000", "laptop", ct);
+        var absent = await ExchangeCodeAsync(actor, "0000-0000", "laptop", RemainingOrDefault, ct);
         var code = await GenerateCodeAsync(actor, ct);
-        var invalid = await ExchangeCodeAsync(actor, "0000-0000", "laptop", ct);
+        var invalid = await ExchangeCodeAsync(actor, "0000-0000", "laptop", RemainingOrDefault, ct);
         _time.Advance(TimeSpan.FromMinutes(5));
-        var expired = await ExchangeCodeAsync(actor, code.FormattedCode, "laptop", ct);
+        var expired = await ExchangeCodeAsync(actor, code.FormattedCode, "laptop", RemainingOrDefault, ct);
 
         Assert.Equal(PairingExchangeStatus.NoCode, absent.Status);
         Assert.Equal(PairingExchangeStatus.InvalidCode, invalid.Status);
@@ -213,11 +232,19 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
     public async Task Competing_exchanges_allow_exactly_one_success()
     {
         var ct = TestContext.Current.CancellationToken;
-        var actor = ActorRegistry.Get<PairingActor>();
+        var release = NewSignal();
+        var devices = new ConcurrentQueue<PairedDevice>();
+        var actor = CreateControlledActor(async (device, storeToken) =>
+        {
+            await release.Task.WaitAsync(storeToken);
+            devices.Enqueue(device);
+        });
         var code = await GenerateCodeAsync(actor, ct);
 
+        // The gate holds the first write, so the other commands wait in the mailbox behind it.
         for (var index = 0; index < 8; index++)
             actor.Tell(new PairingActor.ExchangeCode(code.FormattedCode, $"device-{index}", ct), TestActor);
+        release.TrySetResult();
 
         var results = new List<PairingExchangeResult>();
         for (var index = 0; index < 8; index++)
@@ -231,7 +258,7 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
         Assert.All(
             results.Where(result => result.Status != PairingExchangeStatus.Success),
             result => Assert.Equal(PairingExchangeStatus.NoCode, result.Status));
-        Assert.Single(await _registry.ListAsync(ct));
+        Assert.Single(devices);
     }
 
     [Fact]
@@ -246,7 +273,7 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
         var code = await GenerateCodeAsync(actor, ct);
 
         actor.Tell(new PairingActor.ExchangeCode(code.FormattedCode, "tablet", ct), TestActor);
-        var failure = await ExpectMsgAsync<Status.Failure>(RemainingOrDefault, cancellationToken: ct);
+        var failure = await ExpectMsgAsync<Status.Failure>(RegistryWriteTimeout, cancellationToken: ct);
 
         Assert.Equal(
             "Injected failure before registry replacement.",
@@ -267,7 +294,7 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
         var reopenedAfterFailure = CreateRegistry();
         Assert.Equal(existingDevice, await reopenedAfterFailure.LookupByTokenAsync(existingToken, ct));
 
-        var retry = await ExchangeCodeAsync(actor, code.FormattedCode, "tablet", ct);
+        var retry = await ExchangeCodeAsync(actor, code.FormattedCode, "tablet", RegistryWriteTimeout, ct);
 
         Assert.Equal(PairingExchangeStatus.Success, retry.Status);
         Assert.NotNull(retry.Token);
@@ -377,7 +404,7 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
         Assert.IsType(CreateExpectedFailure(failureKind).GetType(), failure.Cause);
         Assert.Equal(code.ExpiresAt, await GetPendingExpiryAsync(actor, ct));
 
-        var retry = await ExchangeCodeAsync(actor, code.FormattedCode, "laptop", ct);
+        var retry = await ExchangeCodeAsync(actor, code.FormattedCode, "laptop", RemainingOrDefault, ct);
 
         Assert.Equal(PairingExchangeStatus.Success, retry.Status);
         Assert.Single(devices);
@@ -422,7 +449,7 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
         Assert.Equal(1, writeCount);
         Assert.Equal(code.ExpiresAt, await GetPendingExpiryAsync(actor, ct));
 
-        var retry = await ExchangeCodeAsync(actor, code.FormattedCode, "tablet", ct);
+        var retry = await ExchangeCodeAsync(actor, code.FormattedCode, "tablet", RemainingOrDefault, ct);
         Assert.Equal(PairingExchangeStatus.Success, retry.Status);
         Assert.Equal(2, writeCount);
     }
@@ -455,7 +482,7 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
         Assert.IsAssignableFrom<OperationCanceledException>(failure.Cause);
         Assert.Equal(code.ExpiresAt, await GetPendingExpiryAsync(actor, ct));
 
-        var retry = await ExchangeCodeAsync(actor, code.FormattedCode, "laptop", ct);
+        var retry = await ExchangeCodeAsync(actor, code.FormattedCode, "laptop", RemainingOrDefault, ct);
         Assert.Equal(PairingExchangeStatus.Success, retry.Status);
         Assert.Equal(2, writeCount);
     }
@@ -609,11 +636,12 @@ public sealed class PairingActorTests(ITestOutputHelper output) : TestKit(output
         IActorRef actor,
         string code,
         string deviceName,
+        TimeSpan timeout,
         CancellationToken cancellationToken)
     {
         actor.Tell(new PairingActor.ExchangeCode(code, deviceName, cancellationToken), TestActor);
         return await ExpectMsgAsync<PairingExchangeResult>(
-            RemainingOrDefault,
+            timeout,
             cancellationToken: cancellationToken);
     }
 
