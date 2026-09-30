@@ -278,6 +278,40 @@ public sealed class McpServersDoctorCheckTests : IDisposable
     }
 
     [Fact]
+    public async Task DaemonReportedDegradedConnection_ReturnsWarning()
+    {
+        WriteConfig(new
+        {
+            configVersion = 1,
+            McpServers = new
+            {
+                textforge = new
+                {
+                    Transport = "http",
+                    Url = "https://mcp.example.com",
+                    Enabled = true,
+                }
+            }
+        });
+
+        var check = new McpServersDoctorCheck(_paths, CreateDaemonApi(_ => FakeHttpMessageHandler.JsonResponse(new
+        {
+            textforge = new
+            {
+                state = "Connected",
+                toolCount = 5,
+                error = "Catalog refresh failed 3 time(s) in a row: timed out after 15s",
+                degraded = true,
+            }
+        })));
+
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Warning, result.Severity);
+        Assert.Contains("textforge: connected but not responding (5 cached tools)", result.Message);
+    }
+
+    [Fact]
     public async Task OfflineOAuthProbe_DoesNotClaimAuthFailure()
     {
         WriteConfig(new

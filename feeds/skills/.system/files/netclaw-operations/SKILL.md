@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.76.0"
+  version: "2.76.1"
 ---
 
 # Netclaw Operations
@@ -336,6 +336,29 @@ with that provider and set it with `netclaw mcp add --client-id <id> ...`.
 | `AwaitingAuth` | No usable OAuth credential is bound to this resource, or an access token expired without a refresh token. Run `netclaw mcp auth <name>`. Startup and background reconnects never open a browser or block. |
 | `AuthFailed` | The server rejected credentials that were supplied. Reauthorize SDK-managed OAuth, or check the configured `Authorization` header if it owns auth. |
 | `Unreachable` | A non-auth transport, network, timeout, or initialization failure prevented connection. Check the endpoint and daemon logs. |
+
+### Read catalog refresh health
+
+The daemon marks a connected server degraded after three consecutive catalog
+refresh failures. The connection state stays `Connected`.
+`/api/mcp/statuses` reports `degraded: true`, and `netclaw status` reports
+`degraded`. `netclaw mcp list` and `netclaw doctor` report
+`connected but not responding` with the cached tool count. The doctor check
+returns `Warning`.
+
+A healthy server uses a catalog poll interval of five minutes. After consecutive
+failures, the minimum retry intervals are 30, 60, 120, 240, and 300 seconds.
+The poll runs every 30 seconds and can delay an attempt beyond its minimum
+interval. A successful refresh or reconnect clears the failure count and
+restores the interval of five minutes. Caller cancellation, daemon shutdown,
+and lease deactivation do not increase the failure count. Diagnostics retain the
+last refresh failure timestamp after recovery.
+
+Cached tools stay published and callable while catalog refreshes fail. A
+degraded status does not block tool calls, so a call can still time out.
+Check the endpoint and daemon logs before you repeat a call. The daemon reports
+expected timeout and transport failures without a stack trace. Unexpected
+failures keep their stack trace.
 
 At startup, the daemon connects enabled MCP servers concurrently. It waits
 for each initial attempt before it reports ready. A failed server has its own

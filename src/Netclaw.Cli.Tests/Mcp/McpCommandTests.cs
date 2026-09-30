@@ -563,6 +563,37 @@ public sealed class McpCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task List_ShowsDaemonReportedDegradedServerAsNotResponding()
+    {
+        await McpCommand.RunAsync(
+            ["mcp", "add", "--transport", "stdio", "memorizer", "--", "npx", "-y", "@memorizer/mcp"],
+            _paths, output: _output);
+
+        var daemonApi = CreateDaemonApi(request => request.RequestUri!.AbsolutePath switch
+        {
+            "/api/mcp/statuses" => FakeHttpMessageHandler.JsonResponse(new
+            {
+                memorizer = new
+                {
+                    state = "Connected",
+                    toolCount = 4,
+                    error = "Catalog refresh failed 3 time(s) in a row: timed out after 15s",
+                    degraded = true,
+                }
+            }),
+            _ => new HttpResponseMessage(HttpStatusCode.NotFound)
+        });
+
+        using var listOutput = new StringWriter();
+        var exitCode = await McpCommand.RunAsync(["mcp", "list"], _paths, daemonApi, listOutput);
+        var output = listOutput.ToString();
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("connected but not responding (4 cached tools)", output);
+        Assert.Contains("timed out after 15s", output);
+    }
+
+    [Fact]
     public async Task List_WithoutDaemon_ShowsExplicitUnavailableStatus()
     {
         await McpCommand.RunAsync(

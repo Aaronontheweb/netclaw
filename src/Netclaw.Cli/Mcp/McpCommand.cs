@@ -770,7 +770,7 @@ internal static class McpCommand
 
         return state switch
         {
-            "Connected" => $"connected ({toolCount} tools)",
+            "Connected" => McpDaemonStatusText.FormatConnected(entry, toolCount, error),
             "AwaitingAuth" => "awaiting auth — run: netclaw mcp auth " + serverName.Value,
             "AuthFailed" => $"auth failed ({error ?? "authentication rejected"})",
             "Unreachable" => $"unreachable — {error ?? "connection failed"}",
