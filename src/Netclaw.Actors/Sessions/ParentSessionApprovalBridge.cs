@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
@@ -21,12 +22,13 @@ internal sealed record ParentApprovalRequest(
     ToolApprovalContext Approval);
 
 /// <summary>
-/// Internal extension used by Netclaw-owned bridges to preserve diagnostic
-/// correlation without changing the public approval-bridge contract.
+/// The request contract of a parent consent bridge. A sub-agent sends the
+/// immutable approval context and receives the operator's answer. The parent
+/// session and the sub-agent use the same <see cref="ConsentAnswer"/>.
 /// </summary>
-internal interface IAuthorizationAttemptAwareParentApprovalBridge
+internal interface IParentConsentBridge : IParentApprovalBridge
 {
-    Task<ParentApprovalDecision> RequestApprovalAsync(
+    Task<ConsentAnswer> RequestConsentAsync(
         ParentApprovalRequest request,
         CancellationToken ct);
 }
@@ -36,9 +38,7 @@ internal interface IAuthorizationAttemptAwareParentApprovalBridge
 /// Wraps the session's <see cref="IApprovalChannel"/> and request emitter into the
 /// cross-layer <see cref="IParentApprovalBridge"/> contract.
 /// </summary>
-internal sealed class ParentSessionApprovalBridge :
-    IParentApprovalBridge,
-    IAuthorizationAttemptAwareParentApprovalBridge
+internal sealed class ParentSessionApprovalBridge : IParentConsentBridge
 {
     private readonly IApprovalChannel _channel;
     private readonly Action<ToolInteractionRequestDispatch> _emitRequest;
@@ -73,47 +73,7 @@ internal sealed class ParentSessionApprovalBridge :
         _adoptedSpeakerIds = adoptedSpeakerIds;
     }
 
-    public Task<ParentApprovalDecision> RequestApprovalAsync(
-        ToolCallId callId,
-        string toolName,
-        string displayText,
-        IReadOnlyList<string> patterns,
-        IReadOnlyList<string> candidateVerbs,
-        IReadOnlyList<ParentApprovalCandidate> candidates,
-        string? cwd,
-        IReadOnlyList<ParentApprovalOption> options,
-        bool isMessy,
-        CancellationToken ct)
-        => RequestApprovalCoreAsync(
-            new ParentApprovalRequest(
-                AuthorizationAttemptId.New(),
-                callId,
-                new ToolApprovalContext(
-                    toolName,
-                    displayText,
-                    patterns,
-                    candidateVerbs,
-                    options.Select(static option => new ToolApprovalOption(
-                        new ApprovalOptionKey(option.Key),
-                        option.Label)).ToList(),
-                    Cwd: cwd,
-                    IsMessy: isMessy,
-                    Candidates: candidates.Select(static candidate => new ApprovalCandidate(
-                        candidate.Verb,
-                        candidate.Directory)
-                    {
-                        AssignmentDigest = candidate.AssignmentDigest,
-                        Shell = candidate.Shell,
-                        VerbTokens = candidate.VerbTokens,
-                    }).ToList())),
-            ct);
-
-    Task<ParentApprovalDecision> IAuthorizationAttemptAwareParentApprovalBridge.RequestApprovalAsync(
-        ParentApprovalRequest request,
-        CancellationToken ct)
-        => RequestApprovalCoreAsync(request, ct);
-
-    private async Task<ParentApprovalDecision> RequestApprovalCoreAsync(
+    public async Task<ConsentAnswer> RequestConsentAsync(
         ParentApprovalRequest request,
         CancellationToken ct)
     {
@@ -162,18 +122,7 @@ internal sealed class ParentSessionApprovalBridge :
                 .ToList()
         }, PersistApprovalState: false));
 
-        var decision = await waitTask;
-
-        return decision switch
-        {
-            ApprovalDecision.ApprovedOnce => ParentApprovalDecision.ApprovedOnce,
-            ApprovalDecision.ApprovedSession => ParentApprovalDecision.ApprovedSession,
-            ApprovalDecision.ApprovedAlways => ParentApprovalDecision.ApprovedAlways,
-            ApprovalDecision.ApprovedRepository => ParentApprovalDecision.ApprovedRepository,
-            ApprovalDecision.ApprovedEverywhere => ParentApprovalDecision.ApprovedEverywhere,
-            ApprovalDecision.TimedOut => ParentApprovalDecision.TimedOut,
-            _ => ParentApprovalDecision.Denied
-        };
+        return await waitTask;
     }
 
     private ToolCallId CreateParentCallId()

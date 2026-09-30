@@ -9,6 +9,7 @@ using Akka.Hosting.TestKit;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Threading.Channels;
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.SubAgents;
 using Netclaw.Actors.Sessions;
@@ -162,7 +163,7 @@ public sealed class SubAgentSpawnerTests : TestKit
     public async Task Spawn_async_preserves_approval_bridge_for_interactive_parent()
     {
         var childProbe = CreateTestProbe("interactive-approval-child");
-        var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
+        var approvalBridge = new RecordingParentApprovalBridge(ConsentAnswer.Once.Instance);
         var spawner = CreateSpawner();
         var context = TestToolExecutionContext.CreateBound(
             "interactive/subagent-parent",

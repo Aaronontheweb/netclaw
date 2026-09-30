@@ -11,6 +11,7 @@ using Akka.Actor;
 using Akka.Event;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
@@ -1540,7 +1541,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 catch (ToolApprovalRequiredException approvalEx)
                 {
                     var ctx = approvalEx.ApprovalContext;
-                    if (approvalBridge is null)
+                    if (approvalBridge is not IParentConsentBridge consentBridge)
                     {
                         throw new ParentApprovalUnavailableException(
                             $"Tool '{tc.Name}' requires interactive approval, but no parent approval bridge is available.");
@@ -1554,52 +1555,22 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                     // watchdog cannot.
                     self.Tell(SubAgentApprovalWaitStarted.Instance);
 
-                    ParentApprovalDecision decision;
+                    ConsentAnswer answer;
                     try
                     {
-                        if (approvalBridge is IAuthorizationAttemptAwareParentApprovalBridge awareBridge)
-                        {
-                            decision = await awareBridge.RequestApprovalAsync(
-                                new ParentApprovalRequest(
-                                    toolContext.Approval.AuthorizationAttemptId,
-                                    new ToolCallId(tc.CallId),
-                                    ctx),
-                                externalCt);
-                        }
-                        else
-                        {
-                            var bridgeCandidates = ctx.Candidates is { Count: > 0 } candidates
-                                ? candidates.Select(static candidate => new ParentApprovalCandidate(
-                                    candidate.Verb,
-                                    candidate.Directory)
-                                {
-                                    AssignmentDigest = candidate.AssignmentDigest,
-                                    Shell = candidate.Shell,
-                                    VerbTokens = candidate.VerbTokens,
-                                }).ToList()
-                                : (IReadOnlyList<ParentApprovalCandidate>)[];
-                            var bridgeOptions = ctx.Options
-                                .Select(static option => new ParentApprovalOption(option.Key.Value, option.Label))
-                                .ToList();
-                            decision = await approvalBridge.RequestApprovalAsync(
+                        answer = await consentBridge.RequestConsentAsync(
+                            new ParentApprovalRequest(
+                                toolContext.Approval.AuthorizationAttemptId,
                                 new ToolCallId(tc.CallId),
-                                ctx.ToolName,
-                                ctx.DisplayText,
-                                ctx.Patterns,
-                                ctx.CandidateVerbs,
-                                bridgeCandidates,
-                                ctx.Cwd,
-                                bridgeOptions,
-                                ctx.IsMessy,
-                                externalCt);
-                        }
+                                ctx),
+                            externalCt);
                     }
                     finally
                     {
                         self.Tell(SubAgentApprovalWaitCompleted.Instance);
                     }
 
-                    if (decision.IsApprovalGrant())
+                    if (answer is not ConsentAnswer.Refused refusal)
                     {
                         // The immediate retry needs a transient grant even for session/always
                         // approvals because the sub-agent's scope ID differs from the parent
@@ -1608,7 +1579,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                         var retryContext = CreatePerToolExecutionContext(executionContext, meta);
                         retryContext.Approval.RestoreAuthorizationAttemptId(
                             toolContext.Approval.AuthorizationAttemptId);
-                        retryContext.Approval.SeedOneTimeApproval(tc.Name, OneTimeApprovalKeys.Create(ctx));
+                        retryContext.Approval.SeedOneTimeConsent(OneTimeApprovalKeys.CreateConsent(tc.Name, ctx));
                         var result = await executor.ExecuteAsync(tc, retryContext, ct);
                         return BuildToolResult(
                             cleanedTc,
@@ -1620,10 +1591,10 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                                 : null);
                     }
 
-                    var reason = decision == ParentApprovalDecision.TimedOut
+                    var reason = refusal.Kind == RefusalKind.TimedOut
                         ? "Tool access denied: approval_timed_out"
                         : "Tool access denied: approval_denied_by_user";
-                    if (decision == ParentApprovalDecision.Denied
+                    if (refusal.Kind == RefusalKind.Denied
                         && consumedManagedTemporaryKey is { } deniedManagedTemporaryRetry)
                     {
                         reason = $"{reason}\n{ManagedTemporaryCorrection.BuildDenialHint(deniedManagedTemporaryRetry.Target.ManagedTemporaryDirectory)}";

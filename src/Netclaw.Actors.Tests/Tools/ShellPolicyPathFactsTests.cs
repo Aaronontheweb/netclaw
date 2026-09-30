@@ -3,10 +3,12 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Security;
+using Netclaw.Security.Authorization.Consent;
 using Netclaw.Security.Authorization.Filesystem;
 using Netclaw.Tests.Utilities;
 using ShellSyntaxTree;
@@ -261,7 +263,7 @@ public sealed class ShellPolicyPathFactsTests
             BashCandidate("git push", "/work/repo"));
         var sessionOwned = evaluation.GetUncoveredApprovalContext(["/work/repo"]);
 
-        evaluation.Cover(evaluation.Candidates[0], ShellCoverageKind.ReviewedSafeReal);
+        evaluation.Cover(evaluation.Candidates[0], new Coverage.ReviewedSafe(ReviewedSafeRoot.Real));
         var remaining = evaluation.GetUncoveredApprovalContext(["/work/session"]);
 
         Assert.NotSame(sessionOwned, remaining);
@@ -278,7 +280,6 @@ public sealed class ShellPolicyPathFactsTests
     [InlineData("duplicate")]
     [InlineData("identity")]
     [InlineData("id")]
-    [InlineData("uncovered")]
     [InlineData("session")]
     [InlineData("persistent")]
     public void Invalid_coverage_mutations_are_atomic(string mutation)
@@ -286,28 +287,25 @@ public sealed class ShellPolicyPathFactsTests
         var evaluation = CreateEvaluation(BashCandidate("git status", "/work"));
         var candidate = Assert.Single(evaluation.Candidates);
         if (mutation == "duplicate")
-            evaluation.Cover(candidate, ShellCoverageKind.ReviewedSafeReal);
+            evaluation.Cover(candidate, new Coverage.ReviewedSafe(ReviewedSafeRoot.Real));
 
         Action apply = mutation switch
         {
             "duplicate" => () => evaluation.Cover(
                 candidate,
-                ShellCoverageKind.OneTime),
+                Coverage.OneTime.Instance),
             "identity" => () => evaluation.Cover(
                 candidate with { Candidate = BashCandidate("git push", "/work") },
-                ShellCoverageKind.ReviewedSafeReal),
+                new Coverage.ReviewedSafe(ReviewedSafeRoot.Real)),
             "id" => () => evaluation.Cover(
                 candidate with { Id = new ShellPolicyCandidateId(7) },
-                ShellCoverageKind.ReviewedSafeReal),
-            "uncovered" => () => evaluation.Cover(
-                candidate,
-                ShellCoverageKind.Uncovered),
+                new Coverage.ReviewedSafe(ReviewedSafeRoot.Real)),
             "session" => () => evaluation.Cover(
                 candidate,
-                ShellCoverageKind.Session),
+                new Coverage.Stored(GrantScope.Session.Instance, GrantedAt: null)),
             "persistent" => () => evaluation.Cover(
                 candidate,
-                ShellCoverageKind.PersistentGlobal),
+                new Coverage.Stored(GrantScope.Everywhere.Instance, GrantedAt: null)),
             _ => throw new ArgumentOutOfRangeException(nameof(mutation))
         };
 
@@ -351,7 +349,7 @@ public sealed class ShellPolicyPathFactsTests
             BashCandidate("git status", "/work/repo"),
             BashCandidate("git push", "/work/repo"));
         var candidates = evaluation.Candidates;
-        evaluation.Cover(candidates[1], ShellCoverageKind.ReviewedSafeReal);
+        evaluation.Cover(candidates[1], new Coverage.ReviewedSafe(ReviewedSafeRoot.Real));
         var grantCandidates = candidates.Select(candidate => new ShellGrantCandidate(
                 candidate.Id,
                 candidate.Candidate,

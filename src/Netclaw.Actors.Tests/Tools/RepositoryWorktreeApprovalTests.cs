@@ -4,10 +4,12 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Security;
+using Netclaw.Security.Authorization.Consent;
 using Netclaw.Security.Authorization.Filesystem;
 using Netclaw.Tools;
 using Xunit;
@@ -54,15 +56,13 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
             var promptCandidate = Assert.Single(promptDecision.ApprovalContext.Candidates!);
             Assert.NotNull(promptCandidate.AssignmentDigest);
 
-            var grantScope = ApprovalGrantScope.FromDecision(
-                ApprovalDecision.ApprovedRepository,
-                main,
+            Func<IReadOnlyList<ApprovalCandidate>, IReadOnlyList<ToolApprovalGrant>> buildGrants =
+                candidates => GrantBuilder.Build(candidates, GrantScopeKind.Repository, main,
                 session.FullName,
                 promptDecision.ApprovalContext.RepositoryCommonDirectory);
-            var repositoryGrant = Assert.Single(ApprovalBucketBuilder.BuildGrants(
-                promptDecision.ApprovalContext.Candidates!, grantScope));
+            var repositoryGrant = Assert.Single(buildGrants(promptDecision.ApprovalContext.Candidates!));
             Assert.Equal(promptCandidate.AssignmentDigest, repositoryGrant.Candidate.AssignmentDigest);
-            Assert.Equal(Path.Combine(main, ".git"), repositoryGrant.Repository);
+            Assert.Equal(Path.Combine(main, ".git"), ((GrantScope.Repository)repositoryGrant.Scope).CommonDirectory);
             Assert.Equal(main, repositoryGrant.RepositoryWorktree);
             Assert.True(ToolApprovalActor.TryCreateEntries(
                 new ToolName(ShellTool.ToolName),
@@ -71,7 +71,7 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
                 out _));
             var entry = Assert.Single(entries);
             Assert.Equal(promptCandidate.AssignmentDigest, entry.AssignmentDigest);
-            Assert.Equal(repositoryGrant.Repository, entry.Repository);
+            Assert.Equal(((GrantScope.Repository)repositoryGrant.Scope).CommonDirectory, entry.Repository);
 
             await using var siblingHarness = await CreateHarnessAsync(
                 "repository-assignment-sibling",
@@ -159,19 +159,16 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
                 promptDecision.ApprovalContext.Options,
                 option => option.Key.Value == Netclaw.Actors.Protocol.ApprovalOptionKeys.ApproveRepository);
 
-            var grantScope = ApprovalGrantScope.FromDecision(
-                ApprovalDecision.ApprovedRepository,
-                session.FullName,
+            Func<IReadOnlyList<ApprovalCandidate>, IReadOnlyList<ToolApprovalGrant>> buildGrants =
+                candidates => GrantBuilder.Build(candidates, GrantScopeKind.Repository, session.FullName,
                 session.FullName,
                 promptDecision.ApprovalContext.RepositoryCommonDirectory);
-            var repositoryGrants = ApprovalBucketBuilder.BuildGrants(
-                promptDecision.ApprovalContext.Candidates!, grantScope);
+            var repositoryGrants = buildGrants(promptDecision.ApprovalContext.Candidates!);
             Assert.Single(repositoryGrants);
             Assert.All(repositoryGrants, repositoryGrant =>
             {
-                Assert.Equal(Path.Combine(checkoutA, ".git"), repositoryGrant.Repository);
+                Assert.Equal(Path.Combine(checkoutA, ".git"), ((GrantScope.Repository)repositoryGrant.Scope).CommonDirectory);
                 Assert.Equal(worktreeA, repositoryGrant.RepositoryWorktree);
-                Assert.Null(repositoryGrant.Directory);
                 Assert.True(PathUtility.IsWithinRoot(
                     repositoryGrant.Candidate.Directory!, worktreeA));
             });
@@ -270,7 +267,6 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
                     TrustAudience.Personal,
                     new ToolName(ShellTool.ToolName),
                     repositoryGrants,
-                    persistent: true,
                     TestContext.Current.CancellationToken));
             Assert.Contains("InvalidData", persistenceFailure.Message, StringComparison.Ordinal);
         }
@@ -306,25 +302,19 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
             Assert.Contains(
                 promptDecision.ApprovalContext!.Options,
                 option => option.Key.Value == Netclaw.Actors.Protocol.ApprovalOptionKeys.ApproveRepository);
-            var grantScope = ApprovalGrantScope.FromDecision(
-                ApprovalDecision.ApprovedRepository, sibling, session.FullName,
+            Func<IReadOnlyList<ApprovalCandidate>, IReadOnlyList<ToolApprovalGrant>> buildGrants =
+                candidates => GrantBuilder.Build(candidates, GrantScopeKind.Repository, sibling, session.FullName,
                 promptDecision.ApprovalContext.RepositoryCommonDirectory);
-            var repositoryGrant = Assert.Single(ApprovalBucketBuilder.BuildGrants(
-                promptDecision.ApprovalContext.Candidates!, grantScope));
-            Assert.Equal(Path.Combine(main, ".git"), repositoryGrant.Repository);
+            var repositoryGrant = Assert.Single(buildGrants(promptDecision.ApprovalContext.Candidates!));
+            Assert.Equal(Path.Combine(main, ".git"), ((GrantScope.Repository)repositoryGrant.Scope).CommonDirectory);
             Assert.Equal(sibling, repositoryGrant.RepositoryWorktree);
-            var swappedGrantScope = ApprovalGrantScope.FromDecision(
-                ApprovalDecision.ApprovedRepository, sibling, session.FullName,
+            Func<IReadOnlyList<ApprovalCandidate>, IReadOnlyList<ToolApprovalGrant>> buildSwappedGrants =
+                candidates => GrantBuilder.Build(candidates, GrantScopeKind.Repository, sibling, session.FullName,
                 Path.Combine(unrelated, ".git"));
-            Assert.Throws<InvalidOperationException>(() => ApprovalBucketBuilder.BuildGrants(
-                promptDecision.ApprovalContext.Candidates!, swappedGrantScope));
-            Assert.Throws<InvalidOperationException>(() => ApprovalBucketBuilder.BuildGrants(
-                [new Netclaw.Security.ApprovalCandidate("touch", Path.Combine(root.FullName, "outside"))],
-                grantScope));
-            Assert.Throws<InvalidOperationException>(() => ApprovalBucketBuilder.BuildGrants(
-                [new Netclaw.Security.ApprovalCandidate("cd", Path.Combine(root.FullName, "outside")),
-                    new Netclaw.Security.ApprovalCandidate("./scripts/bump-version.sh", null)],
-                grantScope));
+            Assert.Throws<InvalidOperationException>(() => buildSwappedGrants(promptDecision.ApprovalContext.Candidates!));
+            Assert.Throws<InvalidOperationException>(() => buildGrants([new Netclaw.Security.ApprovalCandidate("touch", Path.Combine(root.FullName, "outside"))]));
+            Assert.Throws<InvalidOperationException>(() => buildGrants([new Netclaw.Security.ApprovalCandidate("cd", Path.Combine(root.FullName, "outside")),
+                    new Netclaw.Security.ApprovalCandidate("./scripts/bump-version.sh", null)]));
 
             var grants = Approvals.Combine(
                 Approvals.PersistentRepository("./scripts/bump-version.sh"),
@@ -442,8 +432,7 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
             RunGit(sibling, "rev-parse", "--show-toplevel");
             Assert.True(RepositoryIdentity.TryResolve(candidateDirectory: null, sibling, out var swappedScope));
             Assert.Equal(Path.Combine(unrelated, ".git"), swappedScope!.CommonDirectory);
-            Assert.Throws<InvalidOperationException>(() => ApprovalBucketBuilder.BuildGrants(
-                promptDecision.ApprovalContext.Candidates!, grantScope));
+            Assert.Throws<InvalidOperationException>(() => buildGrants(promptDecision.ApprovalContext.Candidates!));
 
             await using var changedRegistrationHarness = await CreateHarnessAsync(
                 "repository-changed-registration",

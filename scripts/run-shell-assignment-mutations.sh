@@ -172,15 +172,15 @@ read -r option_start option_end option_start_line option_start_column option_end
 )
 actor_patterns+=("Tools/ToolAccessPolicy.cs{$option_start..$option_end}")
 
-session_actor_file="$repo_root/src/Netclaw.Actors/Sessions/LlmSessionActor.cs"
+consent_answer_file="$repo_root/src/Netclaw.Actors/Authorization/Consent/ConsentAnswer.cs"
 read -r offered_start offered_end offered_start_line offered_start_column offered_end_line offered_end_column < <(
   find_span \
-    "$session_actor_file" \
-    "internal static bool IsOfferedApprovalOption(" \
+    "$consent_answer_file" \
+    "internal static bool IsOffered(" \
     "=> ApprovalOptionKeys.IsAssignmentVariant(selectedKey)" \
     ": optionKeys.Count == 0 || optionKeys.Contains(selectedKey, StringComparer.Ordinal);"
 )
-actor_patterns+=("Sessions/LlmSessionActor.cs{$offered_start..$offered_end}")
+actor_patterns+=("Authorization/Consent/ConsentAnswer.cs{$offered_start..$offered_end}")
 
 read -r sanitizer_start sanitizer_end sanitizer_start_line sanitizer_start_column sanitizer_end_line sanitizer_end_column < <(
   find_span \
@@ -207,4 +207,4 @@ actor_report="$actor_output/reports/mutation-report.json"
 assert_report "$actor_report" 15
 assert_target "$actor_report" "reviewed-safe" "$reviewed_file" "$reviewed_start_line" "$reviewed_start_column" "$reviewed_end_line" "$reviewed_end_column" 2
 assert_target "$actor_report" "rollback-safe-options" "$access_policy_file" "$option_start_line" "$option_start_column" "$option_end_line" "$option_end_column" 2
-assert_target "$actor_report" "legacy-prompt-options" "$session_actor_file" "$offered_start_line" "$offered_start_column" "$offered_end_line" "$offered_end_column" 11
+assert_target "$actor_report" "legacy-prompt-options" "$consent_answer_file" "$offered_start_line" "$offered_start_column" "$offered_end_line" "$offered_end_column" 11

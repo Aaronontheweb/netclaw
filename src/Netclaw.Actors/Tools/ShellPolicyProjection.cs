@@ -3,27 +3,13 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Collections.Frozen;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Security.Authorization.Filesystem;
 using Netclaw.Tools;
+using Netclaw.Tools.Authorization.Consent;
 
 namespace Netclaw.Actors.Tools;
-
-internal enum ShellCoverageKind
-{
-    Uncovered = 0,
-    OneTime = 1,
-    Session = 2,
-    PersistentGlobal = 3,
-    PersistentFolder = 4,
-    ReviewedSafePolicy = 5,
-    PersistentRepository = 6,
-    ReviewedSafeReal = 7,
-    ReviewedSafeIntent = 8,
-    ApprovalExemptSideEffect = 9,
-}
 
 internal readonly record struct ShellPolicyCandidateId
 {
@@ -75,15 +61,13 @@ internal sealed record ShellPolicyProjection
         InteractiveApprovalCapability interactiveApproval,
         ToolApprovalContext approvalContext,
         IReadOnlyList<ShellPolicyCandidate> candidates,
-        IReadOnlySet<string> approvedOneTimeKeys,
-        string? approvedOneTimeToolName)
+        OneTimeConsent? oneTimeConsent)
     {
         Environment = environment;
         InteractiveApproval = interactiveApproval;
         ApprovalContext = approvalContext;
         Candidates = candidates;
-        ApprovedOneTimeKeys = approvedOneTimeKeys;
-        ApprovedOneTimeToolName = approvedOneTimeToolName;
+        OneTimeConsent = oneTimeConsent;
     }
 
     internal ShellExecutionEnvironment Environment { get; }
@@ -94,9 +78,8 @@ internal sealed record ShellPolicyProjection
 
     internal IReadOnlyList<ShellPolicyCandidate> Candidates { get; }
 
-    internal IReadOnlySet<string> ApprovedOneTimeKeys { get; }
-
-    internal string? ApprovedOneTimeToolName { get; }
+    /// <summary>The "Once" answer that this attempt carries, or null.</summary>
+    internal OneTimeConsent? OneTimeConsent { get; }
 
     internal bool HasCausalIntent => Candidates.Any(static candidate =>
         candidate.Role != ShellPolicyCandidateRole.Ordinary);
@@ -104,11 +87,7 @@ internal sealed record ShellPolicyProjection
     internal bool HasExactOneTimeApproval(
         string toolName,
         ToolApprovalContext approvalContext)
-        => OneTimeApprovalKeys.Matches(
-            ApprovedOneTimeToolName,
-            ApprovedOneTimeKeys,
-            toolName,
-            approvalContext);
+        => OneTimeApprovalKeys.Matches(OneTimeConsent, toolName, approvalContext);
 
     internal static bool TryCreate(
         ShellExecutionEnvironment environment,
@@ -245,7 +224,6 @@ internal sealed record ShellPolicyProjection
             context.RunScope.InteractiveApproval,
             contextCopy,
             candidateView,
-            context.Approval.OneTimeApprovedPatterns.ToFrozenSet(StringComparer.OrdinalIgnoreCase),
-            context.Approval.OneTimeApprovedToolName);
+            context.Approval.OneTimeConsent);
     }
 }

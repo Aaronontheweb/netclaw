@@ -423,8 +423,6 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
             ToolExecutionContext context,
             CancellationToken ct)
     {
-        context.Approval.ClearAppliedDecision();
-
         var tool = _registry.GetByName(toolCall.Name);
         if (tool is null)
         {
@@ -486,9 +484,6 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
                 else if (approvalCheck.UnapprovedPatterns.Count == 0
                          && !hasInconsistentCandidateChecks)
                 {
-                    context.Approval.ApplyDecision(
-                        "PreviouslyApproved",
-                        FormatApprovalMatches(approvalCheck.ApprovedMatches));
                     accessDecision = ToolAuthorizationDecision.Allow(ToolAllowReason.StoredApproval);
                 }
                 else
@@ -551,8 +546,8 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
             ?? throw new InvalidOperationException("Authorized shell execution requires a working directory.");
         var launchContext = new ToolExecutionContext(context.RunScope, context.ExecutionTimeout);
         launchContext.Approval.RestoreAuthorizationAttemptId(context.Approval.AuthorizationAttemptId);
-        if (context.Approval.OneTimeApprovedToolName is { } approvedTool)
-            launchContext.Approval.SeedOneTimeApproval(approvedTool, context.Approval.OneTimeApprovedPatterns);
+        if (context.Approval.OneTimeConsent is { } oneTimeConsent)
+            launchContext.Approval.SeedOneTimeConsent(oneTimeConsent);
         if (context.Approval.ManagedTemporaryRetry is { } retry)
             launchContext.Approval.MarkManagedTemporaryRetry(retry);
 
@@ -740,9 +735,6 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
         }
     }
 
-    private static string FormatApprovalMatches(IReadOnlyList<ToolApprovalMatch> matches)
-        => string.Join(", ", matches.Select(match => $"{match.Pattern} [{match.Source}: {match.Scope}]"));
-
     private static ToolApprovalSessionId? ToApprovalSessionId(string? sessionId)
         => sessionId is null ? null : (ToolApprovalSessionId)sessionId;
 
@@ -761,8 +753,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
         // An unchanged messy command has an empty key set on both attempts,
         // while a clean-to-messy transition cannot match its original keys.
         return OneTimeApprovalKeys.Matches(
-            context.Approval.OneTimeApprovedToolName,
-            context.Approval.OneTimeApprovedPatterns,
+            context.Approval.OneTimeConsent,
             toolCall.Name,
             approvalContext);
     }

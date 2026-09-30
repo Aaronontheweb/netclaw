@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.AI;
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Security.Authorization.Filesystem;
@@ -20,7 +21,6 @@ internal sealed class ShellPolicyCoordinator(
     ToolAccessPolicy policy,
     IToolApprovalService? approvalService)
 {
-    private readonly ShellApprovalEvidenceAdapter _approvalEvidence = new(approvalService);
 
     /// <summary>Evaluates one shell request from access checks through its final authorization result.</summary>
     /// <remarks>
@@ -104,8 +104,7 @@ internal sealed class ShellPolicyCoordinator(
             if (preflightDecision.NeedsApproval
                 && preflightDecision.ApprovalContext is { } approvalContext
                 && OneTimeApprovalKeys.Matches(
-                    context.Approval.OneTimeApprovedToolName,
-                    context.Approval.OneTimeApprovedPatterns,
+                    context.Approval.OneTimeConsent,
                     toolCall.Name,
                     approvalContext))
             {
@@ -333,26 +332,23 @@ internal sealed class ShellPolicyCoordinator(
                 state.Candidate.Candidate,
                 projection.ApprovalContext.Cwd))
             .ToArray();
-        var actorResult = await _approvalEvidence.MatchAsync(
+        var actorResult = await MatchStoredGrantsAsync(
             new ShellApprovalMatchRequest(
                 ToApprovalSessionId(context.SessionId),
                 context.Audience,
                 new ToolName(tool.Name),
                 Array.AsReadOnly(requestCandidates)),
-            projection.ApprovalContext.Cwd,
             cancellationToken);
         cancellationToken.ThrowIfCancellationRequested();
         evaluation.ApplyActorEvidence(actorResult);
         cancellationToken.ThrowIfCancellationRequested();
-        if (_approvalEvidence.IsAvailable)
+        if (approvalService is not null)
         {
             foreach (var candidate in evaluation.Candidates.Where(static item =>
                          item.Role == ShellPolicyCandidateRole.Ordinary
                          && ApprovalPatternMatching.IsPureSideEffect(item.Candidate)))
             {
-                evaluation.Cover(
-                    candidate,
-                    ShellCoverageKind.ApprovalExemptSideEffect);
+                evaluation.Cover(candidate, Coverage.Exempt.Instance);
             }
         }
         cancellationToken.ThrowIfCancellationRequested();
@@ -471,7 +467,7 @@ internal sealed class ShellPolicyCoordinator(
 
             evaluation.Cover(
                 candidate,
-                ShellCoverageKind.ReviewedSafeReal);
+                new Coverage.ReviewedSafe(ReviewedSafeRoot.Real));
         }
 
         foreach (var state in evaluation.CandidateStates)
@@ -496,7 +492,7 @@ internal sealed class ShellPolicyCoordinator(
 
             evaluation.Cover(
                 candidate,
-                ShellCoverageKind.ReviewedSafeIntent);
+                new Coverage.ReviewedSafe(ReviewedSafeRoot.Intent));
         }
     }
 
@@ -526,7 +522,7 @@ internal sealed class ShellPolicyCoordinator(
             if (hasExactOneTimeApproval)
             {
                 foreach (var candidate in remaining)
-                    evaluation.Cover(candidate, ShellCoverageKind.OneTime);
+                    evaluation.Cover(candidate, Coverage.OneTime.Instance);
 
                 cancellationToken.ThrowIfCancellationRequested();
                 return evaluation.Complete(
@@ -554,13 +550,6 @@ internal sealed class ShellPolicyCoordinator(
         var grantCandidateCount = evaluation.GrantCandidates.Count();
         if (approvalMatches.Count > 0)
         {
-            if (approvalMatches.Count == grantCandidateCount)
-            {
-                context.Approval.ApplyDecision(
-                    "PreviouslyApproved",
-                    FormatApprovalMatches(approvalMatches));
-            }
-
             return evaluation.Complete(
                 ToolAuthorizationDecision.Allow(
                     ToolAllowReason.StoredApproval,
@@ -573,10 +562,6 @@ internal sealed class ShellPolicyCoordinator(
                     ? ToolAllowReason.ApprovalExemptShellCandidates
                     : ToolAllowReason.ReviewedSafePolicy));
     }
-
-    private static string FormatApprovalMatches(IReadOnlyList<ToolApprovalMatch> matches)
-        => string.Join(", ", matches.Select(match =>
-            $"{match.Pattern} [{match.Source}: {match.Scope}]"));
 
     private static ToolAuthorizationDecision CompleteOneTimeOrPrompt(
         ShellPolicyEvaluation evaluation,
@@ -617,6 +602,40 @@ internal sealed class ShellPolicyCoordinator(
         ToolAuthorizationDecision decision,
         ShellPolicyDecisionTraceBuilder trace)
         => decision.WithShellPolicyTrace(trace.Complete(decision));
+
+    /// <summary>
+    /// Asks the approval actor which stored grants cover the candidates. With no
+    /// approval service, no stored grant exists, so every candidate stays uncovered.
+    /// </summary>
+    internal async Task<ShellApprovalMatchResult> MatchStoredGrantsAsync(
+        ShellApprovalMatchRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.Candidates.Count == 0 || approvalService is null)
+        {
+            return ShellApprovalMatchResult.Create(
+                request.Candidates,
+                persistentStoreFailure: null,
+                request.Candidates
+                    .Select(static candidate => ShellGrantCandidateResult.Uncovered(candidate))
+                    .ToArray());
+        }
+
+        // Shell grants need per-candidate evidence. An approval service without
+        // it cannot prove which grant covered which candidate, so fail loudly.
+        if (approvalService is not IShellApprovalMatchService shellApprovalService)
+        {
+            throw new InvalidOperationException(
+                "The approval service cannot match shell candidates.");
+        }
+
+        var result = await shellApprovalService.MatchShellCandidatesAsync(request, cancellationToken);
+        ArgumentNullException.ThrowIfNull(result);
+        return ShellApprovalMatchResult.Create(
+            request.Candidates,
+            result.PersistentStoreFailure,
+            result.Candidates);
+    }
 
     private static ToolApprovalSessionId? ToApprovalSessionId(string? sessionId)
         => sessionId is null ? null : (ToolApprovalSessionId)sessionId;

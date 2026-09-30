@@ -125,19 +125,6 @@ public interface IToolApprovalMatcher
     IReadOnlyList<ApprovalCandidate> ExtractCandidates(ToolName toolName, IDictionary<string, object?>? arguments);
 
     /// <summary>
-    /// Returns true when every candidate verb chain finds a matching
-    /// <see cref="ApprovalEntry"/> under the supplied <paramref name="cwd"/>.
-    /// A folder-scoped entry matches when its directory contains the cwd and
-    /// no symlink segments exist between the two; a global-wildcard entry
-    /// (<c>directory: null</c>) matches any cwd.
-    /// </summary>
-    bool IsApproved(
-        ToolName toolName,
-        IDictionary<string, object?>? arguments,
-        IReadOnlyList<ApprovalEntry> approvedEntries,
-        string? cwd);
-
-    /// <summary>
     /// Returns true when the invocation cannot be cleanly split into
     /// verb-chain approval units — for shell, when the command contains bash
     /// control-flow keywords or unbalanced quotes/brackets. Approval prompts
@@ -1210,43 +1197,6 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             "Unknown ShellSyntaxTree redirect direction — a package upgrade needs a matcher update."),
     };
 
-    public bool IsApproved(
-        ToolName toolName,
-        IDictionary<string, object?>? arguments,
-        IReadOnlyList<ApprovalEntry> approvedEntries,
-        string? cwd)
-    {
-        // Fail-closed on a missing/empty Command argument: a malformed
-        // shell invocation cannot be "already approved" — the agent must
-        // round-trip through the gate so the operator sees what was
-        // attempted.
-        var command = GetCommand(arguments);
-        if (string.IsNullOrWhiteSpace(command))
-            return false;
-
-        // Empty candidates include parser failures and dynamic syntax.
-        // Both cases must return to the approval gate.
-        var candidates = ExtractCandidates(toolName, arguments);
-        if (candidates.Count == 0)
-            return false;
-
-        foreach (var candidate in candidates)
-        {
-            // Pure side-effect candidates (echo "X" without a path or redirect,
-            // bash :, true/false) are always authorized — they're skipped on
-            // persistence so the store never contains them, and the matcher
-            // here mirrors that decision at evaluation time.
-            if (ApprovalPatternMatching.IsPureSideEffect(candidate))
-                continue;
-
-            if (!ApprovalPatternMatching.MatchesShellApproval(
-                    candidate, cwd, approvedEntries))
-                return false;
-        }
-
-        return true;
-    }
-
     public bool IsMessy(ToolName toolName, IDictionary<string, object?>? arguments)
         => AnalyzeInvocation(toolName, arguments).IsMessy;
 
@@ -1541,13 +1491,6 @@ public sealed class DefaultApprovalMatcher : IToolApprovalMatcher
     public IReadOnlyList<ApprovalCandidate> ExtractCandidates(ToolName toolName, IDictionary<string, object?>? arguments)
         => [new ApprovalCandidate(toolName.Value, Directory: null)];
 
-    public bool IsApproved(
-        ToolName toolName,
-        IDictionary<string, object?>? arguments,
-        IReadOnlyList<ApprovalEntry> approvedEntries,
-        string? cwd)
-        => ApprovalPatternMatching.MatchesAny(toolName.Value, approvedEntries);
-
     public bool IsMessy(ToolName toolName, IDictionary<string, object?>? arguments)
         => false;
 
@@ -1597,13 +1540,6 @@ public sealed class McpApprovalMatcher : IToolApprovalMatcher
         ToolName toolName,
         IDictionary<string, object?>? arguments)
         => Default.ExtractCandidates(toolName, arguments);
-
-    public bool IsApproved(
-        ToolName toolName,
-        IDictionary<string, object?>? arguments,
-        IReadOnlyList<ApprovalEntry> approvedEntries,
-        string? cwd)
-        => Default.IsApproved(toolName, arguments, approvedEntries, cwd);
 
     public bool IsMessy(ToolName toolName, IDictionary<string, object?>? arguments)
         => Default.IsMessy(toolName, arguments);

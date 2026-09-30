@@ -170,21 +170,6 @@ public sealed class ApprovalPatternV3Tests
     }
 
     [Fact]
-    public void String_candidate_does_not_match_an_assignment_qualified_grant()
-    {
-        var grant = ApprovalEntry.CreateTokenPrefix(
-            ApprovalShell.Bash,
-            ["inspect"],
-            assignmentDigest: AssignmentDigest);
-
-        Assert.False(ApprovalPatternMatching.MatchesShellApproval(
-            "inspect",
-            candidateDirectory: null,
-            cwd: null,
-            [grant]));
-    }
-
-    [Fact]
     public void Assignment_qualified_side_effect_is_not_approval_exempt()
     {
         var candidate = new ApprovalCandidate(

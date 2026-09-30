@@ -7,6 +7,7 @@ using System.Diagnostics;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Security;
+using Netclaw.Security.Authorization.Consent;
 using Netclaw.Security.Authorization.Filesystem;
 using Netclaw.Tools;
 using Xunit;
@@ -156,16 +157,15 @@ public sealed class ApprovalDirectoryMutationTests : IDisposable
         Directory.CreateDirectory(candidateDirectory);
 
         var candidate = CreateCandidate(ApprovalShell.Bash, candidateDirectory);
-        var grant = new ToolApprovalGrant(candidate, Directory: null)
+        var grant = new ToolApprovalGrant(candidate, new GrantScope.Repository(Path.Combine(main, ".git")))
         {
-            Repository = Path.Combine(main, ".git"),
             RepositoryWorktree = sibling,
         };
         Assert.True(ToolApprovalActor.TryCreateEntries(
             new ToolName(ShellTool.ToolName), [grant], out var persistent, out _));
         Assert.Single(persistent);
 
-        var wrongIdentity = grant with { Repository = Path.Combine(unrelated, ".git") };
+        var wrongIdentity = grant with { Scope = new GrantScope.Repository(Path.Combine(unrelated, ".git")) };
         Assert.False(ToolApprovalActor.TryCreateEntries(
             new ToolName(ShellTool.ToolName), [wrongIdentity], out _, out _));
         var wrongRoot = grant with { RepositoryWorktree = main };
@@ -186,7 +186,7 @@ public sealed class ApprovalDirectoryMutationTests : IDisposable
         Assert.True(RepositoryIdentity.TryResolve(
             candidateDirectory, cwd: null, out var nestedScope));
         Assert.True(PathUtility.AreEquivalentPaths(
-            nestedScope!.CommonDirectory, grant.Repository));
+            nestedScope!.CommonDirectory, ((GrantScope.Repository)grant.Scope).CommonDirectory));
         Assert.False(PathUtility.AreEquivalentPaths(
             nestedScope.WorktreeRoot, grant.RepositoryWorktree));
         Assert.False(ToolApprovalActor.TryCreateEntries(

@@ -5,10 +5,13 @@
 // -----------------------------------------------------------------------
 using System.Text.Json;
 using Microsoft.Extensions.AI;
+using Netclaw.Actors.Authorization.Consent;
+using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Security;
 using Netclaw.Tools;
+using Netclaw.Tools.Authorization.Consent;
 using Xunit;
 
 namespace Netclaw.Actors.MutationTests;
@@ -68,9 +71,8 @@ public sealed class ToolAuthorizationMutationTests : IDisposable
             profile.AllowedMcpServers = [];
 
         var deniedContext = CreateContext(audience);
-        deniedContext.Approval.SeedOneTimeApproval(
-            context.Approval.OneTimeApprovedToolName ?? tool.Name,
-            context.Approval.OneTimeApprovedPatterns);
+        deniedContext.Approval.SeedOneTimeConsent(
+            context.Approval.OneTimeConsent ?? new OneTimeConsent(tool.Name, []));
         var denied = await Assert.ThrowsAsync<ToolAccessDeniedException>(() =>
             executor.ExecuteAsync(call, deniedContext, CancellationToken.None));
 
@@ -104,9 +106,8 @@ public sealed class ToolAuthorizationMutationTests : IDisposable
 
         var restricted = CreateExecutor(tool, config, new ShellCommandPolicy(["echo mutation-probe"]));
         var deniedContext = CreateContext(TrustAudience.Personal);
-        deniedContext.Approval.SeedOneTimeApproval(
-            context.Approval.OneTimeApprovedToolName ?? tool.Name,
-            context.Approval.OneTimeApprovedPatterns);
+        deniedContext.Approval.SeedOneTimeConsent(
+            context.Approval.OneTimeConsent ?? new OneTimeConsent(tool.Name, []));
         var denied = await Assert.ThrowsAsync<ToolAccessDeniedException>(() =>
             restricted.ExecuteAsync(call, deniedContext, CancellationToken.None));
 
@@ -143,7 +144,7 @@ public sealed class ToolAuthorizationMutationTests : IDisposable
             [candidate],
             ShellPathStyle.Posix));
         var state = new ShellPolicyEvaluation.CandidateState(candidate, pathFacts);
-        state.Cover(ShellCoverageKind.ReviewedSafeReal);
+        state.Cover(new Coverage.ReviewedSafe(ReviewedSafeRoot.Real));
         var grantCandidate = new ShellGrantCandidate(
             candidate.Id,
             candidate.Candidate,
@@ -152,7 +153,7 @@ public sealed class ToolAuthorizationMutationTests : IDisposable
         Assert.Throws<InvalidOperationException>(() => state.ApplyActorEvidence(
             ShellGrantCandidateResult.Uncovered(grantCandidate),
             order: 0));
-        Assert.Equal(ShellCoverageKind.ReviewedSafeReal, state.Coverage);
+        Assert.Equal(new Coverage.ReviewedSafe(ReviewedSafeRoot.Real), state.Coverage);
     }
 
     public void Dispose() => Directory.Delete(_paths.BasePath, recursive: true);
@@ -220,8 +221,8 @@ public sealed class ToolAuthorizationMutationTests : IDisposable
         var decision = await executor.EvaluateAuthorizationAsync(call, context, CancellationToken.None);
         Assert.Equal(ToolAuthorizationOutcome.RequiresApproval, decision.Outcome);
         Assert.NotNull(decision.ApprovalContext);
-        context.Approval.SeedOneTimeApproval(
-            decision.ApprovalContext.ToolName, OneTimeApprovalKeys.Create(decision.ApprovalContext));
+        context.Approval.SeedOneTimeConsent(
+            OneTimeApprovalKeys.CreateConsent(decision.ApprovalContext.ToolName, decision.ApprovalContext));
     }
 
     // The real dispatcher and shell policy use this probe. No mutant can start a host process.
@@ -244,12 +245,9 @@ public sealed class ToolAuthorizationMutationTests : IDisposable
         }
     }
 
-    private sealed class UnexpectedApprovalBridge : IParentApprovalBridge
+    private sealed class UnexpectedApprovalBridge : IParentConsentBridge
     {
-        public Task<ParentApprovalDecision> RequestApprovalAsync(
-            ToolCallId callId, string toolName, string displayText, IReadOnlyList<string> patterns,
-            IReadOnlyList<string> candidateVerbs, IReadOnlyList<ParentApprovalCandidate> candidates,
-            string? cwd, IReadOnlyList<ParentApprovalOption> options, bool isMessy, CancellationToken ct) =>
+        public Task<ConsentAnswer> RequestConsentAsync(ParentApprovalRequest request, CancellationToken ct) =>
             throw new InvalidOperationException("The dispatcher must not request user approval through the bridge.");
     }
 }

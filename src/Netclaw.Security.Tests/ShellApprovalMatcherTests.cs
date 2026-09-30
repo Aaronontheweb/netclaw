@@ -1453,30 +1453,27 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         // Folder-scoped trust compounds: an entry on /home/petabridge
         // covers any candidate whose path is under it.
         Assert.True(ApprovalPatternMatching.MatchesShellApproval(
-            candidateVerb: "find",
-            candidateDirectory: "/home/petabridge/.netclaw",
+            BashCandidate("find", "/home/petabridge/.netclaw"),
             cwd: null,
-            approvedEntries: [new ApprovalEntry("find") { Directory = "/home/petabridge" }]));
+            approvedEntries: [BashGrant("find", "/home/petabridge")]));
     }
 
     [Fact]
     public void Matches_when_candidate_path_equals_entry_directory()
     {
         Assert.True(ApprovalPatternMatching.MatchesShellApproval(
-            candidateVerb: "find",
-            candidateDirectory: "/home/petabridge",
+            BashCandidate("find", "/home/petabridge"),
             cwd: null,
-            approvedEntries: [new ApprovalEntry("find") { Directory = "/home/petabridge" }]));
+            approvedEntries: [BashGrant("find", "/home/petabridge")]));
     }
 
     [Fact]
     public void Rejects_when_candidate_path_outside_entry_directory()
     {
         Assert.False(ApprovalPatternMatching.MatchesShellApproval(
-            candidateVerb: "find",
-            candidateDirectory: "/home/other",
+            BashCandidate("find", "/home/other"),
             cwd: null,
-            approvedEntries: [new ApprovalEntry("find") { Directory = "/home/petabridge" }]));
+            approvedEntries: [BashGrant("find", "/home/petabridge")]));
     }
 
     [Fact]
@@ -1484,10 +1481,9 @@ public sealed class ShellApprovalMatcherPathExtractionTests
     {
         // No path argument on the candidate — cwd is the effective directory.
         Assert.True(ApprovalPatternMatching.MatchesShellApproval(
-            candidateVerb: "git status",
-            candidateDirectory: null,
+            BashCandidate("git status", null),
             cwd: "/home/petabridge/.netclaw",
-            approvedEntries: [new ApprovalEntry("git status") { Directory = "/home/petabridge" }]));
+            approvedEntries: [BashGrant("git status", "/home/petabridge")]));
     }
 
     [Fact]
@@ -1495,10 +1491,9 @@ public sealed class ShellApprovalMatcherPathExtractionTests
     {
         // Global wildcard ignores both candidate path and cwd.
         Assert.True(ApprovalPatternMatching.MatchesShellApproval(
-            candidateVerb: "freshdesk",
-            candidateDirectory: null,
+            BashCandidate("freshdesk", null),
             cwd: null,
-            approvedEntries: [new ApprovalEntry("freshdesk") { Directory = null }]));
+            approvedEntries: [BashGrant("freshdesk", null)]));
     }
 
     [Fact]
@@ -1510,10 +1505,9 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         // from the original bug report so a future refactor that re-orders the
         // matcher loop trips this test specifically.
         Assert.True(ApprovalPatternMatching.MatchesShellApproval(
-            candidateVerb: "netclaw stats",
-            candidateDirectory: null,
+            BashCandidate("netclaw stats", null),
             cwd: null,
-            approvedEntries: [new ApprovalEntry("netclaw stats") { Directory = null }]));
+            approvedEntries: [BashGrant("netclaw stats", null)]));
     }
 
     [Fact]
@@ -1525,13 +1519,12 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         // grant gets skipped.
         ApprovalEntry[] entries =
         [
-            new ApprovalEntry("dotnet") { Directory = "/home/user/repos/foo/" },
-            new ApprovalEntry("dotnet") { Directory = null },
+            BashGrant("dotnet", "/home/user/repos/foo/"),
+            BashGrant("dotnet", null),
         ];
 
         Assert.True(ApprovalPatternMatching.MatchesShellApproval(
-            candidateVerb: "dotnet",
-            candidateDirectory: null,
+            BashCandidate("dotnet", null),
             cwd: null,
             approvedEntries: entries));
     }
@@ -2297,6 +2290,19 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             approvedEntries,
             cwd: null));
     }
+
+    private static ApprovalCandidate BashCandidate(string verb, string? directory)
+        => new(verb, directory)
+        {
+            Shell = ApprovalShell.Bash,
+            VerbTokens = verb.Split(' ', StringSplitOptions.RemoveEmptyEntries),
+        };
+
+    private static ApprovalEntry BashGrant(string verb, string? directory)
+        => ApprovalEntry.CreateTokenPrefix(
+            ApprovalShell.Bash,
+            verb.Split(' ', StringSplitOptions.RemoveEmptyEntries),
+            directory);
 }
 
 /// <summary>
@@ -2314,34 +2320,12 @@ public sealed class DefaultApprovalMatcherTests
 {
     private readonly DefaultApprovalMatcher _matcher = DefaultApprovalMatcher.Instance;
 
-    private static ApprovalEntry Verb(string verb) => new(verb) { Directory = null };
-
     [Fact]
     public void ExtractPatterns_returns_tool_name()
     {
         var patterns = _matcher.ExtractPatterns(new ToolName("mcp:memorizer:store"), null);
         Assert.Single(patterns);
         Assert.Equal("mcp:memorizer:store", patterns[0]);
-    }
-
-    [Fact]
-    public void IsApproved_matches_exact_tool_name()
-    {
-        Assert.True(_matcher.IsApproved(
-            new ToolName("mcp:memorizer:store"),
-            null,
-            [Verb("mcp:memorizer:store")],
-            cwd: null));
-    }
-
-    [Fact]
-    public void IsApproved_no_match()
-    {
-        Assert.False(_matcher.IsApproved(
-            new ToolName("mcp:memorizer:store"),
-            null,
-            [Verb("mcp:memorizer:get")],
-            cwd: null));
     }
 }
 

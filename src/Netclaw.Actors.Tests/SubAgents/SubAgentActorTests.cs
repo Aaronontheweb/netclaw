@@ -11,6 +11,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using System.Threading.Channels;
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.SubAgents;
 using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Sessions.Pipelines;
@@ -656,7 +657,7 @@ public class SubAgentActorTests : TestKit
             ]
         };
 
-        var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.Denied);
+        var approvalBridge = new RecordingParentApprovalBridge(ConsentAnswer.Denied);
         var sessionDirectory = TestPath("sessions", "approval-parent");
         var projectDirectory = TestPath("projects", "approval-project");
         var logger = new AuthorizationRecordingLogger();
@@ -710,7 +711,7 @@ public class SubAgentActorTests : TestKit
                 PlatformTemporaryCall("call-managed-temporary-correction")
             ]
         };
-        var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
+        var approvalBridge = new RecordingParentApprovalBridge(ConsentAnswer.Once.Instance);
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(
             CreateDefinition([fakeTool]),
             fakeClient,
@@ -755,7 +756,7 @@ public class SubAgentActorTests : TestKit
                 NativeTemporaryFileWriteCall("call-native-temporary-correction")
             ]
         };
-        var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
+        var approvalBridge = new RecordingParentApprovalBridge(ConsentAnswer.Once.Instance);
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(
             CreateDefinition([shell, fileWrite]),
             fakeClient,
@@ -791,7 +792,7 @@ public class SubAgentActorTests : TestKit
     {
         const string callId = "call-project-scope-correction";
         var approvalBridge = supportsApproval
-            ? new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce)
+            ? new RecordingParentApprovalBridge(ConsentAnswer.Once.Instance)
             : null;
         var fakeShell = new FakeNetclawTool(ShellTool.ToolName, "should not run");
         var scenario = await RunProjectScopeScenarioAsync(
@@ -825,7 +826,7 @@ public class SubAgentActorTests : TestKit
         bool scopeToolAccepts)
     {
         const string callId = "call-project-scope-approval";
-        var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
+        var approvalBridge = new RecordingParentApprovalBridge(ConsentAnswer.Once.Instance);
         var scenario = await RunProjectScopeScenarioAsync(
             CreateShellTool(),
             callId,
@@ -851,7 +852,7 @@ public class SubAgentActorTests : TestKit
     public async Task Subagent_policy_hidden_project_scope_tool_is_not_revealed()
     {
         const string callId = "call-project-scope-hidden";
-        var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
+        var approvalBridge = new RecordingParentApprovalBridge(ConsentAnswer.Once.Instance);
         var scenario = await RunProjectScopeScenarioAsync(
             CreateShellTool(),
             callId,
@@ -912,7 +913,7 @@ public class SubAgentActorTests : TestKit
                 TestShellEnvironment.PrintWorkingDirectoryCommand)
         ]);
         var approvalBridge = supportsApproval
-            ? new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce)
+            ? new RecordingParentApprovalBridge(ConsentAnswer.Once.Instance)
             : null;
         var actor = Sys.ActorOf(SubAgentActor.CreatePropsWithProjectInstructionProvider(
             CreateDefinition([shell, setWorkingDirectory]),
@@ -1046,7 +1047,7 @@ public class SubAgentActorTests : TestKit
                 PlatformTemporaryCall("call-managed-temporary-parallel-2")
             ]
         };
-        var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
+        var approvalBridge = new RecordingParentApprovalBridge(ConsentAnswer.Once.Instance);
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(
             CreateDefinition([fakeTool]),
             fakeClient,
@@ -1085,7 +1086,7 @@ public class SubAgentActorTests : TestKit
             PlatformTemporaryCall("call-managed-temporary-first"),
             PlatformTemporaryCall("call-managed-temporary-retry")
         ]);
-        var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.Denied);
+        var approvalBridge = new RecordingParentApprovalBridge(ConsentAnswer.Denied);
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(
             CreateDefinition([fakeTool]),
             fakeClient,
@@ -1129,7 +1130,7 @@ public class SubAgentActorTests : TestKit
                     "call-approval-2",
                     ApprovalProbeToolName)
             ]);
-        var approvalBridge = new RecordingParentApprovalBridge(ParentApprovalDecision.ApprovedOnce);
+        var approvalBridge = new RecordingParentApprovalBridge(ConsentAnswer.Once.Instance);
 
         var definition = CreateDefinition([fakeTool]);
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient, policy, approvalService: null));
@@ -1165,7 +1166,7 @@ public class SubAgentActorTests : TestKit
             ]
         };
 
-        var releaseSignal = new TaskCompletionSource<ParentApprovalDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSignal = new TaskCompletionSource<ConsentAnswer>(TaskCreationOptions.RunContinuationsAsynchronously);
         var approvalBridge = new DelayingParentApprovalBridge(releaseSignal.Task);
 
         var definition = CreateDefinition([fakeTool]);
@@ -1187,7 +1188,7 @@ public class SubAgentActorTests : TestKit
         // 250ms budget before releasing the human decision.
         await approvalBridge.EnteredApprovalWait.WaitAsync(TestContext.Current.CancellationToken);
         await AssertNotCompletedWithinAsync(runTask, TimeSpan.FromSeconds(1));
-        releaseSignal.SetResult(ParentApprovalDecision.ApprovedOnce);
+        releaseSignal.SetResult(ConsentAnswer.Once.Instance);
 
         var result = await runTask;
         Assert.True(result.Success, $"Expected success but got: {result.Output}");
@@ -1208,7 +1209,7 @@ public class SubAgentActorTests : TestKit
             ]
         };
 
-        var releaseSignal = new TaskCompletionSource<ParentApprovalDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSignal = new TaskCompletionSource<ConsentAnswer>(TaskCreationOptions.RunContinuationsAsynchronously);
         var approvalBridge = new DelayingParentApprovalBridge(releaseSignal.Task);
         var activityChannel = Channel.CreateUnbounded<ToolActivityUpdate>();
 
@@ -1235,7 +1236,7 @@ public class SubAgentActorTests : TestKit
             "awaiting human approval",
             TestContext.Current.CancellationToken);
 
-        releaseSignal.SetResult(ParentApprovalDecision.ApprovedOnce);
+        releaseSignal.SetResult(ConsentAnswer.Once.Instance);
         await ReadActivityAsync(
             activityChannel.Reader,
             "approval resolved",
@@ -1263,7 +1264,7 @@ public class SubAgentActorTests : TestKit
 
         // Bridge holds forever — only external cancellation can unblock the
         // sub-agent.
-        var neverReleased = new TaskCompletionSource<ParentApprovalDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var neverReleased = new TaskCompletionSource<ConsentAnswer>(TaskCreationOptions.RunContinuationsAsynchronously);
         var approvalBridge = new DelayingParentApprovalBridge(neverReleased.Task);
 
         using var externalCts = new CancellationTokenSource();
@@ -1313,7 +1314,7 @@ public class SubAgentActorTests : TestKit
             ]
         };
 
-        var releaseSignal = new TaskCompletionSource<ParentApprovalDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseSignal = new TaskCompletionSource<ConsentAnswer>(TaskCreationOptions.RunContinuationsAsynchronously);
         var approvalBridge = new DelayingParentApprovalBridge(releaseSignal.Task);
 
         var definition = CreateDefinition([fakeTool]);
@@ -1334,7 +1335,7 @@ public class SubAgentActorTests : TestKit
             () => Assert.Equal(2, approvalBridge.RequestCount),
             cancellationToken: TestContext.Current.CancellationToken);
         await AssertNotCompletedWithinAsync(runTask, TimeSpan.FromMilliseconds(500));
-        releaseSignal.SetResult(ParentApprovalDecision.ApprovedOnce);
+        releaseSignal.SetResult(ConsentAnswer.Once.Instance);
 
         var result = await runTask;
         Assert.True(result.Success, $"Expected success but got: {result.Output}");
@@ -1342,10 +1343,10 @@ public class SubAgentActorTests : TestKit
     }
 
     [Theory]
-    [InlineData(ParentApprovalDecision.Denied, "Tool access denied: approval_denied_by_user")]
-    [InlineData(ParentApprovalDecision.TimedOut, "Tool access denied: approval_timed_out")]
+    [InlineData("Denied", "Tool access denied: approval_denied_by_user")]
+    [InlineData("TimedOut", "Tool access denied: approval_timed_out")]
     public async Task Rejected_approval_returns_tool_result_without_executing_tool(
-        ParentApprovalDecision decision,
+        string refusal,
         string expectedToolResult)
     {
         var fakeTool = new FakeNetclawTool(ApprovalProbeToolName, "should not run");
@@ -1357,7 +1358,7 @@ public class SubAgentActorTests : TestKit
                 CreateToolCall("call-rejected", ApprovalProbeToolName)
             ]
         };
-        var approvalBridge = new RecordingParentApprovalBridge(decision);
+        var approvalBridge = new RecordingParentApprovalBridge(ConsentAnswerCodec.FromJournalText(refusal));
 
         var definition = CreateDefinition([fakeTool]);
         var agent = Sys.ActorOf(SubAgentActor.CreateProps(definition, fakeClient, policy));
@@ -1388,7 +1389,7 @@ public class SubAgentActorTests : TestKit
                 CreateToolCall("call-stop", ApprovalProbeToolName)
             ]
         };
-        var neverReleased = new TaskCompletionSource<ParentApprovalDecision>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var neverReleased = new TaskCompletionSource<ConsentAnswer>(TaskCreationOptions.RunContinuationsAsynchronously);
         var approvalBridge = new DelayingParentApprovalBridge(neverReleased.Task);
 
         var definition = CreateDefinition([fakeTool]);
@@ -2450,18 +2451,18 @@ internal sealed class RecordingMcpToolInvoker(string result) : IMcpToolInvoker
 /// the awaited bridge call, so tests can replace `await Task.Delay(...)` race
 /// windows with a deterministic synchronization point.
 /// </summary>
-internal sealed class DelayingParentApprovalBridge : IParentApprovalBridge
+internal sealed class DelayingParentApprovalBridge : IParentConsentBridge
 {
-    private readonly Func<Task<ParentApprovalDecision>> _decisionFactory;
+    private readonly Func<Task<ConsentAnswer>> _decisionFactory;
     private readonly TaskCompletionSource<bool> _enteredSignal = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _requestCount;
 
-    public DelayingParentApprovalBridge(Task<ParentApprovalDecision> sharedTask)
+    public DelayingParentApprovalBridge(Task<ConsentAnswer> sharedTask)
         : this(() => sharedTask)
     {
     }
 
-    public DelayingParentApprovalBridge(Func<Task<ParentApprovalDecision>> decisionFactory)
+    public DelayingParentApprovalBridge(Func<Task<ConsentAnswer>> decisionFactory)
     {
         _decisionFactory = decisionFactory;
     }
@@ -2469,23 +2470,15 @@ internal sealed class DelayingParentApprovalBridge : IParentApprovalBridge
     public int RequestCount => Volatile.Read(ref _requestCount);
 
     /// <summary>
-    /// Completes the first time <see cref="RequestApprovalAsync"/> is entered.
+    /// Completes the first time <see cref="RequestConsentAsync"/> is entered.
     /// Tests should `await EnteredApprovalWait` before cancelling or releasing
     /// the approval, so the synchronization window is deterministic rather
     /// than a real-time sleep.
     /// </summary>
     public Task EnteredApprovalWait => _enteredSignal.Task;
 
-    public Task<ParentApprovalDecision> RequestApprovalAsync(
-        ToolCallId callId,
-        string toolName,
-        string displayText,
-        IReadOnlyList<string> patterns,
-        IReadOnlyList<string> candidateVerbs,
-        IReadOnlyList<ParentApprovalCandidate> candidates,
-        string? cwd,
-        IReadOnlyList<ParentApprovalOption> options,
-        bool isMessy,
+    public Task<ConsentAnswer> RequestConsentAsync(
+        ParentApprovalRequest request,
         CancellationToken ct)
     {
         Interlocked.Increment(ref _requestCount);
@@ -2497,63 +2490,29 @@ internal sealed class DelayingParentApprovalBridge : IParentApprovalBridge
     }
 }
 
-internal sealed class RecordingParentApprovalBridge(ParentApprovalDecision decisionToReturn) :
-    IParentApprovalBridge,
-    IAuthorizationAttemptAwareParentApprovalBridge
+internal sealed record RecordedApprovalOption(string Key, string Label);
+
+internal sealed class RecordingParentApprovalBridge(ConsentAnswer decisionToReturn) : IParentConsentBridge
 {
     public int RequestCount { get; private set; }
     public List<AuthorizationAttemptId> AuthorizationAttemptIds { get; } = [];
     public List<string> RequestedPatterns { get; } = [];
     public string? RequestedCwd { get; private set; }
-    public IReadOnlyList<ParentApprovalCandidate> RequestedCandidates { get; private set; } = [];
-    public IReadOnlyList<ParentApprovalOption> RequestedOptions { get; private set; } = [];
+    public IReadOnlyList<ApprovalCandidate> RequestedCandidates { get; private set; } = [];
+    public IReadOnlyList<RecordedApprovalOption> RequestedOptions { get; private set; } = [];
 
-    public Task<ParentApprovalDecision> RequestApprovalAsync(
-        ToolCallId callId,
-        string toolName,
-        string displayText,
-        IReadOnlyList<string> patterns,
-        IReadOnlyList<string> candidateVerbs,
-        IReadOnlyList<ParentApprovalCandidate> candidates,
-        string? cwd,
-        IReadOnlyList<ParentApprovalOption> options,
-        bool isMessy,
-        CancellationToken ct)
-        => RecordRequest(patterns, candidates, cwd, options);
-
-    Task<ParentApprovalDecision> IAuthorizationAttemptAwareParentApprovalBridge.RequestApprovalAsync(
+    public Task<ConsentAnswer> RequestConsentAsync(
         ParentApprovalRequest request,
         CancellationToken ct)
     {
         AuthorizationAttemptIds.Add(request.AuthorizationAttemptId);
-        return RecordRequest(
-            request.Approval.Patterns,
-            (request.Approval.Candidates ?? [])
-                .Select(static candidate => new ParentApprovalCandidate(
-                    candidate.Verb,
-                    candidate.Directory)
-                {
-                    AssignmentDigest = candidate.AssignmentDigest,
-                    Shell = candidate.Shell,
-                    VerbTokens = candidate.VerbTokens,
-                }).ToList(),
-            request.Approval.Cwd,
-            request.Approval.Options
-                .Select(static option => new ParentApprovalOption(option.Key.Value, option.Label))
-                .ToList());
-    }
-
-    private Task<ParentApprovalDecision> RecordRequest(
-        IReadOnlyList<string> patterns,
-        IReadOnlyList<ParentApprovalCandidate> candidates,
-        string? cwd,
-        IReadOnlyList<ParentApprovalOption> options)
-    {
         RequestCount++;
-        RequestedPatterns.AddRange(patterns);
-        RequestedCwd = cwd;
-        RequestedCandidates = candidates;
-        RequestedOptions = options;
+        RequestedPatterns.AddRange(request.Approval.Patterns);
+        RequestedCwd = request.Approval.Cwd;
+        RequestedCandidates = request.Approval.Candidates ?? [];
+        RequestedOptions = request.Approval.Options
+            .Select(static option => new RecordedApprovalOption(option.Key.Value, option.Label))
+            .ToList();
         return Task.FromResult(decisionToReturn);
     }
 }

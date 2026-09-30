@@ -8,6 +8,7 @@ using System.Collections.Frozen;
 using Akka.Actor;
 using Akka.Event;
 using Microsoft.Extensions.AI;
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Jobs;
 using Netclaw.Actors.Protocol;
@@ -17,6 +18,7 @@ using Netclaw.Configuration;
 using Netclaw.Media;
 using Netclaw.Security;
 using Netclaw.Tools;
+using Netclaw.Tools.Authorization.Consent;
 using static Netclaw.Actors.Sessions.SessionProtocol;
 using static Netclaw.Actors.Jobs.BackgroundJobProtocol;
 
@@ -135,15 +137,15 @@ internal sealed class SessionToolBatch
 {
     private static readonly IReadOnlyDictionary<string, IReadOnlyList<string>> NoApprovalPreSeed
         = new Dictionary<string, IReadOnlyList<string>>().ToFrozenDictionary();
-    private static readonly IReadOnlyDictionary<string, ApprovalDecision> NoDecisionOverrides
-        = new Dictionary<string, ApprovalDecision>().ToFrozenDictionary();
+    private static readonly IReadOnlyDictionary<string, RefusalKind> NoDecisionOverrides
+        = new Dictionary<string, RefusalKind>().ToFrozenDictionary();
     private static readonly IReadOnlyDictionary<string, string> NoManagedTemporaryDenialDirectories
         = new Dictionary<string, string>().ToFrozenDictionary();
     private static readonly IReadOnlyDictionary<string, AuthorizationAttemptId> NoAuthorizationAttemptIds
         = new Dictionary<string, AuthorizationAttemptId>().ToFrozenDictionary();
     private IReadOnlyList<FunctionCallContent> _toolCalls = [];
     private IReadOnlyDictionary<string, IReadOnlyList<string>> _oneTimeApprovalPreSeed = NoApprovalPreSeed;
-    private IReadOnlyDictionary<string, ApprovalDecision> _decisionOverrides = NoDecisionOverrides;
+    private IReadOnlyDictionary<string, RefusalKind> _decisionOverrides = NoDecisionOverrides;
     private IReadOnlyDictionary<string, string> _managedTemporaryDenialDirectories =
         NoManagedTemporaryDenialDirectories;
     private IReadOnlyDictionary<string, AuthorizationAttemptId> _authorizationAttemptIds =
@@ -208,7 +210,8 @@ internal sealed class SessionToolBatch
                 StringComparer.Ordinal);
         }
     }
-    public IReadOnlyDictionary<string, ApprovalDecision> DecisionOverrides
+    /// <summary>The refusals that a cold re-drive applies without a new prompt.</summary>
+    public IReadOnlyDictionary<string, RefusalKind> DecisionOverrides
     {
         get => _decisionOverrides;
         init
@@ -409,7 +412,7 @@ internal sealed class SessionToolExecutionPipeline
         FunctionCallContent tc,
         SessionToolBatch batch,
         IReadOnlyList<string>? oneTimeApprovalPreSeed,
-        ApprovalDecision? decisionOverride,
+        RefusalKind? decisionOverride,
         string? managedTemporaryDenialDirectory,
         ModelInputBatchBudget modelInputBudget)
     {
@@ -573,16 +576,16 @@ internal sealed class SessionToolExecutionPipeline
         // (DispatchingToolExecutor.IsOneTimeApprovalSatisfied) and the pipeline
         // clears it after the attempt — it cannot leak to any other call.
         if (oneTimeApprovalPreSeed is not null)
-            context.Approval.SeedOneTimeApproval(tc.Name, oneTimeApprovalPreSeed);
+            context.Approval.SeedOneTimeConsent(new OneTimeConsent(tc.Name, oneTimeApprovalPreSeed));
         try
         {
-            if (decisionOverride is ApprovalDecision.Denied or ApprovalDecision.TimedOut)
+            if (decisionOverride is { } refusedOnReplay)
             {
                 sw.Stop();
-                resultText = decisionOverride == ApprovalDecision.TimedOut
+                resultText = refusedOnReplay == RefusalKind.TimedOut
                     ? "Tool access denied: approval_timed_out"
                     : $"Tool access denied: approval_denied_by_user ({tc.Name} requires interactive approval and the user declined it)";
-                if (decisionOverride == ApprovalDecision.Denied
+                if (refusedOnReplay == RefusalKind.Denied
                     && managedTemporaryDenialDirectory is { Length: > 0 })
                 {
                     resultText = $"{resultText}\n{ManagedTemporaryCorrection.BuildDenialHint(managedTemporaryDenialDirectory)}";
@@ -726,7 +729,7 @@ internal sealed class SessionToolExecutionPipeline
                     : null
             });
 
-            var decision = await waitTask;
+            var answer = await waitTask;
 
             _logger.Info(
                 "Tool authorization attempt retry decision authorizationAttemptId={AuthorizationAttemptId} " +
@@ -734,11 +737,11 @@ internal sealed class SessionToolExecutionPipeline
                 authorizationAttemptId.Value,
                 batch.SessionId.Value,
                 tc.CallId,
-                decision);
+                ConsentAnswerCodec.ToJournalText(answer));
 
             sw.Stop();
 
-            if (decision.IsApprovalGrant())
+            if (answer is not ConsentAnswer.Refused refusal)
             {
                 // Retry execution now that approval is granted. Seed the one-time
                 // bypass for the just-approved call regardless of scope
@@ -753,7 +756,7 @@ internal sealed class SessionToolExecutionPipeline
                 // approved scope. The bypass is per-call and bound to the exact
                 // prompted candidate set. It is cleared after the attempt, so it
                 // cannot leak to another call.
-                context.Approval.SeedOneTimeApproval(tc.Name, OneTimeApprovalKeys.Create(ctx));
+                context.Approval.SeedOneTimeConsent(OneTimeApprovalKeys.CreateConsent(tc.Name, ctx));
 
                 sw = Stopwatch.StartNew();
                 if (meta is { Background: true }
@@ -785,7 +788,7 @@ internal sealed class SessionToolExecutionPipeline
             }
             else
             {
-                var reason = decision == ApprovalDecision.TimedOut
+                var reason = refusal.Kind == RefusalKind.TimedOut
                     ? "Tool access denied: approval_timed_out"
                     : $"Tool access denied: approval_denied_by_user ({tc.Name} requires interactive approval and the user declined it)";
 
@@ -797,7 +800,7 @@ internal sealed class SessionToolExecutionPipeline
                 // audiences that can't call set_working_directory.
                 var hint = BuildSetWorkingDirectoryHint(
                     toolName: tc.Name,
-                    decision: decision,
+                    refusal: refusal.Kind,
                     cwd: context.Approval.Cwd,
                     sessionDirectory: context.SessionDirectory,
                     projectDirectory: context.ProjectDirectory,
@@ -881,8 +884,7 @@ internal sealed class SessionToolExecutionPipeline
         TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
-        var grantedOneTimeToolName = context.Approval.OneTimeApprovedToolName;
-        var grantedOneTimePatterns = context.Approval.OneTimeApprovedPatterns;
+        var grantedOneTimeConsent = context.Approval.OneTimeConsent;
 
         try
         {
@@ -923,11 +925,10 @@ internal sealed class SessionToolExecutionPipeline
             // One-time approvals are valid for exactly one retry attempt.
             // Clear any grant we consumed (or attempted to consume), while
             // preserving whatever baseline state existed before this call.
-            if (!string.IsNullOrWhiteSpace(grantedOneTimeToolName))
+            if (grantedOneTimeConsent is not null
+                && !grantedOneTimeConsent.Equals(context.Approval.OneTimeConsent))
             {
-                if (!string.Equals(context.Approval.OneTimeApprovedToolName, grantedOneTimeToolName, StringComparison.Ordinal)
-                    || !SetsEqual(context.Approval.OneTimeApprovedPatterns, grantedOneTimePatterns))
-                    context.Approval.ClearOneTimeApproval();
+                context.Approval.ClearOneTimeConsent();
             }
         }
     }
@@ -950,23 +951,6 @@ internal sealed class SessionToolExecutionPipeline
 
         throw new InvalidOperationException(
             $"Tool '{toolName}' stream ended without a completion item.");
-    }
-
-    private static bool SetsEqual(IReadOnlySet<string> left, IReadOnlySet<string> right)
-    {
-        if (ReferenceEquals(left, right))
-            return true;
-
-        if (left.Count != right.Count)
-            return false;
-
-        foreach (var item in left)
-        {
-            if (!right.Contains(item))
-                return false;
-        }
-
-        return true;
     }
 
     /// <summary>
@@ -1253,7 +1237,7 @@ internal sealed class SessionToolExecutionPipeline
     /// </summary>
     internal static string BuildSetWorkingDirectoryHint(
         string toolName,
-        ApprovalDecision decision,
+        RefusalKind refusal,
         string? cwd,
         string? sessionDirectory,
         string? projectDirectory,
@@ -1262,7 +1246,7 @@ internal sealed class SessionToolExecutionPipeline
         ToolInvocationContext? invocation = null,
         Func<string, ToolInvocationContext, bool>? canDeclare = null)
     {
-        if (decision != ApprovalDecision.Denied)
+        if (refusal != RefusalKind.Denied)
             return string.Empty;
 
         if (!string.Equals(toolName, Tools.ShellTool.ToolName, StringComparison.Ordinal))

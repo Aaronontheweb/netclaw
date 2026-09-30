@@ -15,9 +15,11 @@ using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Configuration;
 using Netclaw.Security;
+using Netclaw.Security.Authorization.Consent;
 using Netclaw.Security.Authorization.Filesystem;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
+using Netclaw.Tools.Authorization.Consent;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Tools;
@@ -322,11 +324,11 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                                 seed.Pattern,
                                 approvalShell,
                                 scope?.RepositoryGrantWorktree ?? approvalProjectDirectory)
-                            : CreateGrant(seed.Pattern, approvalShell, ResolveDirectory(
+                            : CreateGrant(seed.Pattern, approvalShell, ToFolderOrEverywhere(ResolveDirectory(
                                 seed.Directory,
                                 approvalProjectDirectory,
                                 approvalSessionDirectory,
-                                approvalExternalDirectory))))
+                                approvalExternalDirectory)))))
                     .ToList());
         }
 
@@ -339,8 +341,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                     scope?.InvocationSessionId ?? InvocationSessionId),
                 seed.Audience,
                 new ToolName(ShellTool.ToolName),
-                [CreateGrant(seed.Pattern, approvalShell, directory: null)],
-                persistent: false,
+                [CreateGrant(seed.Pattern, approvalShell, GrantScope.Session.Instance)],
                 ct);
         }
 
@@ -365,9 +366,9 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                 contextOptions);
         if (scope?.OneTimeApprovalKeys is { Count: > 0 } oneTimeApprovalKeys)
         {
-            context.Approval.SeedOneTimeApproval(
+            context.Approval.SeedOneTimeConsent(new OneTimeConsent(
                 ShellTool.ToolName,
-                oneTimeApprovalKeys);
+                oneTimeApprovalKeys));
         }
 
         return new ShellApprovalHarness(
@@ -498,10 +499,13 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
         return new FunctionCallContent(callId, ShellTool.ToolName, arguments);
     }
 
+    private static GrantScope ToFolderOrEverywhere(string? directory)
+        => directory is null ? GrantScope.Everywhere.Instance : new GrantScope.Folder(directory);
+
     private static ToolApprovalGrant CreateGrant(
         string pattern,
         ApprovalShell shell,
-        string? directory)
+        GrantScope scope)
     {
         var tokens = Array.AsReadOnly(
             pattern.Split(' ', StringSplitOptions.RemoveEmptyEntries));
@@ -511,7 +515,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                 Shell = shell,
                 VerbTokens = tokens,
             },
-            directory);
+            scope);
     }
 
     private static ToolApprovalGrant CreateRepositoryGrant(
@@ -522,9 +526,8 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
         if (!RepositoryIdentity.TryResolve(candidateDirectory: null, worktree, out var scope))
             throw new InvalidOperationException("The test repository worktree is not registered.");
 
-        return CreateGrant(pattern, shell, directory: null) with
+        return CreateGrant(pattern, shell, new GrantScope.Repository(scope!.CommonDirectory)) with
         {
-            Repository = scope!.CommonDirectory,
             RepositoryWorktree = worktree,
         };
     }
@@ -542,23 +545,26 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
             throw new InvalidOperationException("Persistent shell seed lacks shell/verb tokens.");
         }
 
-        if (grant.Repository is not null)
+        if (grant.Scope is GrantScope.Repository repository)
         {
             if (grant.RepositoryWorktree is null
                 || !RepositoryIdentity.TryResolve(
                     grant.Candidate.Directory,
                     grant.RepositoryWorktree,
                     out var scope)
-                || !ToolApprovalEntryComparer.Equals(scope!.CommonDirectory, grant.Repository)
+                || !ToolApprovalEntryComparer.Equals(scope!.CommonDirectory, repository.CommonDirectory)
                 || !PathUtility.AreEquivalentPaths(scope.WorktreeRoot, grant.RepositoryWorktree))
             {
                 throw new InvalidOperationException("Repository grant scope is invalid.");
             }
 
-            return ApprovalEntry.CreateRepositoryTokenPrefix(shell, tokens, grant.Repository);
+            return ApprovalEntry.CreateRepositoryTokenPrefix(shell, tokens, repository.CommonDirectory);
         }
 
-        return ApprovalEntry.CreateTokenPrefix(shell, tokens, grant.Directory);
+        return ApprovalEntry.CreateTokenPrefix(
+            shell,
+            tokens,
+            grant.Scope is GrantScope.Folder folder ? folder.Directory : null);
     }
 
     public async Task<ApprovalObservation> EvaluateAsync(CancellationToken ct)
@@ -651,7 +657,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
             approvalContext is null ? null : ObservePrompt(approvalContext),
             approvalChecks,
             decision.ApprovalMatches
-                .Select(match => $"{match.Source}:{match.Pattern}")
+                .Select(match => $"{(match.Scope is GrantScope.Session ? "session" : "persistent")}:{match.Pattern}")
                 .ToList(),
             decision.ShellPolicyTrace.Rows.Select(FormatTraceRow).ToList(),
             decision.ShellPolicyTrace.Rows
@@ -766,15 +772,13 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
     }
 
     public void SeedOneTimeApproval(ToolApprovalContext approvalContext)
-        => _context.Approval.SeedOneTimeApproval(
-            _toolCall.Name,
-            OneTimeApprovalKeys.Create(approvalContext));
+        => _context.Approval.SeedOneTimeConsent(
+            OneTimeApprovalKeys.CreateConsent(_toolCall.Name, approvalContext));
 
     /// <summary>Stores a "Once" answer for the prompt that an earlier evaluation observed.</summary>
     public void SeedOneTimeApproval(ApprovalPromptObservation prompt)
-        => _context.Approval.SeedOneTimeApproval(
-            _toolCall.Name,
-            prompt.OneTimeApprovalKeys);
+        => _context.Approval.SeedOneTimeConsent(
+            new OneTimeConsent(_toolCall.Name, prompt.OneTimeApprovalKeys));
 
     public void ReplaceProjectDirectoryWithExternalSymlink(string relativeDirectory)
     {
@@ -906,7 +910,6 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
 
 internal sealed class CountingApprovalService(IToolApprovalService inner) :
     IToolApprovalService,
-    IStructuredToolApprovalService,
     IShellApprovalMatchService
 {
     private int _checkCount;
@@ -935,39 +938,13 @@ internal sealed class CountingApprovalService(IToolApprovalService inner) :
             cancellationToken);
     }
 
-    public Task<IReadOnlyList<string>> GetUnapprovedPatternsAsync(
-        ToolApprovalSessionId? sessionId,
-        TrustAudience audience,
-        ToolName toolName,
-        IReadOnlyList<string> patterns,
-        string? cwd,
-        CancellationToken ct = default)
-        => inner.GetUnapprovedPatternsAsync(sessionId, audience, toolName, patterns, cwd, ct);
-
-    public Task RecordApprovalAsync(
-        ToolApprovalSessionId sessionId,
-        TrustAudience audience,
-        ToolName toolName,
-        IReadOnlyList<string> patterns,
-        bool persistent,
-        string? cwd,
-        CancellationToken ct = default)
-        => inner.RecordApprovalAsync(sessionId, audience, toolName, patterns, persistent, cwd, ct);
-
     public Task RecordApprovalCandidatesAsync(
         ToolApprovalSessionId sessionId,
         TrustAudience audience,
         ToolName toolName,
         IReadOnlyList<ToolApprovalGrant> grants,
-        bool persistent,
         CancellationToken ct = default)
-        => ((IStructuredToolApprovalService)inner).RecordApprovalCandidatesAsync(
-            sessionId,
-            audience,
-            toolName,
-            grants,
-            persistent,
-            ct);
+        => inner.RecordApprovalCandidatesAsync(sessionId, audience, toolName, grants, ct);
 }
 
 public sealed class ShellApprovalMatrixFixture : IAsyncLifetime

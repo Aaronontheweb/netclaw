@@ -22,43 +22,11 @@ public static class ApprovalPatternMatching
     // ToolApprovalEntryComparer for the rationale (POSIX is case-sensitive
     // for $PATH lookups; Windows is not).
 
-    /// <summary>
-    /// Returns true when <paramref name="approvedEntries"/> contains an entry
-    /// whose verb equals <paramref name="candidateVerb"/> AND whose directory
-    /// is either <c>null</c> (the global wildcard) or an ancestor of the
-    /// candidate's effective directory with no symlink segments along the
-    /// path between the two.
-    ///
-    /// The candidate's effective directory is
-    /// <paramref name="candidateDirectory"/> when non-null (the path argument
-    /// extracted from the command), otherwise <paramref name="cwd"/>. Relative
-    /// effective directories (<c>./build</c>, <c>../shared</c>) are resolved
-    /// against <paramref name="cwd"/> before the under-check.
-    ///
-    /// The symlink-segment guard prevents a planted symlink under an approved
-    /// directory from being used to redirect the candidate to a path outside
-    /// that directory: the filesystem authority walks each component from the
-    /// approved root toward the effective directory and refuses the match if
-    /// any segment is a reparse point.
-    /// </summary>
-    public static bool MatchesShellApproval(
-        string candidateVerb,
-        string? candidateDirectory,
-        string? cwd,
-        IEnumerable<ApprovalEntry> approvedEntries)
-        => MatchesApprovalScope(
-            candidateDirectory,
-            cwd,
-            approvedEntries.Where(entry =>
-                entry.Repository is null
-                && entry.AssignmentDigest is null
-                && ToolApprovalEntryComparer.Equals(entry.Verb, candidateVerb)));
-
     private static bool MatchesApprovalScope(
         string? candidateDirectory,
         string? cwd,
         IEnumerable<ApprovalEntry> approvedEntries,
-        ApprovalShell? shell = null)
+        ApprovalShell? shell)
     {
         foreach (var entry in approvedEntries)
         {
@@ -144,6 +112,11 @@ public static class ApprovalPatternMatching
 
     /// <summary>
     /// Matches one structured shell candidate against version-3 phrase forms.
+    /// A folder grant matches when its directory contains the candidate's
+    /// effective directory (the path operand, else <paramref name="cwd"/>) and
+    /// no link lies below the grant root. A grant with no directory matches any
+    /// directory. A repository grant matches the registered worktrees of its
+    /// repository.
     /// </summary>
     public static bool MatchesShellApproval(
         ApprovalCandidate candidate,
@@ -297,16 +270,6 @@ public static class ApprovalPatternMatching
 
         return true;
     }
-
-    /// <summary>
-    /// Backwards-compatible overload for callers that pass cwd
-    /// only. Equivalent to passing <c>null</c> for the candidate directory.
-    /// </summary>
-    public static bool MatchesShellApproval(
-        string candidateVerb,
-        string? cwd,
-        IEnumerable<ApprovalEntry> approvedEntries)
-        => MatchesShellApproval(candidateVerb, candidateDirectory: null, cwd, approvedEntries);
 
     /// <summary>
     /// Returns true when <paramref name="approvedEntries"/> contains an entry

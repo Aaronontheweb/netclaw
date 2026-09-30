@@ -91,8 +91,6 @@ public sealed class RepositoryIdentityTests
 
             var grant = ApprovalEntry.CreateRepositoryTokenPrefix(
                 ApprovalShell.Bash, ["./scripts/bump-version.sh"], mainScope.CommonDirectory);
-            Assert.False(ApprovalPatternMatching.MatchesShellApproval(
-                "./scripts/bump-version.sh", null, sibling, [grant]));
             var folder = ApprovalEntry.CreateTokenPrefix(
                 ApprovalShell.Bash, ["./scripts/bump-version.sh"], main);
             var candidate = new ApprovalCandidate("./scripts/bump-version.sh", null)

@@ -10,6 +10,7 @@ using Netclaw.Security;
 using Netclaw.Security.Authorization.Filesystem;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
+using Netclaw.Tools.Authorization.Consent;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Tools;
@@ -149,9 +150,9 @@ public partial class DispatchingToolExecutorTests
             ToolInput.Create("Command", "echo approved > once.txt"));
         var decision = await executor.EvaluateAuthorizationAsync(call, context, TestContext.Current.CancellationToken);
         var approval = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
-        context.Approval.SeedOneTimeApproval(ShellTool.ToolName, OneTimeApprovalKeys.Create(approval));
+        context.Approval.SeedOneTimeConsent(new OneTimeConsent(ShellTool.ToolName, OneTimeApprovalKeys.Create(approval)));
         var launch = await executor.PrepareShellLaunchAsync(call, context, TestContext.Current.CancellationToken);
-        context.Approval.ClearOneTimeApproval();
+        context.Approval.ClearOneTimeConsent();
 
         using var process = await launch.StartAsync(TestContext.Current.CancellationToken);
         process.StandardInput.Close();
@@ -159,7 +160,7 @@ public partial class DispatchingToolExecutorTests
 
         Assert.Equal(0, process.ExitCode);
         Assert.Equal("approved", (await File.ReadAllTextAsync(Path.Combine(directory.Path, "once.txt"), TestContext.Current.CancellationToken)).Trim());
-        Assert.Null(context.Approval.OneTimeApprovedToolName);
+        Assert.Null(context.Approval.OneTimeConsent);
     }
 
     public static bool SupportsLaunchLinks => !OperatingSystem.IsWindows();

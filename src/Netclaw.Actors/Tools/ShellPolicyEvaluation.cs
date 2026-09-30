@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Configuration;
 using Netclaw.Security;
 
@@ -141,11 +142,13 @@ internal sealed class ShellPolicyEvaluation
         internal ShellPolicyCandidatePathFacts PathFacts { get; } = pathFacts;
         internal ShellGrantCandidateResult? GrantEvidence { get; private set; }
         internal int? GrantEvidenceOrder { get; private set; }
-        internal ShellCoverageKind Coverage { get; private set; }
+
+        /// <summary>Why the candidate needs no prompt, or null while it is uncovered.</summary>
+        internal Coverage? Coverage { get; private set; }
 
         internal void ValidateActorEvidence()
         {
-            if (Coverage != ShellCoverageKind.Uncovered
+            if (Coverage != null
                 || GrantEvidence is not null
                 || GrantEvidenceOrder is not null)
             {
@@ -160,20 +163,18 @@ internal sealed class ShellPolicyEvaluation
                 throw new InvalidOperationException("Invalid shell candidate approval evidence.");
 
             ValidateActorEvidence();
-            (GrantEvidence, GrantEvidenceOrder, Coverage) = (evidence, order, evidence.Coverage);
+            (GrantEvidence, GrantEvidenceOrder, Coverage) = (evidence, order, evidence.Grant);
         }
 
-        internal void Cover(ShellCoverageKind coverage)
+        internal void Cover(Coverage coverage)
         {
-            if (coverage is not (ShellCoverageKind.OneTime
-                or ShellCoverageKind.ReviewedSafeReal
-                or ShellCoverageKind.ReviewedSafeIntent
-                or ShellCoverageKind.ApprovalExemptSideEffect))
-            {
-                throw new InvalidOperationException("Invalid shell candidate coverage.");
-            }
+            ArgumentNullException.ThrowIfNull(coverage);
 
-            if (Coverage != ShellCoverageKind.Uncovered)
+            // A stored grant arrives only as actor evidence.
+            if (coverage is Coverage.Stored)
+                throw new InvalidOperationException("Invalid shell candidate coverage.");
+
+            if (Coverage is not null)
                 throw new InvalidOperationException("Shell candidate coverage was assigned twice.");
 
             Coverage = coverage;
@@ -210,12 +211,11 @@ internal sealed class ShellPolicyEvaluation
     internal IEnumerable<CandidateState> GrantCandidates =>
         _candidates.Where(static state => state.Candidate.CanRequestStoredGrant);
 
-    internal bool AllCovered => _candidates.All(static state =>
-        state.Coverage != ShellCoverageKind.Uncovered);
+    internal bool AllCovered => _candidates.All(static state => state.Coverage is not null);
 
     internal IReadOnlyList<ShellPolicyCandidate> UncoveredCandidates =>
         Array.AsReadOnly(_candidates
-            .Where(static state => state.Coverage == ShellCoverageKind.Uncovered)
+            .Where(static state => state.Coverage is null)
             .Select(static state => state.Candidate)
             .ToArray());
 
@@ -223,8 +223,7 @@ internal sealed class ShellPolicyEvaluation
 
     internal IReadOnlyList<ToolApprovalMatch> ApprovalMatches =>
         _candidates
-            .Where(static state => state.GrantEvidence is
-                { Coverage: not ShellCoverageKind.Uncovered })
+            .Where(static state => state.GrantEvidence is { Grant: not null })
             .OrderBy(static state => state.GrantEvidenceOrder)
             .Select(static state => state.GrantEvidence!.FormatMatch(state.Candidate.Candidate))
             .ToArray();
@@ -251,7 +250,7 @@ internal sealed class ShellPolicyEvaluation
         if ((uint)index >= (uint)_candidates.Count)
             throw new ArgumentOutOfRangeException(nameof(candidateId));
 
-        return _candidates[index].Coverage != ShellCoverageKind.Uncovered;
+        return _candidates[index].Coverage is not null;
     }
 
     internal void ApplyActorEvidence(ShellApprovalMatchResult evidence)
@@ -297,7 +296,7 @@ internal sealed class ShellPolicyEvaluation
 
     internal void Cover(
         ShellPolicyCandidate candidate,
-        ShellCoverageKind coverage)
+        Coverage coverage)
     {
         ArgumentNullException.ThrowIfNull(candidate);
 
@@ -310,10 +309,7 @@ internal sealed class ShellPolicyEvaluation
             throw new InvalidOperationException("Shell candidate facts changed.");
 
         state.Cover(coverage);
-        _trace.AddCoverage(
-            state.Candidate,
-            state.Coverage,
-            state.GrantEvidence?.GrantCreatedAt);
+        _trace.AddCoverage(state.Candidate, coverage);
     }
 
     internal ToolAuthorizationDecision Complete(

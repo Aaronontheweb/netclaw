@@ -44,7 +44,7 @@ coverage. They do not replace positive and negative behavior tests.
 | `ToolAccessPolicy.AuthorizeMcpInvocation` | Server and tool audience grants precede approval | 2 killed | `./scripts/run-tool-authorization-mutations.sh` |
 | `ToolAccessPolicy.AuthorizeShellInvocation` | A shell hard denial precedes approval | 1 killed | `./scripts/run-tool-authorization-mutations.sh` |
 | `ShellGrantCandidateResult.IsFor` | Approval evidence keeps the requested candidate facts | 1 killed | `./scripts/run-tool-authorization-mutations.sh` |
-| `ShellPolicyEvaluation.CandidateState.ApplyActorEvidence` | Actor evidence cannot replace existing candidate coverage | 1 killed | `./scripts/run-tool-authorization-mutations.sh` |
+| `ShellPolicyEvaluation.CandidateState.ValidateActorEvidence` | Actor evidence cannot replace existing candidate coverage (`Coverage != null`) | 1 killed | `./scripts/run-tool-authorization-mutations.sh` |
 | Shell analysis, denial-only, tree effects, and reviewed-safe gates | Parser-proved regions and authored diagnostic syntax preserve hard denials; only bounded audited non-path values and consistent non-link-following tree facts can use reusable approval | 81 killed | `./scripts/run-shell-command-analysis-mutations.sh` |
 | Shell assignment identity, wrapper fallback, syntax reconciliation, host mode, prompt rollback, and Bash sanitation | Reusable grants require exact facts, fallback wrappers must stay one-time, versioned prompts must fail closed, and strong modes require the reviewed launch contract | 56 killed | `./scripts/run-shell-assignment-mutations.sh` |
 | Filesystem authority folder membership, repository identity, and repository persistence | Folder and repository grants require candidate scope, identity, registration, and containment; a folder grant trusts its own root and refuses a link below it | 12 killed | `./scripts/run-approval-directory-mutations.sh` |
@@ -166,6 +166,7 @@ The native filesystem cases select Bash on POSIX hosts and PowerShell on Windows
 The Linux mutation job runs the shared link walker on POSIX links only; the ordinary Windows test job exercises Windows links.
 
 The matcher shares `EvaluateApprovalScope` with `ToolApprovalActor` and shell approval evidence validation.
+The three persistence targets are in `ToolApprovalActor.TryCreateEntry`. It reads the repository from `GrantScope.Repository` and the builder's worktree from `ToolApprovalGrant.RepositoryWorktree`.
 These tests preserve PRD-002 SEC-003 and
 [TA-8 of the tool authorization contract](openspec/specs/tool-authorization/spec.md#requirement-ta-8-every-candidate-needs-coverage).
 They prove folder-grant decisions. They do not prove native process containment or races between authorization and file access.
@@ -306,6 +307,8 @@ Run the shell assignment gate:
 
 The script tests 56 mutants across eight narrow boundaries.
 It covers grant identity, wrapper fallback, prompt rollback, reviewed-safe exclusion, source spans, Bash host selection, and environment sanitation.
+The prompt rollback target is `ConsentAnswerCodec.IsOffered` in `src/Netclaw.Actors/Authorization/Consent/ConsentAnswer.cs`.
+It decides whether the prompt offered the selected option key before the key becomes a `ConsentAnswer`.
 The job fails unless every mutant dies.
 
 The local calibration run took about five minutes after package restore.

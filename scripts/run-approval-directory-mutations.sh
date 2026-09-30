@@ -122,12 +122,12 @@ targets = [
         1,
     ),
     (
-        "!ToolApprovalEntryComparer.Equals(scope!.CommonDirectory, grant.Repository)",
+        "!ToolApprovalEntryComparer.Equals(scope!.CommonDirectory, repository.CommonDirectory)",
         1,
     ),
     (
         "!PathUtility.AreEquivalentPaths(\n"
-        "                                scope.WorktreeRoot, grant.RepositoryWorktree)",
+        "                scope.WorktreeRoot, grant.RepositoryWorktree)",
         1,
     ),
 ]
@@ -158,8 +158,11 @@ done <<< "$actor_spans"
 
 actor_report="$actor_output/reports/mutation-report.json"
 while IFS=$'\t' read -r _span_start _span_end line count; do
+  # A whole-condition negation that Stryker cannot compile shares the first
+  # target line. It is not a tested mutant; the count still requires each
+  # selected negation to compile and die.
   jq -e --arg source "$actor_source" --argjson line "$line" --argjson count "$count" '
-    [.files[$source].mutants[] | select(.status != "Ignored")
+    [.files[$source].mutants[] | select(.status != "Ignored" and .status != "CompileError")
       | select(.location.start.line == $line)] as $mutants
     | ($mutants | length) == $count and all($mutants[]; .status == "Killed")
   ' "$actor_report" > /dev/null || {

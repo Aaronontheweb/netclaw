@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Collections.Immutable;
 using System.Reflection;
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
 using Netclaw.Actors.Tools;
@@ -231,7 +232,7 @@ public sealed class ShellAssignmentMutationTests
                 ApprovalOptionKeys.ApproveAssignmentRepositoryV1,
                 ApprovalOptionKeys.ApproveAssignmentEverywhereV1,
             },
-            optionKey => Assert.False(LlmSessionActor.IsOfferedApprovalOption(
+            optionKey => Assert.False(ConsentAnswerCodec.IsOffered(
                 [],
                 optionKey,
                 "/work/repository/.git")));
@@ -243,49 +244,49 @@ public sealed class ShellAssignmentMutationTests
                      (ApprovalOptionKeys.ApproveAssignmentEverywhereV1, ApprovalOptionKeys.ApproveEverywhere),
                  })
         {
-            Assert.True(LlmSessionActor.IsOfferedApprovalOption(
+            Assert.True(ConsentAnswerCodec.IsOffered(
                 [assignmentKey],
                 assignmentKey,
                 repositoryCommonDirectory: null));
-            Assert.False(LlmSessionActor.IsOfferedApprovalOption(
+            Assert.False(ConsentAnswerCodec.IsOffered(
                 [legacyKey],
                 assignmentKey,
                 repositoryCommonDirectory: null));
-            Assert.False(LlmSessionActor.IsOfferedApprovalOption(
+            Assert.False(ConsentAnswerCodec.IsOffered(
                 [assignmentKey],
                 legacyKey,
                 repositoryCommonDirectory: null));
         }
 
-        Assert.False(LlmSessionActor.IsOfferedApprovalOption(
+        Assert.False(ConsentAnswerCodec.IsOffered(
             [ApprovalOptionKeys.ApproveAssignmentRepositoryV1],
             ApprovalOptionKeys.ApproveAssignmentRepositoryV1,
             repositoryCommonDirectory: null));
-        Assert.True(LlmSessionActor.IsOfferedApprovalOption(
+        Assert.True(ConsentAnswerCodec.IsOffered(
             [ApprovalOptionKeys.ApproveAssignmentRepositoryV1],
             ApprovalOptionKeys.ApproveAssignmentRepositoryV1,
             "/work/repository/.git"));
-        Assert.False(LlmSessionActor.IsOfferedApprovalOption(
+        Assert.False(ConsentAnswerCodec.IsOffered(
             [ApprovalOptionKeys.ApproveRepository],
             ApprovalOptionKeys.ApproveAssignmentRepositoryV1,
             "/work/repository/.git"));
-        Assert.False(LlmSessionActor.IsOfferedApprovalOption(
+        Assert.False(ConsentAnswerCodec.IsOffered(
             [ApprovalOptionKeys.ApproveAssignmentRepositoryV1],
             ApprovalOptionKeys.ApproveRepository,
             "/work/repository/.git"));
-        Assert.False(LlmSessionActor.IsOfferedApprovalOption(
+        Assert.False(ConsentAnswerCodec.IsOffered(
             [ApprovalOptionKeys.ApproveRepository],
             ApprovalOptionKeys.ApproveRepository,
             repositoryCommonDirectory: null));
-        Assert.True(LlmSessionActor.IsOfferedApprovalOption(
+        Assert.True(ConsentAnswerCodec.IsOffered(
             [ApprovalOptionKeys.ApproveRepository],
             ApprovalOptionKeys.ApproveRepository,
             "/work/repository/.git"));
-        Assert.False(LlmSessionActor.IsOfferedApprovalOption(
+        Assert.False(ConsentAnswerCodec.IsOffered(
             [],
             ApprovalOptionKeys.ApproveRepository,
             "/work/repository/.git"));
-        Assert.True(LlmSessionActor.IsOfferedApprovalOption(
+        Assert.True(ConsentAnswerCodec.IsOffered(
             [],
             ApprovalOptionKeys.ApproveAlways,
             repositoryCommonDirectory: null));

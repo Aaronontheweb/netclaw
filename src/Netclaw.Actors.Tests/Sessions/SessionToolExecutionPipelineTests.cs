@@ -12,6 +12,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Time.Testing;
+using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions;
@@ -22,6 +23,7 @@ using Netclaw.Actors.Tests.Tools;
 using Netclaw.Actors.Tests.Memory;
 using Netclaw.Configuration;
 using Netclaw.Security;
+using Netclaw.Security.Authorization.Consent;
 using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 using ShellSyntaxTree;
@@ -138,7 +140,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             TimeSpan.FromSeconds(2),
             cancellationToken: TestContext.Current.CancellationToken);
 
-        approvalChannel.Complete(approvalRequest.CallId, ApprovalDecision.ApprovedOnce);
+        approvalChannel.Complete(approvalRequest.CallId, ConsentAnswer.Once.Instance);
 
         var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
             TimeSpan.FromSeconds(3),
@@ -187,7 +189,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         var approvalRequest = await approvalRequestTcs.Task.WaitAsync(
             TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
 
-        approvalChannel.Complete(approvalRequest.CallId, ApprovalDecision.ApprovedAlways);
+        approvalChannel.Complete(approvalRequest.CallId, new ConsentAnswer.Grant(GrantScopeKind.Folder));
 
         var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
             TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
@@ -659,7 +661,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             TestContext.Current.CancellationToken);
         Assert.Equal([ApprovalOptionKeys.ApproveOnce, ApprovalOptionKeys.Deny],
             request.Options.Select(option => option.Key.Value));
-        approvalChannel.Complete(request.CallId, ApprovalDecision.Denied);
+        approvalChannel.Complete(request.CallId, ConsentAnswer.Denied);
 
         var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
             TimeSpan.FromSeconds(3),
@@ -830,7 +832,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         await AwaitAssertAsync(() =>
         {
             var firstRequest = Assert.Single(approvals);
-            approvalChannel.Complete(firstRequest.CallId, ApprovalDecision.ApprovedOnce);
+            approvalChannel.Complete(firstRequest.CallId, ConsentAnswer.Once.Instance);
         }, duration: TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
 
         var completed = await probe.ExpectMsgAsync<ToolExecutionCompleted>(
@@ -881,7 +883,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
 
         Assert.Equal(cwd, approvalRequest.Cwd);
 
-        approvalChannel.Complete(approvalRequest.CallId, ApprovalDecision.ApprovedAlways);
+        approvalChannel.Complete(approvalRequest.CallId, new ConsentAnswer.Grant(GrantScopeKind.Folder));
         await probe.ExpectMsgAsync<ToolExecutionCompleted>(
             TimeSpan.FromSeconds(3),
             cancellationToken: TestContext.Current.CancellationToken);
@@ -923,7 +925,7 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
             pipelineTask.WaitAsync(TimeSpan.FromSeconds(3), TestContext.Current.CancellationToken));
         Assert.True(pipelineTask.IsCanceled);
-        Assert.False(approvalChannel.Complete(approvalRequest.CallId, ApprovalDecision.ApprovedOnce));
+        Assert.False(approvalChannel.Complete(approvalRequest.CallId, ConsentAnswer.Once.Instance));
         Assert.False(probe.HasMessages);
     }
 
@@ -1591,8 +1593,9 @@ public sealed class SessionToolExecutionPipelineTests(ITestOutputHelper output) 
             // approved scope, not just ApprovedOnce.
             var approval = context?.Approval;
             if (approval is not null
-                && string.Equals(approval.OneTimeApprovedToolName, toolCall.Name, StringComparison.Ordinal)
-                && Patterns.All(approval.OneTimeApprovedPatterns.Contains))
+                && approval.OneTimeConsent is { } consent
+                && string.Equals(consent.ToolName, toolCall.Name, StringComparison.Ordinal)
+                && Patterns.All(consent.Keys.Contains))
             {
                 return Task.FromResult("ran-with-bypass");
             }

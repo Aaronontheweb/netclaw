@@ -44,8 +44,10 @@ C = "src/Netclaw.Configuration"
 SE = "src/Netclaw.Actors/Sessions"
 P = "src/Netclaw.Actors/Protocol"
 # Planned home of the consolidated authorizer. The globs below route each
-# bounded context folder to its group, in either production project.
-AUTH = "src/Netclaw.{Actors,Security}/Authorization"
+# bounded context folder to its group, in any of the production projects that
+# hold authorization types. Tools.Abstractions holds the one-time consent value
+# because the invocation attempt that carries it lives there.
+AUTH = "src/Netclaw.{Actors,Security,Tools.Abstractions}/Authorization"
 
 
 @dataclass(frozen=True)
