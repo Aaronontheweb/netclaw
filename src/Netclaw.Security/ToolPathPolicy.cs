@@ -144,7 +144,7 @@ public sealed class ToolPathPolicy
         if (!string.IsNullOrWhiteSpace(workingDirectory) && IsShellDenied(workingDirectory))
             return true;
 
-        var tokens = ShellTokenizer.Tokenize(command).ToList();
+        var tokens = LegacyShellTextScan.Tokenize(command).ToList();
         var slashCommand = command.Replace('\\', '/');
         foreach (var indicator in _commandIndicators)
         {
@@ -165,7 +165,7 @@ public sealed class ToolPathPolicy
             // The authority resolves every link segment, so a planted link under
             // an approved directory cannot hide a protected target. A resolution
             // failure counts as protected.
-            var normalized = ShellTokenizer.NormalizePathToken(
+            var normalized = PathUtility.NormalizeShellPath(
                 token,
                 workingDirectory,
                 Environment.PathStyle);
@@ -182,7 +182,7 @@ public sealed class ToolPathPolicy
         }
 
         if (DefaultLayoutHints.Any(hint => slashCommand.Contains(hint.Fragment, StringComparison.OrdinalIgnoreCase))
-            && ContainsHighRiskVerb(tokens))
+            && tokens.Any(token => ShellVerbPolicyData.HighRiskVerbs.Contains(LegacyShellTextScan.TrimShellPunctuation(token))))
         {
             return true;
         }
@@ -249,18 +249,6 @@ public sealed class ToolPathPolicy
                 && IsShellDenied(pattern.CoveringDirectory),
             _ => false
         };
-
-    private static bool ContainsHighRiskVerb(IEnumerable<string> tokens)
-    {
-        foreach (var token in tokens)
-        {
-            var verb = ShellTokenizer.TrimShellPunctuation(token);
-            if (ShellTokenizer.HighRiskVerbs.Contains(verb))
-                return true;
-        }
-
-        return false;
-    }
 
     private static bool LooksLikePath(string token)
     {

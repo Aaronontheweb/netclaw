@@ -230,6 +230,24 @@ public sealed class ShellExecutionEnvironment
         };
     }
 
+    /// <summary>
+    /// Parses unresolved Bash source for the hard-deny screen only.
+    /// </summary>
+    /// <remarks>
+    /// The screen assumes a bounded initial state that this environment did not
+    /// prove, so its facts never authorize a command. They can only add a denial
+    /// to input that stays unresolved for approval.
+    /// </remarks>
+    internal ParsedCommand ParseForProhibitionScreen(
+        string source,
+        string? workingDirectory,
+        BashInitialStateMode assumedState)
+        => new BashParser(new BashParserOptions
+        {
+            WorkingDirectory = workingDirectory,
+            InitialStateMode = assumedState
+        }).Parse(source);
+
     internal bool TryProjectFiniteBashScopes(
         string source,
         string? workingDirectory,

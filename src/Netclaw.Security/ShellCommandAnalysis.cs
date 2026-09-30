@@ -17,11 +17,26 @@ internal sealed class ShellCommandAnalyzer
 {
     private const int MaxWrapperDepth = 8;
     private readonly ShellExecutionEnvironment _environment;
+    private readonly BashInitialStateMode? _screenState;
 
     public ShellCommandAnalyzer(ShellExecutionEnvironment environment)
+        : this(environment, screenState: null)
+    {
+    }
+
+    private ShellCommandAnalyzer(
+        ShellExecutionEnvironment environment,
+        BashInitialStateMode? screenState)
     {
         _environment = environment ?? throw new ArgumentNullException(nameof(environment));
+        _screenState = screenState;
     }
+
+    private static readonly BashInitialStateMode[] ScreenStates =
+    [
+        BashInitialStateMode.IsolatedNonInteractive,
+        BashInitialStateMode.FreshNonInteractiveNoStartup
+    ];
 
     public ShellCommandAnalysis Analyze(string command, string? workingDirectory = null)
     {
@@ -46,7 +61,51 @@ internal sealed class ShellCommandAnalyzer
             denyOnlyClauses,
             failure,
             knownRegionArguments,
-            syntaxProofComplete);
+            syntaxProofComplete)
+        {
+            ScreenClauses = _screenState is null
+                            && _environment.Grammar == ShellGrammar.Bash
+                            && (failure != ShellAnalysisFailure.None || commands.Count == 0)
+                ? CollectScreenClauses(command, workingDirectory)
+                : []
+        };
+    }
+
+    /// <summary>
+    /// Parses unresolved Bash source again for hard deny only. The screen first
+    /// parses the whole source, then each list element alone, with an assumed
+    /// bounded initial state. The clauses never become approval candidates.
+    /// </summary>
+    /// <remarks>
+    /// ShellSyntaxTree 0.4.0-beta.5 rejects a background list, so each element
+    /// of <c>echo ok &amp; sudo ls</c> meets hard deny only through this screen.
+    /// A list element that is still unparseable adds no clause.
+    /// </remarks>
+    private List<Clause> CollectScreenClauses(string command, string? workingDirectory)
+    {
+        var clauses = new List<Clause>();
+        if (TryCollectScreenClauses(command, workingDirectory, clauses))
+            return clauses;
+
+        foreach (var element in SplitListElements(command))
+            TryCollectScreenClauses(element, workingDirectory, clauses);
+
+        return clauses;
+    }
+
+    private bool TryCollectScreenClauses(string source, string? workingDirectory, List<Clause> clauses)
+    {
+        foreach (var state in ScreenStates)
+        {
+            var screened = new ShellCommandAnalyzer(_environment, state).Analyze(source, workingDirectory);
+            if (screened.Commands.Count == 0)
+                continue;
+
+            clauses.AddRange(screened.Commands.Select(static occurrence => occurrence.Clause));
+            return true;
+        }
+
+        return false;
     }
 
     private ShellAnalysisFailure Analyze(
@@ -64,16 +123,19 @@ internal sealed class ShellCommandAnalyzer
         // Stable v0.3 excludes background lists. Keep this guard until the
         // parser exposes their concurrency and shell-state boundaries.
         if (_environment.Grammar == ShellGrammar.Bash
-            && ContainsBackgroundListOperator(command))
+            && _screenState is null
+            && FindListOperators(command).Any(static list => list.IsBackground))
             return ShellAnalysisFailure.Unresolved;
 
         ParsedCommand parsed;
         try
         {
-            parsed = _environment.ParseForApproval(
-                command,
-                workingDirectory,
-                publishAuthoredSourceFacts: depth == 0);
+            parsed = _screenState is { } state
+                ? _environment.ParseForProhibitionScreen(command, workingDirectory, state)
+                : _environment.ParseForApproval(
+                    command,
+                    workingDirectory,
+                    publishAuthoredSourceFacts: depth == 0);
         }
         catch
         {
@@ -111,19 +173,24 @@ internal sealed class ShellCommandAnalyzer
             return ShellAnalysisFailure.None;
         }
 
-        var innerCommands = ShellApprovalSemantics.ExtractInnerCommands(
-            command,
-            ShellPathStyle.Posix);
-        var unexpandedWrappers = parsed.Commands
+        var wrapperSources = parsed.Commands
             .Where(static occurrence => IsUnexpandedWrapperClause(occurrence.Clause))
+            .Select(FindWrapperSource)
             .ToList();
-        if (innerCommands.Count == 0 || unexpandedWrappers.Count == 0)
+        var hasDecodedWrapper = parsed.Commands
+            .Any(static occurrence => occurrence.Clause.IsCommandStringWrapped);
+        if (wrapperSources.Count == 0
+            || wrapperSources.All(static source => source is WrapperSource.Missing) && !hasDecodedWrapper)
         {
             commands.AddRange(parsed.Commands);
             return ShellAnalysisFailure.None;
         }
 
-        if (innerCommands.Count != unexpandedWrappers.Count)
+        // Every bundled wrapper needs its own child source. Source that mixes
+        // a bundled wrapper with a wrapper that the parser decoded stays
+        // unresolved.
+        if (hasDecodedWrapper
+            || wrapperSources.Any(static source => source is WrapperSource.Missing))
         {
             // Preserve the prior defense scan when wrapper extraction is incomplete.
             commands.AddRange(parsed.Commands.Where(static occurrence =>
@@ -137,7 +204,7 @@ internal sealed class ShellCommandAnalyzer
         // parser-owned position so every consumer sees execution order. Remove
         // only a direct shell dispatch; retain prefix executables such as sudo,
         // env, and nohup for hard-deny and approval policy.
-        var innerIndex = 0;
+        var sourceIndex = 0;
         foreach (var occurrence in parsed.Commands)
         {
             if (!IsUnexpandedWrapperClause(occurrence.Clause))
@@ -146,10 +213,14 @@ internal sealed class ShellCommandAnalyzer
                 continue;
             }
 
+            var childSource = wrapperSources[sourceIndex++];
+
             if (!IsTransparentShellDispatch(occurrence.Clause))
                 commands.Add(occurrence);
 
-            if (!TryResolveWrapperWorkingDirectory(
+            // A dynamic child source has no exact text to parse.
+            if (childSource is not WrapperSource.Exact exactSource
+                || !TryResolveWrapperWorkingDirectory(
                     occurrence,
                     workingDirectory,
                     out var innerWorkingDirectory))
@@ -159,7 +230,7 @@ internal sealed class ShellCommandAnalyzer
 
             var innerCommandStart = commands.Count;
             var failure = Analyze(
-                innerCommands[innerIndex++],
+                exactSource.Source,
                 innerWorkingDirectory,
                 depth + 1,
                 commands,
@@ -175,6 +246,58 @@ internal sealed class ShellCommandAnalyzer
 
         return ShellAnalysisFailure.None;
     }
+
+    /// <summary>
+    /// The child source of a bundled wrapper: the parser value of the argument
+    /// after the first short option with <c>c</c> that follows a POSIX shell word.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: the child source must be the decoded value that the shell
+    /// passes to the wrapper. A raw-text split that ignores escapes can end
+    /// the child early, for example at <c>\"</c>, and hide the commands after
+    /// that point from approval and hard-deny policy.
+    /// </remarks>
+    private abstract record WrapperSource
+    {
+        private WrapperSource()
+        {
+        }
+
+        internal sealed record Missing : WrapperSource;
+
+        internal sealed record Dynamic : WrapperSource;
+
+        internal sealed record Exact(string Source) : WrapperSource;
+    }
+
+    private static WrapperSource FindWrapperSource(CommandOccurrence occurrence)
+    {
+        var words = occurrence.Clause.Verb.Tokens
+            .Select(static token => (Raw: token, Value: (ShellValueDomain?)null))
+            .Concat(occurrence.Arguments
+                .Where(static argument => !argument.Argument.IsCwdAttribution)
+                .Select(static argument => (Raw: argument.Argument.Raw, Value: (ShellValueDomain?)argument.Value)))
+            .ToList();
+        var invoker = words.FindIndex(static word => IsShellInvokerToken(word.Raw));
+        for (var index = invoker + 1; invoker >= 0 && index < words.Count - 1; index++)
+        {
+            if (IsShortCommandOption(words[index].Raw))
+            {
+                return words[index + 1].Value is ShellValueDomain.Exact exact
+                    ? new WrapperSource.Exact(exact.Value)
+                    : new WrapperSource.Dynamic();
+            }
+        }
+
+        return new WrapperSource.Missing();
+    }
+
+    private static bool IsShortCommandOption(string raw)
+        => raw.Length > 1
+           && raw[0] == '-'
+           && !raw.StartsWith("--", StringComparison.Ordinal)
+           && raw.AsSpan(1).IndexOf('c') >= 0;
+
     private static bool TryResolveWrapperWorkingDirectory(
         CommandOccurrence occurrence,
         string? inheritedWorkingDirectory,
@@ -216,11 +339,7 @@ internal sealed class ShellCommandAnalyzer
             return false;
         }
 
-        return clause.Args.Any(static arg =>
-            arg.Raw.Length > 1
-            && arg.Raw[0] == '-'
-            && !arg.Raw.StartsWith("--", StringComparison.Ordinal)
-            && arg.Raw.AsSpan(1).IndexOf('c') >= 0);
+        return clause.Args.Any(static arg => IsShortCommandOption(arg.Raw));
     }
 
     private static bool HasShellInvokerInArguments(Clause clause)
@@ -236,7 +355,7 @@ internal sealed class ShellCommandAnalyzer
             return true;
 
         if (!string.Equals(
-                ShellTokenizer.TrimShellPunctuation(clause.Verb.Tokens[0]),
+                LegacyShellTextScan.TrimShellPunctuation(clause.Verb.Tokens[0]),
                 "command",
                 StringComparison.Ordinal))
         {
@@ -251,7 +370,7 @@ internal sealed class ShellCommandAnalyzer
             if (arg.Kind == ArgKind.DynamicSkip)
                 return false;
 
-            var token = ShellTokenizer.TrimShellPunctuation(arg.Raw);
+            var token = LegacyShellTextScan.TrimShellPunctuation(arg.Raw);
             if (token is "--" or "-p")
                 continue;
 
@@ -262,11 +381,30 @@ internal sealed class ShellCommandAnalyzer
     }
 
     private static bool IsShellInvokerToken(string token)
-        => ShellApprovalSemantics.IsPosixShellInvoker(
-            ShellTokenizer.TrimShellPunctuation(token));
+        => ShellVerbPolicyData.PosixShellInvokers.Contains(
+            LegacyShellTextScan.TrimShellPunctuation(token));
 
-    private static bool ContainsBackgroundListOperator(string command)
+    /// <summary>
+    /// Splits Bash source at each unquoted list operator: <c>;</c>, <c>&amp;&amp;</c>,
+    /// <c>||</c>, and a background <c>&amp;</c>. Only the hard-deny screen uses the elements.
+    /// </summary>
+    private static List<string> SplitListElements(string command)
     {
+        var elements = new List<string>();
+        var start = 0;
+        foreach (var list in FindListOperators(command))
+        {
+            elements.Add(command[start..list.Index]);
+            start = list.Index + list.Length;
+        }
+
+        elements.Add(command[start..]);
+        return elements;
+    }
+
+    private static List<(int Index, int Length, bool IsBackground)> FindListOperators(string command)
+    {
+        var operators = new List<(int Index, int Length, bool IsBackground)>();
         char? quote = null;
         var escaped = false;
 
@@ -295,18 +433,27 @@ internal sealed class ShellCommandAnalyzer
                 continue;
             }
 
-            if (quote is not null || ch != '&')
+            if (quote is not null)
                 continue;
 
             var previous = i > 0 ? command[i - 1] : '\0';
             var next = i + 1 < command.Length ? command[i + 1] : '\0';
-            if (previous is '&' or '>' || next is '&' or '>')
-                continue;
-
-            return true;
+            if (ch == ';')
+            {
+                operators.Add((i, 1, false));
+            }
+            else if (ch is '&' or '|' && next == ch)
+            {
+                operators.Add((i, 2, false));
+                i++;
+            }
+            else if (ch == '&' && previous is not ('&' or '>') && next != '>')
+            {
+                operators.Add((i, 1, true));
+            }
         }
 
-        return false;
+        return operators;
     }
 }
 
@@ -380,6 +527,12 @@ public sealed record ShellCommandAnalysis
     public IReadOnlyList<CommandOccurrence> Commands { get; }
 
     internal IReadOnlyList<Clause> DenyOnlyClauses { get; }
+
+    /// <summary>
+    /// The clauses of the hard-deny screen for unresolved Bash source. They
+    /// never become approval candidates.
+    /// </summary>
+    internal IReadOnlyList<Clause> ScreenClauses { get; init; } = [];
 
     public bool IsResolved => Failure == ShellAnalysisFailure.None && Commands.Count > 0;
 
@@ -921,7 +1074,7 @@ public sealed record ShellCommandAnalysis
         return command.Redirects.Count == 0
                && !command.Clause.Verb.IsDynamic
                && command.Clause.Verb.Tokens.Count == 1
-               && ShellTokenizer.SingleTokenSideEffectVerbs.Contains(command.Clause.Verb.Tokens[0])
+               && ShellVerbPolicyData.SingleTokenSideEffectVerbs.Contains(command.Clause.Verb.Tokens[0])
                && argument.Argument.Kind == ArgKind.EnvVar
                && !argument.Argument.IsPath
                && argument.Argument.Raw == "$?"
@@ -967,7 +1120,7 @@ public sealed record ShellCommandAnalysis
         if (!IsStandardInputSource(redirect.Source)
             || clause.Verb.Tokens.Count != 1
             || !string.Equals(
-                ShellTokenizer.TrimShellPunctuation(clause.Verb.Tokens[0]),
+                LegacyShellTextScan.TrimShellPunctuation(clause.Verb.Tokens[0]),
                 "cat",
                 StringComparison.Ordinal)
             || clause.Args.Any(static arg => !arg.IsCwdAttribution))
@@ -988,7 +1141,7 @@ public sealed record ShellCommandAnalysis
         return IsStandardInputSource(redirect.Source)
             && clause.Verb.Tokens.Count == 1
             && string.Equals(
-                ShellTokenizer.TrimShellPunctuation(clause.Verb.Tokens[0]),
+                LegacyShellTextScan.TrimShellPunctuation(clause.Verb.Tokens[0]),
                 "cat",
                 StringComparison.Ordinal)
             && !clause.Args.Any(static arg => !arg.IsCwdAttribution)

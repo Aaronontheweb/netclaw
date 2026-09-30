@@ -335,7 +335,7 @@ public static class ApprovalPatternMatching
     /// </summary>
     /// <remarks>
     /// The side-effect verb set
-    /// (<see cref="ShellTokenizer.SingleTokenSideEffectVerbs"/>) is shared
+    /// (<see cref="ShellVerbPolicyData.SingleTokenSideEffectVerbs"/>) is shared
     /// with the verb-chain short-circuit so both paths agree on which
     /// verbs collapse to depth 1 and which ones skip persistence.
     /// Conservative on purpose. <c>eval</c>, <c>command</c>, <c>exec</c>,
@@ -348,7 +348,7 @@ public static class ApprovalPatternMatching
         if (candidate.Directory is not null || candidate.AssignmentDigest is not null)
             return false;
 
-        return ShellTokenizer.SingleTokenSideEffectVerbs.Contains(candidate.Verb);
+        return ShellVerbPolicyData.SingleTokenSideEffectVerbs.Contains(candidate.Verb);
     }
 }
 

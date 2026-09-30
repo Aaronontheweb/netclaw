@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Diagnostics.CodeAnalysis;
 using Netclaw.Security;
 using Netclaw.Security.Authorization.Filesystem;
 using ShellSyntaxTree;
@@ -151,23 +152,8 @@ internal static class BashCausalApprovalIntent
         list = null!;
         for (var index = 0; index < occurrences.Count; index++)
         {
-            var occurrence = occurrences[index];
-            if (!occurrence.IsComplete
-                || occurrence.ImmediateRole != CommandOccurrenceRole.Ordinary
-                || occurrence.Ancestry.Count != 2
-                || occurrence.Ancestry[0] is not
-                {
-                    Ancestor: ShellBlockSyntax,
-                    Region: CommandAncestryRegion.Root,
-                    ChildIndex: 0
-                }
-                || occurrence.Ancestry[1] is not
-                {
-                    Ancestor: CommandListSyntax currentList,
-                    Region: CommandAncestryRegion.Statement,
-                    ChildIndex: var childIndex
-                }
-                || childIndex != index
+            if (!TryGetListItem(occurrences[index], index, out var currentList)
+                || occurrences[index].Ancestry[0].ChildIndex != 0
                 || index > 0 && !ReferenceEquals(list, currentList))
             {
                 return false;
@@ -176,19 +162,40 @@ internal static class BashCausalApprovalIntent
             list = currentList;
         }
 
-        if (list.Items.Count != occurrences.Count)
-            return false;
+        return list.Items.Count == occurrences.Count;
+    }
 
-        for (var index = 0; index < list.Items.Count; index++)
-        {
-            if (list.Items[index].Command is not SimpleCommandSyntax simple
-                || !ReferenceEquals(simple.Clause, occurrences[index].Clause)
-                || !Enum.IsDefined(list.Items[index].Operator))
+    /// <summary>
+    /// Returns the top-level Bash list when the occurrence is the plain simple
+    /// command at list item <paramref name="index"/>. The causal intent and the
+    /// one-call directory advice read the same list shape.
+    /// </summary>
+    internal static bool TryGetListItem(
+        CommandOccurrence occurrence,
+        int index,
+        [NotNullWhen(true)] out CommandListSyntax? list)
+    {
+        list = null;
+        if (!occurrence.IsComplete
+            || occurrence.ImmediateRole != CommandOccurrenceRole.Ordinary
+            || occurrence.Ancestry.Count != 2
+            || occurrence.Ancestry[0] is not { Ancestor: ShellBlockSyntax, Region: CommandAncestryRegion.Root }
+            || occurrence.Ancestry[1] is not
             {
-                return false;
+                Ancestor: CommandListSyntax current,
+                Region: CommandAncestryRegion.Statement,
+                ChildIndex: var childIndex
             }
+            || childIndex != index
+            || current.Items.Count <= index
+            || current.Items[index] is not { Command: SimpleCommandSyntax simple } item
+            || !ReferenceEquals(simple.Clause, occurrence.Clause)
+            || !Enum.IsDefined(item.Operator))
+        {
+            return false;
         }
 
+        list = current;
         return true;
     }
 

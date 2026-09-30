@@ -145,4 +145,39 @@ public static class PathUtility
         var expanded = ExpandHome(path);
         return TryNormalize(expanded, workingDirectory, out var normalized) ? normalized : null;
     }
+
+    /// <summary>
+    /// Normalizes one shell path value against a working directory. The home
+    /// token expands. An absolute POSIX value keeps its lexical form, and a
+    /// <c>..</c> above the root stays at the root. Other values use the host path API.
+    /// </summary>
+    internal static string? NormalizeShellPath(string path, string? workingDirectory, ShellPathStyle style)
+    {
+        var expanded = ExpandHome(path);
+        if (style != ShellPathStyle.Posix
+            || expanded.Length == 0
+            || expanded[0] != '/'
+            || expanded.StartsWith("//", StringComparison.Ordinal)
+            || expanded.Contains('\\', StringComparison.Ordinal)
+            || expanded.Contains("://", StringComparison.Ordinal))
+        {
+            return ExpandAndNormalize(expanded, workingDirectory);
+        }
+
+        var segments = new List<string>();
+        foreach (var segment in expanded.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        {
+            if (segment == "..")
+            {
+                if (segments.Count > 0)
+                    segments.RemoveAt(segments.Count - 1);
+            }
+            else if (segment != ".")
+            {
+                segments.Add(segment);
+            }
+        }
+
+        return "/" + string.Join('/', segments);
+    }
 }

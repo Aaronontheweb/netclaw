@@ -210,12 +210,8 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         var patterns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var unit in ExtractApprovalUnitsViaAnalysis(analysis))
         {
-            var normalized = ShellTokenizer.NormalizeApprovalUnit(
-                unit,
-                workingDirectory,
-                Environment.PathStyle);
-            if (!string.IsNullOrEmpty(normalized))
-                patterns.Add(normalized);
+            if (!string.IsNullOrEmpty(unit))
+                patterns.Add(unit);
         }
 
         return new ShellApprovalAnalysis(
@@ -306,11 +302,11 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 
         var parsedVerb = clause.Verb.CanonicalVerb
             ?? string.Join(" ", TrimTrailingValueTokens(clause.Verb.Tokens));
-        var verb = ShellTokenizer.ApplyVerbShortCircuit(parsedVerb);
+        var verb = ShellVerbPolicyData.ApplyVerbShortCircuit(parsedVerb);
         if (string.IsNullOrEmpty(verb))
             return null;
 
-        var isSideEffectVerb = ShellTokenizer.SingleTokenSideEffectVerbs.Contains(verb);
+        var isSideEffectVerb = ShellVerbPolicyData.SingleTokenSideEffectVerbs.Contains(verb);
         var directories = ResolveCommandDirectories(
             occurrence,
             verb,
@@ -512,7 +508,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             if (value.Any(char.IsControl))
                 return null;
 
-            var path = ShellTokenizer.NormalizePathToken(
+            var path = PathUtility.NormalizeShellPath(
                 value,
                 workingDirectory,
                 pathStyle);
@@ -586,22 +582,41 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             || pathStyle == ShellPathStyle.Windows
                 && raw.EndsWith("\\", StringComparison.Ordinal);
 
-        var hasDirectoryOperand = verb.Equals("find", StringComparison.OrdinalIgnoreCase)
-            || verb.Equals("cd", StringComparison.OrdinalIgnoreCase)
-            || verb.Equals("chdir", StringComparison.OrdinalIgnoreCase)
-            || verb.Equals("pushd", StringComparison.OrdinalIgnoreCase)
-            || verb.Equals("popd", StringComparison.OrdinalIgnoreCase)
-            || verb.Equals("Set-Location", StringComparison.OrdinalIgnoreCase)
-            || verb.Equals("Push-Location", StringComparison.OrdinalIgnoreCase)
-            || verb.Equals("Pop-Location", StringComparison.OrdinalIgnoreCase);
-
         // A dotted basename can name either a file or a directory. Navigation
         // and traversal commands need the exact scope, not the file-parent
         // heuristic. The safe-space policy still rejects external and
         // symlinked paths.
-        return hasDirectorySyntax || hasDirectoryOperand
+        return hasDirectorySyntax || ShellVerbPolicyData.DirectoryOperandVerbs.Contains(verb)
             ? resolved
-            : ShellTokenizer.ApplyFileParentRule(resolved, pathStyle);
+            : ApplyFileParentRule(resolved, pathStyle);
+    }
+
+    /// <summary>
+    /// Returns the parent directory when the last segment looks like a file
+    /// (an extension or a dotfile), so a grant covers the folder. No file
+    /// system call occurs.
+    /// </summary>
+    private static string ApplyFileParentRule(string token, ShellPathStyle pathStyle)
+    {
+        var lastSeparator = pathStyle == ShellPathStyle.Windows
+            ? token.LastIndexOfAny(['/', '\\'])
+            : token.LastIndexOf('/');
+        var basename = token[(lastSeparator + 1)..];
+        var lastDot = basename.LastIndexOf('.');
+        var hasExtension = lastDot > 0 && lastDot < basename.Length - 1;
+        var isDotfile = basename.Length > 1 && basename[0] == '.';
+        if (!hasExtension && !isDotfile || lastSeparator < 0)
+            return token;
+
+        if (lastSeparator == 0)
+            return token[..1];
+
+        return pathStyle == ShellPathStyle.Windows
+               && lastSeparator == 2
+               && char.IsAsciiLetter(token[0])
+               && token[1] == ':'
+            ? token[..3]
+            : token[..lastSeparator];
     }
 
     private static string? ResolveGlobCoveringDirectory(
@@ -693,7 +708,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         var containsSeparator = pathStyle == ShellPathStyle.Windows
             ? arg.Raw.IndexOfAny(['/', '\\']) >= 0
             : arg.Raw.Contains('/', StringComparison.Ordinal);
-        if (ShellTokenizer.IsPathToken(arg.Raw, pathStyle) || !containsSeparator)
+        if (IsAnchoredPathWord(arg.Raw, pathStyle) || !containsSeparator)
             return true;
 
         // An internal slash can also name a ref such as feature/x. Native
@@ -715,6 +730,35 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
                    resolved,
                    [new PathBoundary.Folder(cwd, LinkRule.BelowRoot)]) is not PathDecision.Allowed;
     }
+
+    /// <summary>
+    /// Returns true when a parser word starts at a root, the home token, or the
+    /// current or parent directory. A word with only an internal separator,
+    /// such as a Git ref or a URL, does not count.
+    /// </summary>
+    private static bool IsAnchoredPathWord(string word, ShellPathStyle pathStyle)
+    {
+        if (IsPortableAnchoredPathWord(word) || pathStyle != ShellPathStyle.Windows)
+            return IsPortableAnchoredPathWord(word);
+
+        var value = word.Trim('\'', '"');
+        return IsPortableAnchoredPathWord(value)
+            || value.StartsWith('\\')
+            || value.StartsWith("~\\", StringComparison.Ordinal)
+            || value.StartsWith(".\\", StringComparison.Ordinal)
+            || value.StartsWith("..\\", StringComparison.Ordinal)
+            || value.Length >= 3
+            && char.IsAsciiLetter(value[0])
+            && value[1] == ':'
+            && value[2] is '/' or '\\';
+    }
+
+    private static bool IsPortableAnchoredPathWord(string word)
+        => word is "~" or "." or ".."
+           || word.StartsWith('/')
+           || word.StartsWith("~/", StringComparison.Ordinal)
+           || word.StartsWith("./", StringComparison.Ordinal)
+           || word.StartsWith("../", StringComparison.Ordinal);
 
     /// <summary>
     /// Returns true only when an all-digit operand does not identify a filesystem object.
@@ -847,8 +891,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     /// one unit per statement, with consecutive <c>|</c> clauses folded into
     /// the same unit so <c>cat x | wc -l</c> stays a single decision.
     /// Returns an empty list for messy, unparseable, or parser-rejected
-    /// commands. This result matches the legacy <see cref="ShellTokenizer.SplitCompoundCommand"/>
-    /// empty-result contract so the prompt builder offers only Once/Deny.
+    /// commands, so the prompt builder offers only Once/Deny.
     /// </summary>
     private IReadOnlyList<string> ExtractApprovalUnitsViaAnalysis(
         ShellCommandAnalysis result)
@@ -881,7 +924,12 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
                 if (current.Length > 0)
                     current.Append(" | ");
 
-                current.Append(ReconstructClauseText(clause));
+                current.Append(string.Join(
+                    ' ',
+                    ReconstructClauseWords(clause).SelectMany(LegacyShellTextScan.Tokenize).Select(word => NormalizeUnitWord(
+                        word,
+                        result.WorkingDirectory,
+                        Environment.PathStyle))));
             }
 
             if (current.Length > 0)
@@ -900,7 +948,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     }
 
     /// <summary>
-    /// Rebuilds one clause's user-facing text from its parsed parts: verb
+    /// Rebuilds one clause's user-facing words from its parsed parts: verb
     /// chain, positional/flag args, and redirects. Synthetic cd-attribution
     /// args are dropped — they carry an inherited cwd, not a token the user
     /// typed. Call-specific value arguments are also excluded since they vary
@@ -911,16 +959,14 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     /// <see cref="IsQuotedFreeTextArg"/>). Once such a token is encountered,
     /// the greedy walk terminates — subsequent args (wrapped subcommands like
     /// <c>curl</c> after <c>timeout 30</c>) are outside the approval intent.
-    /// The result is fed back through
-    /// <see cref="ShellTokenizer.NormalizeApprovalUnit"/> for path
-    /// normalization, so this only needs to emit a clean token sequence.
     /// </summary>
-    private static string ReconstructClauseText(ShellSyntaxTree.Clause clause)
+    private static IEnumerable<string> ReconstructClauseWords(ShellSyntaxTree.Clause clause)
     {
         // Strip the trailing call-specific value tokens the greedy verb walk
         // folded into the chain (see TrimTrailingValueTokens) so the persisted
         // pattern matches the gate candidate for `git tag v0.4.2`.
-        var sb = new StringBuilder(string.Join(" ", TrimTrailingValueTokens(clause.Verb.Tokens)));
+        foreach (var token in TrimTrailingValueTokens(clause.Verb.Tokens))
+            yield return token;
 
         foreach (var arg in clause.Args)
         {
@@ -953,13 +999,10 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             if (IsQuotedFreeTextArg(arg))
                 break;
 
-            if (sb.Length > 0)
-                sb.Append(' ');
-            sb.Append(arg.Raw);
+            yield return arg.Raw;
         }
 
-        // Redirect targets live outside Args; the legacy tokenizer kept them
-        // as plain `> /path` tokens, so preserve them in the display unit
+        // Redirect targets live outside Args. Keep them in the display unit
         // and the approve-once retry key.
         foreach (var redirect in clause.Redirects)
         {
@@ -973,14 +1016,76 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             if (ContainsLineBreak(redirect.Target))
                 break;
 
-            if (sb.Length > 0)
-                sb.Append(' ');
-            sb.Append(RedirectToken(redirect.Direction));
-            sb.Append(' ');
-            sb.Append(redirect.Target);
+            yield return RedirectToken(redirect.Direction);
+            yield return redirect.Target;
+        }
+    }
+
+    /// <summary>
+    /// Shows a path-like word of an approval unit as a normalized local path.
+    /// Other words stay unchanged.
+    /// </summary>
+    private static string NormalizeUnitWord(string word, string? workingDirectory, ShellPathStyle pathStyle)
+        => LooksLikeUnitPath(word, pathStyle)
+            ? PathUtility.NormalizeShellPath(word, workingDirectory, pathStyle) ?? word
+            : word;
+
+    /// <summary>
+    /// Returns true for a word with an anchored path prefix, or with a
+    /// separator plus a traversal segment or a file extension. URLs, Git refs,
+    /// scoped packages, and sed expressions do not count.
+    /// </summary>
+    internal static bool LooksLikeUnitPath(string word, ShellPathStyle pathStyle)
+    {
+        var isWindows = pathStyle == ShellPathStyle.Windows;
+        if (string.IsNullOrWhiteSpace(word)
+            || word.StartsWith('-')
+            || word.Contains("://", StringComparison.Ordinal))
+        {
+            return false;
         }
 
-        return sb.ToString();
+        if (!isWindows && word[0] == '/'
+            || word.StartsWith("./", StringComparison.Ordinal)
+            || word.StartsWith("../", StringComparison.Ordinal)
+            || word.StartsWith('~')
+            || word.StartsWith("$HOME", StringComparison.Ordinal)
+            || word.StartsWith("${HOME}", StringComparison.Ordinal)
+            || isWindows
+            && (word.StartsWith("\\\\", StringComparison.Ordinal)
+                || word.Length >= 3 && char.IsAsciiLetter(word[0]) && word[1] == ':' && word[2] is '\\' or '/'
+                || word.StartsWith(@".\", StringComparison.Ordinal)
+                || word.StartsWith(@"..\", StringComparison.Ordinal)
+                || word.StartsWith("%USERPROFILE%", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        var firstSeparator = isWindows ? word.IndexOfAny(['/', '\\']) : word.IndexOf('/', StringComparison.Ordinal);
+        if (firstSeparator < 0)
+            return false;
+
+        var colon = word.IndexOf(':', StringComparison.Ordinal);
+        if (colon >= 0 && colon < firstSeparator && (!isWindows || colon != 1 || !char.IsAsciiLetter(word[0])))
+            return false;
+
+        if (word.StartsWith('@') && word.IndexOf('/', 1) == word.LastIndexOf('/'))
+            return false;
+
+        if ((word.StartsWith("s/", StringComparison.Ordinal) || word.StartsWith("y/", StringComparison.Ordinal))
+            && word.Count(static character => character == '/') >= 3)
+        {
+            return false;
+        }
+
+        if (isWindows && word.Contains('\\', StringComparison.Ordinal))
+            return true;
+
+        return word.Contains("/../", StringComparison.Ordinal)
+               || word.EndsWith("/..", StringComparison.Ordinal)
+               || word.Contains("\\..\\", StringComparison.Ordinal)
+               || word.EndsWith("\\..", StringComparison.Ordinal)
+               || Path.GetExtension(Path.GetFileName(word)).Length > 1;
     }
 
     /// <summary>
@@ -1014,7 +1119,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (string.IsNullOrEmpty(token) || token[0] == '-')
             return false;
 
-        if (ShellTokenizer.IsPathToken(token))
+        if (IsPortableAnchoredPathWord(token))
             return false;
 
         foreach (var c in token)
@@ -1242,14 +1347,14 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     }
 
     private static bool IsSideEffectCommand(ShellSyntaxTree.CommandOccurrence occurrence)
-        => ShellTokenizer.SingleTokenSideEffectVerbs.Contains(NormalizedVerb(occurrence));
+        => ShellVerbPolicyData.SingleTokenSideEffectVerbs.Contains(NormalizedVerb(occurrence));
 
     private static string NormalizedVerb(ShellSyntaxTree.CommandOccurrence occurrence)
     {
         var clause = occurrence.Clause;
         var parsedVerb = clause.Verb.CanonicalVerb
             ?? string.Join(" ", TrimTrailingValueTokens(clause.Verb.Tokens));
-        return ShellTokenizer.ApplyVerbShortCircuit(parsedVerb);
+        return ShellVerbPolicyData.ApplyVerbShortCircuit(parsedVerb);
     }
 
     public string FormatForDisplay(ToolName toolName, IDictionary<string, object?>? arguments)

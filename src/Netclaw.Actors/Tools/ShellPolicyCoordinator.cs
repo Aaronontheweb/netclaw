@@ -248,17 +248,11 @@ internal sealed class ShellPolicyCoordinator(
         }
 
         var first = analysis.Commands[0];
-        if (!first.IsComplete
-            || first.ImmediateRole != CommandOccurrenceRole.Ordinary
-            || first.WorkingDirectoryEffect is not ShellWorkingDirectoryEffect.ChangesOnSuccess
+        if (first.WorkingDirectoryEffect is not ShellWorkingDirectoryEffect.ChangesOnSuccess
             { Target: ShellValueDomain.Exact exact }
-            || first.Ancestry.Count != 2
-            || first.Ancestry[0] is not { Ancestor: ShellBlockSyntax, Region: CommandAncestryRegion.Root }
-            || first.Ancestry[1] is not
-            { Ancestor: CommandListSyntax list, Region: CommandAncestryRegion.Statement, ChildIndex: 0 }
+            || !BashCausalApprovalIntent.TryGetListItem(first, 0, out var list)
             || list.Items.Count < 2
-            || list.Items[0] is not { Operator: CompoundOperator.None, Command: SimpleCommandSyntax simple }
-            || !ReferenceEquals(simple.Clause, first.Clause)
+            || list.Items[0].Operator != CompoundOperator.None
             || list.Items[1].Operator != CompoundOperator.AndIf
             || exact.Value.Any(char.IsControl)
             || !CanonicalPath.TryCreate(exact.Value, relativeBase: null, ShellPathStyle.Posix, out var target)

@@ -616,7 +616,6 @@ public partial class DispatchingToolExecutorTests
         var markerPath = Path.Combine(Path.GetTempPath(), $"netclaw-approval-{Guid.NewGuid():N}");
         var command = $"touch {markerPath} <(true)";
         var arguments = ToolInput.Create("Command", command);
-        Assert.False(ShellTokenizer.IsMessyCompoundCommand(command));
         var matcher = new ShellApprovalMatcher(
             ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux));
         Assert.Empty(matcher.ExtractCandidates(new ToolName("shell_execute"), arguments));

@@ -195,7 +195,16 @@ public sealed class ShellCommandPolicy
             return denyOnlyDecision;
 
         if (analysis.Failure == ShellAnalysisFailure.Unresolved || analysis.Commands.Count == 0)
-            return EvaluateLegacySegments(analysis.Source);
+        {
+            // The raw-text scan decides first, so every denial of the legacy
+            // scan keeps its reason. The parser screen then checks each Bash
+            // list element, which the scan does not split.
+            var legacyDecision = EvaluateLegacySegments(analysis.Source);
+            if (!legacyDecision.Allowed)
+                return legacyDecision;
+
+            return EvaluateClauses(analysis.ScreenClauses);
+        }
 
         foreach (var occurrence in analysis.Commands)
         {
@@ -220,15 +229,32 @@ public sealed class ShellCommandPolicy
         return ShellCommandDecision.Allow();
     }
 
+    private ShellCommandDecision EvaluateClauses(IReadOnlyList<ShellSyntaxTree.Clause> clauses)
+    {
+        foreach (var clause in clauses)
+        {
+            var decision = EvaluateClause(clause);
+            if (!decision.Allowed)
+                return decision;
+        }
+
+        return ShellCommandDecision.Allow();
+    }
+
     private ShellCommandDecision EvaluateLegacySegments(string command)
     {
         // The approval matcher does not persist unresolved syntax. Keep the
         // legacy scan here so known deny forms still fail at this boundary.
-        foreach (var segment in ShellTokenizer.GetAllCommandSegments(command))
+        foreach (var segment in LegacyShellTextScan.GetAllCommandSegments(command))
         {
-            var decision = EvaluateSegment(segment);
-            if (!decision.Allowed)
-                return decision;
+            var tokens = LegacyShellTextScan.Tokenize(segment)
+                .Select(static token => DenyToken.Known(token))
+                .ToList();
+            foreach (var pattern in _denyPatterns)
+            {
+                if (pattern.Matches(tokens))
+                    return ShellCommandDecision.Deny(pattern.Reason, pattern.Category);
+            }
         }
 
         return ShellCommandDecision.Allow();
@@ -239,23 +265,6 @@ public sealed class ShellCommandPolicy
         foreach (var pattern in _rawStringPatterns)
         {
             if (command.Contains(pattern.Pattern, StringComparison.Ordinal))
-                return ShellCommandDecision.Deny(pattern.Reason, pattern.Category);
-        }
-
-        return ShellCommandDecision.Allow();
-    }
-
-    private ShellCommandDecision EvaluateSegment(string segment)
-    {
-        var tokens = ShellTokenizer.Tokenize(segment)
-            .Select(static token => DenyToken.Known(token))
-            .ToList();
-        if (tokens.Count == 0)
-            return ShellCommandDecision.Allow();
-
-        foreach (var pattern in _denyPatterns)
-        {
-            if (pattern.Matches(tokens))
                 return ShellCommandDecision.Deny(pattern.Reason, pattern.Category);
         }
 
@@ -341,7 +350,7 @@ public sealed class ShellCommandPolicy
 
     private static DenyPattern? ParseDenyPattern(string raw)
     {
-        var tokens = ShellTokenizer.Tokenize(raw).ToList();
+        var tokens = LegacyShellTextScan.Tokenize(raw).ToList();
         if (tokens.Count == 0)
             return null;
 
@@ -467,7 +476,7 @@ public sealed class ShellCommandPolicy
                 if (!tokens[i].IsKnown)
                     return false;
 
-                var tokenVerb = ShellTokenizer.TrimShellPunctuation(tokens[i].Value);
+                var tokenVerb = LegacyShellTextScan.TrimShellPunctuation(tokens[i].Value);
                 if (!string.Equals(tokenVerb, VerbChain[i], StringComparison.OrdinalIgnoreCase))
                     return false;
             }
@@ -494,7 +503,7 @@ public sealed class ShellCommandPolicy
             {
                 var token = tokens[i];
                 var value = token.IsKnown ? token.Value : token.AuthoredValue;
-                var normalized = ShellTokenizer.TrimShellPunctuation(value);
+                var normalized = LegacyShellTextScan.TrimShellPunctuation(value);
                 if (!string.Equals(
                         normalized,
                         VerbChain[i],
@@ -522,7 +531,7 @@ public sealed class ShellCommandPolicy
             if (tokens.Count == 0 || !tokens[0].IsKnown)
                 return false;
 
-            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0].Value);
+            var verb = LegacyShellTextScan.TrimShellPunctuation(tokens[0].Value);
             return verb.StartsWith(Prefix, StringComparison.OrdinalIgnoreCase);
         }
     }
@@ -544,7 +553,7 @@ public sealed class ShellCommandPolicy
             if (tokens.Count == 0 || !tokens[0].IsKnown)
                 return false;
 
-            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0].Value);
+            var verb = LegacyShellTextScan.TrimShellPunctuation(tokens[0].Value);
             return KillVerbs.Contains(verb);
         }
     }
@@ -567,7 +576,7 @@ public sealed class ShellCommandPolicy
             if (tokens.Count == 0 || !tokens[0].IsKnown)
                 return false;
 
-            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0].Value);
+            var verb = LegacyShellTextScan.TrimShellPunctuation(tokens[0].Value);
             if (EscalationVerbs.Contains(verb))
                 return true;
 
@@ -579,7 +588,7 @@ public sealed class ShellCommandPolicy
                 if (!tokens[i].IsKnown)
                     continue;
 
-                var token = ShellTokenizer.TrimShellPunctuation(tokens[i].Value);
+                var token = LegacyShellTextScan.TrimShellPunctuation(tokens[i].Value);
                 if (!TryReadParameter(token, out var parameterName, out var inlineValue)
                     || !IsParameterAbbreviation(parameterName, "Verb"))
                 {
@@ -603,7 +612,7 @@ public sealed class ShellCommandPolicy
 
         private static bool IsRunAsValue(string token)
             => string.Equals(
-                TrimStaticQuotes(ShellTokenizer.TrimShellPunctuation(token)),
+                TrimStaticQuotes(LegacyShellTextScan.TrimShellPunctuation(token)),
                 "RunAs",
                 StringComparison.OrdinalIgnoreCase);
     }
@@ -619,7 +628,7 @@ public sealed class ShellCommandPolicy
             if (tokens.Count < 2 || !tokens[0].IsKnown)
                 return false;
 
-            var verb = ShellTokenizer.TrimShellPunctuation(tokens[0].Value);
+            var verb = LegacyShellTextScan.TrimShellPunctuation(tokens[0].Value);
             var isBashRemove = string.Equals(verb, "rm", StringComparison.OrdinalIgnoreCase);
             var isPowerShellRemove = string.Equals(
                 verb,
@@ -688,7 +697,7 @@ public sealed class ShellCommandPolicy
 
         private static bool IsDangerousRemoveTarget(string token)
         {
-            token = TrimStaticQuotes(ShellTokenizer.TrimShellPunctuation(token));
+            token = TrimStaticQuotes(LegacyShellTextScan.TrimShellPunctuation(token));
             if (TryReadParameter(token, out _, out var inlineValue))
             {
                 if (inlineValue is null)
@@ -719,7 +728,7 @@ public sealed class ShellCommandPolicy
 
         private static bool IsAuthoredHomeVariable(string token)
         {
-            var trimmed = TrimStaticQuotes(ShellTokenizer.TrimShellPunctuation(token))
+            var trimmed = TrimStaticQuotes(LegacyShellTextScan.TrimShellPunctuation(token))
                 .TrimEnd('/', '\\');
             return trimmed is "$HOME" or "${HOME}"
                 or "$env:USERPROFILE" or "${env:USERPROFILE}";
@@ -791,12 +800,12 @@ public sealed class ShellCommandPolicy
     private static bool IsExactlyAuthoredFalse(string value, string authoredValue)
     {
         if (!TryReadParameter(
-                ShellTokenizer.TrimShellPunctuation(value),
+                LegacyShellTextScan.TrimShellPunctuation(value),
                 out _,
                 out var decodedValue)
             || !IsBooleanFalse(decodedValue)
             || !TryReadParameter(
-                ShellTokenizer.TrimShellPunctuation(authoredValue),
+                LegacyShellTextScan.TrimShellPunctuation(authoredValue),
                 out _,
                 out var rawValue))
         {
@@ -847,7 +856,7 @@ public sealed class ShellCommandPolicy
                 if (!tokens[i].IsKnown)
                     return false;
 
-                var tokenVerb = ShellTokenizer.TrimShellPunctuation(tokens[i].Value);
+                var tokenVerb = LegacyShellTextScan.TrimShellPunctuation(tokens[i].Value);
                 if (!string.Equals(tokenVerb, VerbChain[i], StringComparison.OrdinalIgnoreCase))
                     return false;
             }
