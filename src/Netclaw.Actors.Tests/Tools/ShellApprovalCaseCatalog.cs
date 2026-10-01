@@ -215,14 +215,16 @@ internal sealed record ExpectedApproval(
             approvalChecks,
             approvalMatches);
 
-    public static ExpectedApproval Deny(string reason)
+    // A denial makes no grant lookup, except the trusted-root denial of an
+    // unattended call in Approval mode: there a stored grant can decide (PR 6e).
+    public static ExpectedApproval Deny(string reason, int approvalChecks = 0)
         => new(
             ApprovalOutcome.Denied,
             null,
             reason,
             [],
             null,
-            0,
+            approvalChecks,
             []);
 }
 
@@ -289,6 +291,57 @@ public static class ShellApprovalCases
             Bash("git ls-tree feature", ApprovalDirectoryShape.External),
             Approvals.PersistentHere(ApprovalDirectoryShape.External, "git ls-tree"),
             ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:git ls-tree feature")),
+        // PR 6e: in an unattended run, a stored grant decides outside the trusted roots.
+        Case(
+            "unattended-external-grant-allows",
+            Bash("git ls-tree feature", ApprovalDirectoryShape.External, interactive: false),
+            Approvals.PersistentHere(ApprovalDirectoryShape.External, "git ls-tree"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:git ls-tree feature")),
+        Case(
+            "unattended-external-without-grant-denies",
+            Bash("git ls-tree feature", ApprovalDirectoryShape.External, interactive: false),
+            Approvals.None,
+            ExpectedApproval.Deny("shell_working_directory_outside_trust_zone", approvalChecks: 1)),
+        // Prose with a path outside the trusted roots has no valid verb facts, so no
+        // grant lookup runs and the trusted-root denial stays.
+        Case(
+            "unattended-prose-outside-path-denies-without-lookup",
+            Bash("I'm speaking at Stir Trek 2026 - I fly out of IAH. What's the best flight / hotel combination for me?", interactive: false),
+            Approvals.None,
+            ExpectedApproval.Deny("shell_path_outside_trust_zone")),
+        // The directory proof of a ";" or "||" list screens each slice. A stored grant
+        // decides there too, after hard deny and protected text (PR 6e).
+        Case(
+            "unattended-cd-semicolon-grant-allows",
+            Bash("cd /netclaw-approval-external/cd-list; make", interactive: false),
+            Approvals.PersistentAnywhere("cd", "make"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:cd", "persistent:make", "persistent:make")),
+        Case(
+            "unattended-cd-or-exit-grant-allows",
+            Bash("cd /netclaw-approval-external/cd-list || exit 1; make", interactive: false),
+            Approvals.PersistentAnywhere("cd", "exit", "make"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:cd", "persistent:exit", "persistent:make", "persistent:make")),
+        Case(
+            "unattended-cd-semicolon-without-grant-denies",
+            Bash("cd /netclaw-approval-external/cd-list; make", interactive: false),
+            Approvals.None,
+            ExpectedApproval.Deny("shell_path_outside_trust_zone", approvalChecks: 1)),
+        Case(
+            "unattended-cd-or-exit-without-grant-denies",
+            Bash("cd /netclaw-approval-external/cd-list || exit 1; make", interactive: false),
+            Approvals.None,
+            ExpectedApproval.Deny("shell_path_outside_trust_zone", approvalChecks: 1)),
+        Case(
+            "unattended-cd-semicolon-protected-slice-denies",
+            Bash("cd /netclaw-approval-external/cd-list; cat ~/.netclaw/config/secrets.json", interactive: false),
+            Approvals.PersistentAnywhere("cd", "cat"),
+            ExpectedApproval.Deny("shell_references_protected_path")),
+        // An approval-exempt command has no grant, so the call stays denied.
+        Case(
+            "unattended-external-grant-with-exempt-command-denies",
+            Bash("git ls-tree feature; echo done", ApprovalDirectoryShape.External, interactive: false),
+            Approvals.PersistentHere(ApprovalDirectoryShape.External, "git ls-tree"),
+            ExpectedApproval.Deny("shell_working_directory_outside_trust_zone", approvalChecks: 1)),
         Case(
             "safe-verb-context-project-fallback-allows",
             Bash("cat src/readme.txt", ApprovalDirectoryShape.None),
