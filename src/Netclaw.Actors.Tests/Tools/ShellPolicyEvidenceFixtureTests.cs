@@ -133,23 +133,27 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
         PolicyAdversarialCase policyCase)
     {
         // The archived fixture keeps the prior exact-only result.
-        // These rows state the current finite-scope contract.
+        // These rows state the current finite-scope contract. The reviewed
+        // catalog covers a cd into the project, so only L12, L15, L18, and L21
+        // still list cd: their cd leaves the project or targets a new directory.
         // macOS resolves /tmp through a link, so the redirect paths in L17 stay exact.
         if (OperatingSystem.IsMacOS() && policyCase.Id == "L17")
             return policyCase.Expected;
 
+        // The Windows bundled catalog has no cd entry, so L22 keeps cd on a Windows host.
+        var windowsHost = OperatingSystem.IsWindows();
         List<string>? candidates = policyCase.Id switch
         {
             "L12" => ["mkdir", "cd", "git clone"],
-            "L14" => ["cd", "git remote", "git fetch origin", "git fetch upstream"],
+            "L14" => ["git remote", "git fetch origin", "git fetch upstream"],
             "L15" => ["cd", "find", "head"],
-            "L16" => ["cd", "git add", "git rebase"],
-            "L17" => ["cd", "git diff", "sort", "comm"],
+            "L16" => ["git add", "git rebase"],
+            "L17" => ["git diff", "sort", "comm"],
             "L18" => ["cd", "ls", "head"],
             "L21" => ["cd", "git log", "grep"],
-            "L22" => ["cd", "python3"],
-            "L29" => ["cd", "docker compose config", "git diff"],
-            "L30" => ["cd", "sed", "git show"],
+            "L22" => windowsHost ? ["cd", "python3"] : ["python3"],
+            "L29" => ["docker compose config", "git diff"],
+            "L30" => ["sed", "git show"],
             _ => null
         };
         if (candidates is null)
