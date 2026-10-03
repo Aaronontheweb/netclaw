@@ -215,6 +215,17 @@ internal sealed record ExpectedApproval(
             approvalChecks,
             approvalMatches);
 
+    // A correction asks the model for a different call. The call does not run.
+    public static ExpectedApproval Correct(int approvalChecks = 1, params string[] approvalMatches)
+        => new(
+            ApprovalOutcome.RequiresAgentCorrection,
+            null,
+            null,
+            [],
+            null,
+            approvalChecks,
+            approvalMatches);
+
     // A denial makes no grant lookup, except the trusted-root denial of an
     // unattended call in Approval mode: there a stored grant can decide (PR 6e).
     public static ExpectedApproval Deny(string reason, int approvalChecks = 0)
@@ -286,17 +297,19 @@ public static class ShellApprovalCases
             Bash("git ls-tree feature", ApprovalDirectoryShape.External),
             Approvals.None,
             ExpectedApproval.Require(["git ls-tree feature"])),
+        // #2306: the command words are "git ls-tree feature", so a "git ls-tree" grant does not cover them.
         Case(
             "safe-git-ls-tree-external-reuses-canonical-grant",
             Bash("git ls-tree feature", ApprovalDirectoryShape.External),
             Approvals.PersistentHere(ApprovalDirectoryShape.External, "git ls-tree"),
-            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:git ls-tree feature")),
+            ExpectedApproval.Require(["git ls-tree feature"], false, 1)),
         // PR 6e: in an unattended run, a stored grant decides outside the trusted roots.
+        // #2306: the command words are "git ls-tree feature", so a "git ls-tree" grant does not cover them.
         Case(
             "unattended-external-grant-allows",
             Bash("git ls-tree feature", ApprovalDirectoryShape.External, interactive: false),
             Approvals.PersistentHere(ApprovalDirectoryShape.External, "git ls-tree"),
-            ExpectedApproval.Allow(ApprovalAllowReason.StoredApprovalOutsideTrustedRoots, 1, "persistent:git ls-tree feature")),
+            ExpectedApproval.Deny("shell_working_directory_outside_trust_zone", approvalChecks: 1)),
         Case(
             "unattended-external-without-grant-denies",
             Bash("git ls-tree feature", ApprovalDirectoryShape.External, interactive: false),
@@ -510,11 +523,12 @@ public static class ShellApprovalCases
             Approvals.None,
             ExpectedApproval.Require(["git branch", "git remote", "git log"])),
 
+        // #2306: the loop variable in the verb slot gives Unknown command words, so the model gets a rewrite correction.
         Case(
             "live-finite-url-loop-prompts-with-reusable-phrase",
             Bash("for url in /api/first /api/second; do echo \"=== $url ===\"; curl -sS -m 10 \"$url\" | head -c 1500; echo; done"),
             Approvals.None,
-            ExpectedApproval.Require(["curl"], isMessy: false)),
+            ExpectedApproval.Correct()),
 
         Case(
             "gh-run-diagnostic-exit-status-prompts-without-grant",
@@ -647,11 +661,12 @@ public static class ShellApprovalCases
             Bash("ls *.txt"),
             Approvals.None,
             ExpectedApproval.Allow(ApprovalAllowReason.ReviewedSafePolicy)),
+        // #2306: a bare glob in the verb slot gives Unknown command words, so the model gets a rewrite correction.
         Case(
             "local-glob-reuses-project-grant",
             Bash("rm *.tmp"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "rm"),
-            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:rm")),
+            ExpectedApproval.Correct()),
         Case(
             // Use an isolated temp subdirectory as the covering directory, not
             // the shared system temp root: a symlink child there (e.g. an IDE
@@ -695,11 +710,12 @@ public static class ShellApprovalCases
             Bash("ls -d subdirs/*/ | xargs -n1 basename", ApprovalDirectoryShape.External),
             Approvals.None,
             ExpectedApproval.Require(["ls", "xargs"], isMessy: false)),
+        // #2306: the command words of "git --no-pager status" are "git status", so the grant covers it.
         Case(
             "native-global-option-identity-gap-currently-prompts",
             Bash("git --no-pager status"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "git status"),
-            ExpectedApproval.Require(["git"])),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:git")),
 
         Case(
             "semicolon-sequence-prompts",
@@ -881,6 +897,7 @@ public static class ShellApprovalCases
             PowerShell7(@"& { Remove-Item .\victim.txt }"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "Remove-Item"),
             ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:Remove-Item")),
+        // #2306: the script block gives Unknown command words, so no grant covers ForEach-Object.
         Case(
             "powershell7-callback-region-reuses-host-and-body-grants",
             PowerShell7(@"Get-ChildItem | ForEach-Object { Remove-Item .\victim.txt }"),
@@ -888,20 +905,15 @@ public static class ShellApprovalCases
                 ApprovalDirectoryShape.Project,
                 "ForEach-Object",
                 "Remove-Item"),
-            ExpectedApproval.Allow(
-                ApprovalAllowReason.StoredApproval,
-                1,
-                "persistent:ForEach-Object",
-                "persistent:Remove-Item")),
+            ExpectedApproval.Require(["ForEach-Object"], false, 1, "persistent:Remove-Item")),
+        // #2306: the script block gives Unknown command words, so no grant covers ForEach-Object.
         Case(
             "powershell7-callback-region-host-grant-does-not-cover-body",
             PowerShell7(@"Get-ChildItem | ForEach-Object { Remove-Item .\victim.txt }"),
             Approvals.PersistentHere(
                 ApprovalDirectoryShape.Project,
                 "ForEach-Object"),
-            ExpectedApproval.Require(
-                ["Remove-Item"],
-                approvalMatches: ["persistent:ForEach-Object"])),
+            ExpectedApproval.Require(["ForEach-Object", "Remove-Item"], false, 1)),
         Case(
             "powershell7-callback-region-body-grant-does-not-cover-host",
             PowerShell7(@"Get-ChildItem | ForEach-Object { Remove-Item .\victim.txt }"),
@@ -916,16 +928,14 @@ public static class ShellApprovalCases
             PowerShell7("Get-ChildItem | ForEach-Object { $_.FullName }"),
             Approvals.None,
             ExpectedApproval.Require(["ForEach-Object"])),
+        // #2306: the script block gives Unknown command words, so no grant covers ForEach-Object.
         Case(
             "powershell7-expression-region-reuses-host-grant",
             PowerShell7("Get-ChildItem | ForEach-Object { $_.FullName }"),
             Approvals.PersistentHere(
                 ApprovalDirectoryShape.Project,
                 "ForEach-Object"),
-            ExpectedApproval.Allow(
-                ApprovalAllowReason.StoredApproval,
-                1,
-                "persistent:ForEach-Object")),
+            ExpectedApproval.Require(["ForEach-Object"], false, 1)),
         Case(
             "powershell7-expression-region-rejects-wrong-scope-grant",
             PowerShell7("Get-ChildItem | ForEach-Object { $_.FullName }"),
@@ -933,16 +943,14 @@ public static class ShellApprovalCases
                 ApprovalDirectoryShape.External,
                 "ForEach-Object"),
             ExpectedApproval.Require(["ForEach-Object"])),
+        // #2306: the script block gives Unknown command words, so no grant covers ForEach-Object.
         Case(
             "powershell7-split-index-join-region-reuses-host-grant",
             PowerShell7("Get-ChildItem | ForEach-Object { ($_ -split '/')[0..3] -join '/' }"),
             Approvals.PersistentHere(
                 ApprovalDirectoryShape.Project,
                 "ForEach-Object"),
-            ExpectedApproval.Allow(
-                ApprovalAllowReason.StoredApproval,
-                1,
-                "persistent:ForEach-Object")),
+            ExpectedApproval.Require(["ForEach-Object"], false, 1)),
         Case(
             "powershell7-dynamic-split-index-join-region-stays-strict",
             PowerShell7("Get-ChildItem | ForEach-Object { ($_ -split $separator)[0] -join '/' }"),
@@ -950,16 +958,14 @@ public static class ShellApprovalCases
                 ApprovalDirectoryShape.Project,
                 "ForEach-Object"),
             ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        // #2306: the script block gives Unknown command words, so no grant covers ForEach-Object.
         Case(
             "powershell51-split-index-join-fallback-reuses-host-grant",
             WindowsPowerShell51("Get-ChildItem | ForEach-Object { ($_ -split '/')[0..3] -join '/' }"),
             Approvals.PersistentHere(
                 ApprovalDirectoryShape.Project,
                 "ForEach-Object"),
-            ExpectedApproval.Allow(
-                ApprovalAllowReason.StoredApproval,
-                1,
-                "persistent:ForEach-Object")),
+            ExpectedApproval.Require(["ForEach-Object"], false, 1)),
         Case(
             "powershell51-dynamic-split-index-join-fallback-stays-strict",
             WindowsPowerShell51("Get-ChildItem | ForEach-Object { ($_ -split $separator)[0] -join '/' }"),
@@ -1032,14 +1038,12 @@ public static class ShellApprovalCases
             PowerShell7("Get-ChildItem |"),
             Approvals.PersistentAnywhere("Get-ChildItem"),
             ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        // #2306: reviewed-safe policy covers the read; the grant is not needed.
         Case(
             "powershell7-foreach-public-path-facts-reuse",
             PowerShell7("foreach ($f in @('a.txt', 'b.txt')) { Get-Content -LiteralPath $f }"),
             Approvals.PersistentAnywhere("Get-Content"),
-            ExpectedApproval.Allow(
-                ApprovalAllowReason.StoredApproval,
-                approvalChecks: 1,
-                "persistent:Get-Content")),
+            ExpectedApproval.Allow(ApprovalAllowReason.ReviewedSafePolicy, 1)),
         Case(
             "powershell7-foreach-mutation-inherited-state-prompts",
             PowerShell7("foreach ($f in @('a.txt', 'b.txt')) { Remove-Item -LiteralPath $f }"),
@@ -1080,14 +1084,12 @@ public static class ShellApprovalCases
             WindowsPowerShell51(@"Set-Location C:\Temp; Get-Content result.log"),
             Approvals.PersistentAnywhere("Set-Location", "Get-Content"),
             ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        // #2306: reviewed-safe policy covers the read; the grant is not needed.
         Case(
             "powershell51-foreach-public-path-facts-reuse",
             WindowsPowerShell51("foreach ($f in @('a.txt', 'b.txt')) { Get-Content -LiteralPath $f }"),
             Approvals.PersistentAnywhere("Get-Content"),
-            ExpectedApproval.Allow(
-                ApprovalAllowReason.StoredApproval,
-                approvalChecks: 1,
-                "persistent:Get-Content")),
+            ExpectedApproval.Allow(ApprovalAllowReason.ReviewedSafePolicy, 1)),
         Case(
             "powershell51-foreach-child-grant-does-not-cover-unknown-state",
             WindowsPowerShell51("powershell.exe -NoProfile -NonInteractive -Command 'foreach ($f in @(\"a.txt\", \"b.txt\")) { Remove-Item -LiteralPath $f }'"),
@@ -1278,17 +1280,12 @@ public static class ShellApprovalCases
             Bash("cd /netclaw-approval-external/cd-list && gh api repos/example/project > result.log; wc -c result.log"),
             Approvals.None,
             ExpectedApproval.Require(["cd", "gh api"])),
+        // #2306: a bare glob in the verb slot gives Unknown command words, so the model gets a rewrite correction.
         Case(
             "cd-causal-list-diagnostic-reuses-stored-grant",
             Bash("cd /netclaw-approval-external/cd-list && inspect; cat *.md"),
             Approvals.PersistentAnywhere("cd", "inspect", "cat"),
-            ExpectedApproval.Allow(
-                ApprovalAllowReason.StoredApproval,
-                1,
-                "persistent:cd",
-                "persistent:inspect",
-                "persistent:cat",
-                "persistent:cat")),
+            ExpectedApproval.Correct(1, "persistent:cd", "persistent:inspect")),
         Case(
             "cd-causal-list-reviewed-diagnostic-keeps-intent-coverage",
             Bash("cd /netclaw-approval-external/cd-list && gh api repos/example/project > result.log 2>&1; wc -c result.log; head -100 result.log"),
@@ -1298,18 +1295,18 @@ public static class ShellApprovalCases
                 1,
                 "persistent:cd",
                 "persistent:gh api")),
+        // #2306: a bare glob in the verb slot gives Unknown command words, so the model gets a rewrite correction.
         Case(
             "cd-causal-list-folder-grant-outside-target-prompts",
             Bash("cd /netclaw-approval-external/cd-list && inspect; cat *.md"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "cd", "inspect", "cat"),
-            ExpectedApproval.Require(["cd", "inspect", "cat"], approvalMatches: "persistent:cat")),
+            ExpectedApproval.Correct()),
+        // #2306: a bare glob in the verb slot gives Unknown command words, so the model gets a rewrite correction.
         Case(
             "cd-alternate-branch-prompts-for-the-other-branch",
             Bash("cd /netclaw-approval-external/cd-list && inspect || recover; cat *.md"),
             Approvals.PersistentAnywhere("cd", "inspect", "cat"),
-            ExpectedApproval.Require(
-                ["recover"],
-                approvalMatches: ["persistent:cd", "persistent:inspect", "persistent:cat", "persistent:cat"])),
+            ExpectedApproval.Correct(1, "persistent:cd", "persistent:inspect")),
         Case(
             "cd-dynamic-target-stays-one-time",
             Bash("cd \"$TARGET\" && inspect; cat *.md"),

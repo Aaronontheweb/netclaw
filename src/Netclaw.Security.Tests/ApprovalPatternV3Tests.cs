@@ -17,12 +17,14 @@ public sealed class ApprovalPatternV3Tests
     private static readonly ApprovalEntry BashGitPush =
         ApprovalEntry.CreateTokenPrefix(ApprovalShell.Bash, ["git", "push"]);
 
+    // A grant covers exactly its verb chain (#2306): only the equal chain matches.
     [Theory]
-    [InlineData("git push", new[] { "git", "push" })]
-    [InlineData("git push origin", new[] { "git", "push", "origin" })]
+    [InlineData("git push", new[] { "git", "push" }, true)]
+    [InlineData("git push origin", new[] { "git", "push", "origin" }, false)]
     public void Token_prefix_matches_complete_candidate_prefix(
         string verb,
-        string[] tokens)
+        string[] tokens,
+        bool expected)
     {
         var candidate = new ApprovalCandidate(verb, Directory: null)
         {
@@ -30,7 +32,7 @@ public sealed class ApprovalPatternV3Tests
             Shell = ApprovalShell.Bash,
         };
 
-        Assert.True(ApprovalPatternMatching.MatchesShellApproval(
+        Assert.Equal(expected, ApprovalPatternMatching.MatchesShellApproval(
             candidate,
             cwd: null,
             [BashGitPush]));
@@ -113,7 +115,70 @@ public sealed class ApprovalPatternV3Tests
             Shell = ApprovalShell.Bash,
         };
 
-        Assert.True(ApprovalPatternMatching.MatchesShellApproval(
+        // The parser chain "git ls-tree feature" is longer than the grant (#2306).
+        Assert.False(ApprovalPatternMatching.MatchesShellApproval(
+            candidate,
+            cwd: null,
+            [grant]));
+    }
+
+    // A grant covers exactly its verb chain. It never covers a longer chain.
+    [Theory]
+    [InlineData("git push origin", new[] { "git", "push", "origin" })]
+    [InlineData("git push origin main", new[] { "git", "push", "origin", "main" })]
+    public void Token_grant_does_not_match_a_longer_verb_chain(
+        string verb,
+        string[] tokens)
+    {
+        var candidate = new ApprovalCandidate(verb, Directory: null)
+        {
+            VerbTokens = Array.AsReadOnly(tokens),
+            Shell = ApprovalShell.Bash,
+        };
+
+        Assert.False(ApprovalPatternMatching.MatchesShellApproval(
+            candidate,
+            cwd: null,
+            [BashGitPush]));
+    }
+
+    // Policy data gives echo and which a one-token chain, so the parser's
+    // folded word is an argument. gh has no such policy, so "gh auth" is a chain.
+    [Theory]
+    [InlineData("echo", new[] { "echo", "hi" }, true)]
+    [InlineData("which", new[] { "which", "gh" }, true)]
+    [InlineData("gh", new[] { "gh", "auth" }, false)]
+    public void Bare_program_grant_covers_folded_operands_only_for_single_token_programs(
+        string program,
+        string[] tokens,
+        bool expected)
+    {
+        var grant = ApprovalEntry.CreateTokenPrefix(ApprovalShell.Bash, [program]);
+        var candidate = new ApprovalCandidate(program, Directory: null)
+        {
+            VerbTokens = Array.AsReadOnly(tokens),
+            Shell = ApprovalShell.Bash,
+        };
+
+        Assert.Equal(expected, ApprovalPatternMatching.MatchesShellApproval(candidate, cwd: null, [grant]));
+    }
+
+    // A legacy phrase also needs the whole chain of the candidate tokens.
+    [Theory]
+    [InlineData(new[] { "git", "push", "origin" }, true)]
+    [InlineData(new[] { "git", "push", "origin", "v1.5.1" }, false)]
+    public void Legacy_exact_matches_the_whole_parser_verb_chain(string[] tokens, bool expected)
+    {
+        var grant = ApprovalEntry.CreateLegacyExact(
+            ApprovalShell.Bash,
+            "git push origin");
+        var candidate = new ApprovalCandidate("git push origin", Directory: null)
+        {
+            VerbTokens = Array.AsReadOnly(tokens),
+            Shell = ApprovalShell.Bash,
+        };
+
+        Assert.Equal(expected, ApprovalPatternMatching.MatchesShellApproval(
             candidate,
             cwd: null,
             [grant]));

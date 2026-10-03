@@ -20,7 +20,8 @@ public static class ShellApprovalGrantParser
     /// <summary>
     /// Parses one exact static grant phrase. This method does not accept all
     /// legal shell spellings or analyze a runtime command string. Extra source
-    /// text fails instead of broadening the stored token prefix.
+    /// text fails instead of changing the stored command words. The grant covers
+    /// a call only when the call's command words equal these words.
     /// </summary>
     public static bool TryCreateTokenPrefix(
         ApprovalShell shell,
@@ -160,7 +161,14 @@ public static class ShellApprovalGrantParser
             return false;
         }
 
-        var tokens = clause.Verb.Tokens.ToArray();
+        // The same identity as a call: the command words of the phrase.
+        if (occurrence.CommandWords is not ShellCommandWords.Known { Words: { Count: > 0 } words })
+        {
+            error = "The shell phrase must have known command words.";
+            return false;
+        }
+
+        var tokens = words.ToArray();
         if (clause.Verb.CanonicalVerb is { Length: > 0 } canonicalVerb)
         {
             tokens[0] = canonicalVerb;

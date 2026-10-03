@@ -233,36 +233,79 @@ public static class ApprovalPatternMatching
             return ToolApprovalEntryComparer.Equals(entry.Verb, candidate.Verb);
         }
 
-        if (entry.Shell is { } entryShell && candidate.Shell != entryShell)
+        if (entry.Shell is not { } entryShell
+            || candidate.Shell != entryShell
+            || candidate.VerbTokens is not { Count: > 0 }
+            || candidate.VerbTokens.Any(static token =>
+                token.Length == 0 || token.Any(char.IsWhiteSpace)))
         {
             return false;
         }
 
-        if (entry.Match == ApprovalMatchKind.LegacyExact)
+        return entry.Match switch
         {
-            return ToolApprovalEntryComparer.Equals(
-                entry.Verb,
-                candidate.Verb,
-                entry.Shell!.Value);
-        }
+            // The legacy phrase is the space-joined command words, and it must
+            // equal all of them: "git push origin" does not cover "git push origin main".
+            // It also must equal the display verb, as before, so the command
+            // words never widen a legacy phrase past the older matcher.
+            ApprovalMatchKind.LegacyExact =>
+                ToolApprovalEntryComparer.Equals(entry.Verb, candidate.Verb, entryShell)
+                && MatchesChain(entry.Verb.Split(' ', StringSplitOptions.RemoveEmptyEntries), candidate.VerbTokens, entryShell),
+            ApprovalMatchKind.TokenPrefix when entry.VerbTokens is { } grantTokens =>
+                MatchesChain(grantTokens, candidate.VerbTokens, entryShell),
+            _ => false,
+        };
+    }
 
-        if (entry.Match != ApprovalMatchKind.TokenPrefix ||
-            candidate.Shell is null ||
-            candidate.VerbTokens is null ||
-            entry.VerbTokens is null ||
-            candidate.VerbTokens.Any(static token =>
-                token.Length == 0 || token.Any(char.IsWhiteSpace)) ||
-            entry.VerbTokens.Count > candidate.VerbTokens.Count)
-        {
+    private static bool MatchesChain(
+        IReadOnlyList<string> grantTokens,
+        IReadOnlyList<string> candidateTokens,
+        ApprovalShell shell)
+        => VerbChainEquals(grantTokens, candidateTokens, shell)
+           || IsSingleTokenProgramGrant(grantTokens, candidateTokens, shell);
+
+    /// <summary>
+    /// True when a bare-program grant names a program that policy data gives a
+    /// one-token verb chain (<c>echo</c>, <c>which</c>, <c>jq</c>). The command
+    /// words keep a plain operand (<c>echo hi</c>), but policy treats that word
+    /// as an argument, as <see cref="ShellVerbPolicyData.ApplyVerbShortCircuit"/> does.
+    /// </summary>
+    private static bool IsSingleTokenProgramGrant(
+        IReadOnlyList<string> grantTokens,
+        IReadOnlyList<string> candidateTokens,
+        ApprovalShell shell)
+        => grantTokens.Count == 1
+           && ShellVerbPolicyData.HasSingleTokenVerbChain(grantTokens[0])
+           && ToolApprovalEntryComparer.Equals(grantTokens[0], candidateTokens[0], shell);
+
+    /// <summary>
+    /// True when a grant's tokens equal the candidate's command words.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: a grant covers exactly its command words, and the arguments are
+    /// free. A grant never covers other words: a <c>gh</c> grant covers
+    /// <c>gh --help</c>, not <c>gh auth logout</c>. The stored match kind keeps
+    /// its historical name <see cref="ApprovalMatchKind.TokenPrefix"/> so that
+    /// the version-3 store format does not change.
+    /// </remarks>
+    internal static bool VerbChainEquals(
+        IReadOnlyList<string> grantTokens,
+        IReadOnlyList<string> candidateTokens,
+        ApprovalShell shell)
+    {
+        // Focused mutation gate: run-exact-verb-chain-mutations.sh. Removal of
+        // this check restores prefix matching ("gh" would cover "gh auth logout").
+        var grantLength = grantTokens.Count;
+        var candidateLength = candidateTokens.Count;
+        if (grantLength != candidateLength)
             return false;
-        }
 
-        for (var index = 0; index < entry.VerbTokens.Count; index++)
+        for (var index = 0; index < grantLength; index++)
         {
             if (!ToolApprovalEntryComparer.Equals(
-                    entry.VerbTokens[index],
-                    candidate.VerbTokens[index],
-                    entry.Shell!.Value))
+                    grantTokens[index],
+                    candidateTokens[index],
+                    shell))
             {
                 return false;
             }

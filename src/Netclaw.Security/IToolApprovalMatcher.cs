@@ -36,7 +36,12 @@ public sealed record ApprovalCandidate(
             : null;
     }
 
-    /// <summary>The immutable parser-owned canonical verb tokens.</summary>
+    /// <summary>
+    /// The immutable command words that a shell grant must equal: the
+    /// ShellSyntaxTree <c>CommandWords</c> fact (the program, the verb slot,
+    /// and the plain words after it, in any option order). Null when the parser
+    /// cannot prove the command words, so no reusable grant can apply.
+    /// </summary>
     public IReadOnlyList<string>? VerbTokens { get; init; }
 
     /// <summary>The native shell grammar that produced the candidate.</summary>
@@ -145,6 +150,22 @@ public interface IToolApprovalMatcher
 /// units and same-language child occurrences come from the selected
 /// ShellSyntaxTree parser; unresolved syntax never creates a persistent grant.
 /// </summary>
+/// <summary>The rewrite that gives a shell command known command words.</summary>
+public enum ShellCommandWordsRewrite
+{
+    /// <summary>A bare glob can expand to a command word. Use a path pattern with a slash.</summary>
+    UsePathGlob = 0,
+
+    /// <summary>An expansion can change a command word. Write the words literally.</summary>
+    WriteWordsLiterally = 1,
+
+    /// <summary>
+    /// A brace list, word splitting, or another expansion can change the words.
+    /// Run each command separately, and write the words literally.
+    /// </summary>
+    RunCommandsSeparately = 2,
+}
+
 public sealed record ShellApprovalAnalysis(
     IReadOnlyList<string> Patterns,
     IReadOnlyList<ApprovalCandidate> Candidates,
@@ -328,32 +349,84 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             return null;
         }
 
+        var verbTokens = GetCommandWords(occurrence);
         return directories
             .Select(directory => new ApprovalCandidate(verb, directory)
             {
                 AssignmentDigest = assignmentDigest,
-                VerbTokens = GetCanonicalVerbTokens(clause),
+                VerbTokens = verbTokens,
                 Shell = shell,
                 SourceOccurrence = occurrence,
             })
             .ToArray();
     }
 
-    private static IReadOnlyList<string>? GetCanonicalVerbTokens(
-        ShellSyntaxTree.Clause clause)
+    /// <summary>
+    /// Returns the grant identity of a command: the ShellSyntaxTree command
+    /// words, or null when they are <c>Unknown</c>.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: a grant covers a call only when its words equal these words,
+    /// and the arguments are free. The parser keeps the program, the verb slot,
+    /// and the plain words after it, in any option order, so
+    /// <c>gh -R o/r pr view 1</c> and <c>gh pr view 1 -R o/r</c> both give
+    /// <c>gh pr view</c>. It skips options and their values, paths, path
+    /// patterns with <c>/</c>, words with a digit (hashes, tags, versions),
+    /// quoted text with whitespace, and, after the verb slot, expansions and
+    /// globs. A bare glob, an expansion, or a brace list in the verb slot, or a
+    /// dynamic program name, gives <c>Unknown</c>: such a word could become a
+    /// subcommand, so no grant can cover the call. A PowerShell alias uses its
+    /// canonical cmdlet name.
+    /// </remarks>
+    private static IReadOnlyList<string>? GetCommandWords(ShellSyntaxTree.CommandOccurrence occurrence)
     {
-        var tokens = clause.Verb.Tokens.ToArray();
-        if (tokens.Length == 0)
+        if (occurrence.CommandWords is not ShellSyntaxTree.ShellCommandWords.Known { Words: { Count: > 0 } words })
+            return null;
+
+        var tokens = words.ToArray();
+        if (occurrence.Clause.Verb.CanonicalVerb is { Length: > 0 } canonicalVerb)
+            tokens[0] = canonicalVerb;
+
+        return Array.AsReadOnly(tokens);
+    }
+
+    /// <summary>
+    /// Returns the rewrite that gives a command known command words, or null
+    /// when no rewrite by the model can help (for example, a dynamic program
+    /// name or a PowerShell script block). Uses general parser facts only: the
+    /// grammar and the element role, kind, and value.
+    /// </summary>
+    internal static ShellCommandWordsRewrite? ClassifyUnknownCommandWords(
+        ShellSyntaxTree.CommandOccurrence occurrence,
+        ApprovalShell shell)
+    {
+        var clause = occurrence.Clause;
+        if (occurrence.CommandWords is not ShellSyntaxTree.ShellCommandWords.Unknown
+            || !occurrence.IsComplete
+            || clause.Verb.IsDynamic
+            || clause.Verb.Tokens.Count == 0
+            || clause.Elements.Count == 0
+            || clause.Elements[0] is not { Role: ShellSyntaxTree.ClauseElementRole.Verb, Kind: ShellSyntaxTree.ArgKind.Literal })
         {
             return null;
         }
 
-        if (clause.Verb.CanonicalVerb is { Length: > 0 } canonicalVerb)
-        {
-            tokens[0] = canonicalVerb;
-        }
+        var words = clause.Elements
+            .Skip(1)
+            .Where(static element => element.Role != ShellSyntaxTree.ClauseElementRole.Redirect)
+            .ToArray();
+        if (words.Any(static element => element.Kind == ShellSyntaxTree.ArgKind.Glob && !element.Value.Contains('/', StringComparison.Ordinal)))
+            return ShellCommandWordsRewrite.UsePathGlob;
 
-        return Array.AsReadOnly(tokens);
+        // A PowerShell script block, subexpression, or array argument is normal
+        // syntax that a rewrite cannot remove, so it keeps the one-time prompt.
+        if (shell != ApprovalShell.Bash)
+            return null;
+
+        if (words.Any(static element => element.Kind is ShellSyntaxTree.ArgKind.EnvVar or ShellSyntaxTree.ArgKind.DynamicSkip))
+            return ShellCommandWordsRewrite.WriteWordsLiterally;
+
+        return ShellCommandWordsRewrite.RunCommandsSeparately;
     }
 
     private static IReadOnlyList<string?>? ResolveCommandDirectories(

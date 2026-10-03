@@ -1165,11 +1165,12 @@ public sealed class ToolAccessPolicy
         return repositories![0].CommonDirectory;
     }
 
+    // An approval-exempt output command is never saved, so it needs no command words.
     private static bool HasReusableShellPhrase(ApprovalCandidate candidate) =>
-        candidate.Shell is not null &&
-        candidate.VerbTokens is { Count: > 0 } tokens &&
-        tokens.All(static token =>
-            token.Length > 0 && !token.Any(char.IsWhiteSpace));
+        candidate.Shell is not null
+        && (ApprovalPatternMatching.IsPureSideEffect(candidate)
+            || candidate.VerbTokens is { Count: > 0 } tokens
+               && tokens.All(static token => token.Length > 0 && !token.Any(char.IsWhiteSpace)));
 
     /// <summary>
     /// Returns true when the cwd is too shallow to support a folder-scoped

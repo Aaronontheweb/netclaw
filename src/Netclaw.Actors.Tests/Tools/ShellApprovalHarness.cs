@@ -55,7 +55,8 @@ internal enum ApprovalCorrection
     ManagedTemporaryDirectory,
     NativeTool,
     ProjectDirectory,
-    ShellWorkingDirectory
+    ShellWorkingDirectory,
+    ShellCommandWords
 }
 
 /// <summary>
@@ -684,6 +685,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
                 ToolCorrection.ProjectDirectorySuggested suggestion => suggestion.Directory,
                 ToolCorrection.NativeToolSuggested suggestion => suggestion.ToolName.Value,
                 ToolCorrection.ManagedTemporaryDirectorySuggested suggestion => suggestion.Target.ManagedTemporaryDirectory,
+                ToolCorrection.ShellCommandWordsRewriteSuggested suggestion => suggestion.Rewrite.ToString(),
                 _ => null
             },
             PlatformTemporaryRoot = decision.AgentCorrection is ToolCorrection.ManagedTemporaryDirectorySuggested temporary
@@ -742,6 +744,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
             ToolCorrection.NativeToolSuggested => ApprovalCorrection.NativeTool,
             ToolCorrection.ProjectDirectorySuggested => ApprovalCorrection.ProjectDirectory,
             ToolCorrection.ShellWorkingDirectorySuggested => ApprovalCorrection.ShellWorkingDirectory,
+            ToolCorrection.ShellCommandWordsRewriteSuggested => ApprovalCorrection.ShellCommandWords,
             _ => throw new ArgumentOutOfRangeException(
                 nameof(correction), correction, "Unknown approval correction.")
         };
@@ -767,6 +770,19 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
             CreateShellCall(_toolCall.CallId, command, workingDirectory: null),
             _context,
             ct);
+
+    /// <summary>Reads the persistent shell grants that the approval actor saved.</summary>
+    public IReadOnlyList<ApprovalEntry> GetStoredShellEntries(TrustAudience audience)
+        => _services.GetRequiredService<ToolApprovalStore>().GetApprovedEntries(audience, ShellTool.ToolName);
+
+    /// <summary>Writes one persistent shell grant, for example a legacy entry from an older store.</summary>
+    public void AddStoredShellEntry(TrustAudience audience, ApprovalEntry entry)
+    {
+        var change = _services.GetRequiredService<ToolApprovalStore>()
+            .TryAddApprovals(audience, ShellTool.ToolName, [entry]);
+        if (change is not ApprovalStoreChangeResult.Completed { ChangeCount: 1 })
+            throw new InvalidOperationException($"The store did not save the seed grant: {change}.");
+    }
 
     public async Task<string> ExecuteAsync(CancellationToken ct)
     {
