@@ -10,6 +10,8 @@ This directory contains management UI planning artifacts for Netclaw.
   `netclaw chat`, and plain CLI commands
 - `chat-reply-stack-v2/index.html` - interactive Netclaw chat hierarchy,
   state, motion, and responsive mock-ups
+- `chat-reply-stack-v2/plan.html` - the October chat implementation plan,
+  current daemon contracts, PR boundaries, and proof procedures
 - `ops-console-v1.html` - static high-fidelity mockup for visual direction
 
 ## Design Intent

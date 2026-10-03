@@ -381,6 +381,13 @@ Done when:
 **Surface area:** session output, SignalR, Termina, chat command, resume, input, approvals, copy
 **Verification:** L3 plus the Termina cross-platform matrix
 
+**Current execution plan:** [October chat plan](docs/ui/chat-reply-stack-v2/plan.html)
+
+The October plan anchors this work on `dev` at `0448098a`.
+It separates durable prompt receipts, structured reply data, and the inline UI.
+Use that plan for current tasks, proof procedures, and release blockers.
+The checklist below records acceptance goals, not passed verification.
+
 The user promoted this work into `NOW`. The chat command must expose the
 daemon's structured event model through a clear developer interface.
 

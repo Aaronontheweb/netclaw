@@ -2,13 +2,16 @@
 
 Source PRDs: `PRD-004`, `PRD-009`
 
-Revised: 2026-08-12
+Revised: 2026-10-03
+
+Current execution plan: [October chat plan](chat-reply-stack-v2/plan.html).
 
 ## Design Intent
 
 Netclaw chat uses a quiet conversation grammar.
 The design gives prose priority over execution detail.
-One user prompt and one Netclaw reply form one Turn.
+One request, its steering prompts, and one Netclaw reply form one display Turn.
+The display Turn does not create another actor lifecycle.
 Each event in that exchange belongs to the same Turn.
 
 This grammar has five goals:
@@ -40,12 +43,12 @@ The Reply Block is the unit of comprehension, settlement, inspection, and copy.
 |--------|---------|----------|
 | Session Strip | Shows the session, model, context, and connection | Persistent bottom dock |
 | Transcript | Holds immutable settled Turns | Terminal scrollback |
-| Turn | Groups one user prompt and one Reply Block | Settled after the reply ends |
+| Turn | Groups a request, its steering prompts, and one Reply Block | Settled after the reply ends |
 | Reply Block | Owns Netclaw prose and all work for one Turn | Live, then immutable |
 | Reply Passage | Groups one model step with its prose and Work Trace | Nested in the Reply Block |
 | Work Trace | Shows transient thought, tool, and sub-agent activity | Nested in the Reply Block |
 | Decision Sheet | Owns one approval request and its choices | Nested in the Reply Block |
-| Queue Shelf | Shows prompts that wait behind the current Turn | Live |
+| Queue Shelf | Shows prompts until the actor pulls their identities | Live |
 | Composer | Accepts the next prompt | Live, except during a decision |
 | Pulse Line | Shows `Thinking.` state and valid keys | Live |
 | Inspector | Shows complete safe detail for one Turn or event | Temporary viewport |
@@ -153,8 +156,9 @@ Enter sends a later prompt to the session queue.
 The Queue Shelf shows each accepted prompt above the Composer.
 
 The Queue Shelf does not interrupt the current Reply Block.
-All displayed prompts enter the next model call in FIFO order.
-The session actor promotes the complete set together after the current Turn.
+The actor pulls the complete eligible set in FIFO order at a safe boundary.
+That boundary can occur between tool-loop steps.
+The Queue Shelf removes only the identities in the actor's pull receipt.
 The client does not send one queued prompt after each completed Turn.
 
 A Decision Sheet is the only state that hides the Composer.
@@ -165,6 +169,8 @@ This exception prevents prompt text from reaching an approval control.
 The Session Strip stays in the persistent bottom dock.
 It stays beside the Composer or Decision Sheet in that dock.
 The Pulse Line remains the bottom row.
+The terminal can scroll the complete live dock out of view.
+The client does not own native scrollback position.
 
 The bottom-left Pulse Line shows model wait state with this exact sequence:
 
