@@ -60,15 +60,14 @@ public sealed class DaemonClientSessionTests
     public async Task ChatViewModel_initial_resume_uses_one_session_attach()
     {
         using var host = await StartFakeHubAsync();
-        var port = TestNetworkHelpers.GetBoundPort(host);
         var state = host.Services.GetRequiredService<FakeSessionState>();
-        await using var seedClient = new DaemonClient($"http://127.0.0.1:{port}");
+        await using var seedClient = InMemorySignalRClientFactory.Create(host);
         var sessionId = await seedClient.CreateSessionAsync(
             Netclaw.Actors.Channels.ChannelType.Tui,
             TestContext.Current.CancellationToken);
         state.ResetEnsureCount();
 
-        await using var client = new DaemonClient($"http://127.0.0.1:{port}");
+        await using var client = InMemorySignalRClientFactory.Create(host);
         var navigation = new ChatNavigationState { ResumeSessionId = sessionId };
         using var viewModel = new ChatViewModel(
             client,

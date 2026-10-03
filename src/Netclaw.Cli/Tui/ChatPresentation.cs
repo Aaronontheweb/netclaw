@@ -494,7 +494,7 @@ internal static class ChatPresentationReducer
             output.ToolName.Value,
             output.Rationale,
             output.ArgumentsJson,
-            output.FailureCode is null ? "queued" : "rejected",
+            "queued",
             null,
             output.TimestampMs,
             state.CurrentTurnId,
@@ -503,7 +503,7 @@ internal static class ChatPresentationReducer
             passage.Index,
             null,
             null,
-            output.FailureCode);
+            null);
         passage = passage with { ToolCallIds = passage.ToolCallIds.Add(tool.CallId) };
         return state with
         {

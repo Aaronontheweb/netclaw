@@ -5125,7 +5125,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         {
             SessionId = _sessionId,
             CallId = response.CallId,
-            ToolName = new ToolName(pending.ToolName),
+            ToolName = new ToolName(pending.Request.ToolName),
             SelectedKey = response.SelectedKey,
             ParentCallId = markerIndex > 0 ? response.CallId.Value[..markerIndex] : string.Empty
         });

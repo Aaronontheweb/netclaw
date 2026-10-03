@@ -70,11 +70,8 @@ public sealed class ChatPresentationReducerTests
     [Fact]
     public void Invalid_rationale_result_marks_the_tool_request_as_rejected()
     {
-        var state = Apply(ChatPresentationState.Empty, ToolCall("call-a", "search", 1) with
-        {
-            FailureCode = "invalid_rationale"
-        });
-        Assert.Equal("rejected", state.Tools["call-a"].Phase);
+        var state = Apply(ChatPresentationState.Empty, ToolCall("call-a", "search", 1));
+        Assert.Equal("queued", state.Tools["call-a"].Phase);
 
         state = Apply(state, ToolResult("call-a", "The tool was not executed.", 2) with
         {

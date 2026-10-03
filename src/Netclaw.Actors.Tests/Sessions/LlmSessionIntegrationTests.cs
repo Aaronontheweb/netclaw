@@ -921,6 +921,17 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
         _fakeChatClient.NextResponseGate = responseGate;
 
         var sessionId = new SessionId("signalr/message-lifecycle");
+        var source = new MessageSource
+        {
+            ChannelType = ChannelType.SignalR,
+            SenderId = new SenderId("operator-1"),
+            ChannelId = "operator-channel",
+            Audience = TrustAudience.Personal,
+            Boundary = TrustBoundary.Personal,
+            Principal = PrincipalClassification.Operator,
+            Provenance = new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Trusted),
+            ReceivedAt = _timeProvider.GetUtcNow()
+        };
         var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
         var subscriber = CreateTestProbe("message-lifecycle-sub");
         await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
@@ -944,13 +955,13 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
         {
             SessionId = sessionId,
             Content = "Use the dev branch",
-            Source = CreateSignalRSource("tui:message-1")
+            Source = source with { MessageId = "tui:message-1" }
         }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
         await sessionManager.Ask<CommandAck>(new SendUserMessage
         {
             SessionId = sessionId,
             Content = "Check the compact layout",
-            Source = CreateSignalRSource("tui:message-2")
+            Source = source with { MessageId = "tui:message-2" }
         }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
 
         var firstQueued = await subscriber.ExpectMsgAsync<UserMessageQueuedOutput>(
@@ -994,9 +1005,10 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
             .Where(message => message.Role == Microsoft.Extensions.AI.ChatRole.User)
             .Select(message => message.Text)
             .ToList();
+        string[] expectedPrompts = ["Inspect the page", "Use the dev branch", "Check the compact layout"];
         Assert.Equal(
-            ["Use the dev branch", "Check the compact layout"],
-            nextCallUsers.TakeLast(2));
+            expectedPrompts,
+            nextCallUsers.Where(text => expectedPrompts.Contains(text, StringComparer.Ordinal)));
     }
 
     [Fact]
