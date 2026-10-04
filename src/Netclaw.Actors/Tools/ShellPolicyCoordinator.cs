@@ -290,7 +290,8 @@ internal sealed class ShellPolicyCoordinator(
 
     /// <summary>
     /// True when every candidate has the shell of the projection and nonempty
-    /// verb tokens without whitespace. A grant lookup needs these facts.
+    /// verb tokens. A grant lookup needs these facts. A token can contain a
+    /// space: it is the word value after quote removal.
     /// </summary>
     internal static bool HasValidCandidateSyntax(ShellPolicyProjection projection)
     {
@@ -309,7 +310,7 @@ internal sealed class ShellPolicyCoordinator(
             if (candidate.Candidate.VerbTokens is not { } tokens)
             {
                 if (candidate.SourceOccurrence?.Clause.Verb.Tokens is not { Count: > 0 } parserTokens
-                    || parserTokens.Any(static token => token.Length == 0 || token.Any(char.IsWhiteSpace)))
+                    || parserTokens.Any(static token => token.Length == 0))
                 {
                     return false;
                 }
@@ -317,7 +318,7 @@ internal sealed class ShellPolicyCoordinator(
                 continue;
             }
 
-            if (tokens.Count == 0 || tokens.Any(static token => token.Length == 0 || token.Any(char.IsWhiteSpace)))
+            if (tokens.Count == 0 || tokens.Any(static token => token.Length == 0))
                 return false;
         }
 
