@@ -8,6 +8,7 @@ using System.Collections.Frozen;
 using Akka.Actor;
 using Akka.Event;
 using Microsoft.Extensions.AI;
+using Netclaw.Actors.Authorization;
 using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Jobs;
@@ -675,24 +676,28 @@ internal sealed class SessionToolExecutionPipeline
                     : null,
                 ManagedTemporaryCorrectionUpdate: delivery.ManagedTemporaryStateChange);
         }
-        catch (ToolApprovalRequiredException approvalEx)
+        // A call without an approval bridge never needs consent: the authorizer
+        // denies it first (approval_required_unattended, D2). A request here is
+        // a defect: log it and deny the call. Never retry it.
+        catch (ToolApprovalRequiredException) when (approvalBridge is null)
         {
-            if (approvalBridge is null)
+            sw.Stop();
+            _logger.Error(
+                "Tool {0} asked for consent with no approval bridge in session {1}; denied as a defect.",
+                tc.Name,
+                batch.SessionId.Value);
+            return new ToolCallResult(new SerializableChatMessage
             {
-                sw.Stop();
-                resultText = $"Tool requires approval but no interactive approval requester is available: {approvalEx.ApprovalContext.ToolName}";
-
-                return new ToolCallResult(new SerializableChatMessage
-                {
-                    Role = Protocol.ChatRole.Tool,
-                    Content = resultText,
-                    ToolCallId = new ToolCallId(tc.CallId),
-                    Name = tc.Name
-                }, [], context.Outputs.FileAttachments, completedRuns, acceptedFindings,
-                    authorizationAttemptId,
-                    Receipt: new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied));
-            }
-
+                Role = Protocol.ChatRole.Tool,
+                Content = ToolAuthorizer.ConsentWithoutBridgeResult(tc.Name),
+                ToolCallId = new ToolCallId(tc.CallId),
+                Name = tc.Name
+            }, [], context.Outputs.FileAttachments, completedRuns, acceptedFindings,
+                authorizationAttemptId,
+                Receipt: new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied));
+        }
+        catch (ToolApprovalRequiredException approvalEx) when (approvalBridge is not null)
+        {
             // Mid-turn approval pause: the session's consent prompt emits the
             // request and waits for the answer.
             var ctx = approvalEx.ApprovalContext;

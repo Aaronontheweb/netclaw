@@ -11,6 +11,7 @@ using Akka.Actor;
 using Akka.Event;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Netclaw.Actors.Authorization;
 using Netclaw.Actors.Authorization.Consent;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
@@ -1538,13 +1539,32 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                             ? new ToolExposureRequest(nativeTool)
                             : null);
                 }
-                catch (ToolApprovalRequiredException approvalEx)
+                // A child without an approval bridge never needs consent: the
+                // authorizer denies the call first (approval_required_unattended,
+                // D2). A request here is a defect: log it and deny the call.
+                catch (ToolApprovalRequiredException) when (approvalBridge is null)
+                {
+                    logger.Error(
+                        "SubAgent tool {0} asked for consent with no approval bridge; denied as a defect.",
+                        tc.Name);
+                    toolContext.Outputs.TryComplete(
+                        new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied));
+                    return BuildToolResult(
+                        tc,
+                        ToolAuthorizer.ConsentWithoutBridgeResult(tc.Name),
+                        toolContext,
+                        modelInputBudget,
+                        consumedManagedTemporaryKey is { } defectConsumed
+                            ? new ManagedTemporaryCorrectionChange.Consume(defectConsumed)
+                            : null);
+                }
+                catch (ToolApprovalRequiredException approvalEx) when (approvalBridge is not null)
                 {
                     var ctx = approvalEx.ApprovalContext;
                     if (approvalBridge is not IParentConsentBridge consentBridge)
                     {
                         throw new ParentApprovalUnavailableException(
-                            $"Tool '{tc.Name}' requires interactive approval, but no parent approval bridge is available.");
+                            $"Tool '{tc.Name}' requires interactive approval, but the parent approval bridge cannot ask for consent.");
                     }
 
                     // Signal the actor that an approval wait is starting BEFORE

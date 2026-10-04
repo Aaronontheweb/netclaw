@@ -141,17 +141,20 @@ public sealed class ApprovalContractGuardTests(ShellApprovalMatrixFixture fixtur
     [Fact(SkipUnless = nameof(IsMacOS), Skip = "The case needs a case-insensitive macOS volume.")]
     public async Task Allow_checks_compare_paths_with_case_on_macos()
     {
+        // D2: an unattended Personal run reads every path, as a chat does, so
+        // the file-tool half uses a Team session. Its read root is the session
+        // directory, and Team gets no shared sessions root.
         await using var unattended = await ShellApprovalHarness.CreateAsync(
             "macos-case-unattended",
-            new ShellApprovalInvocation("true", Interactive: false),
+            new ShellApprovalInvocation("true", Audience: TrustAudience.Team, Interactive: false),
             Approvals.None,
             fixture.ActorSystem,
             Ct);
-        var exact = Path.Combine(unattended.ProjectDirectory, "a.txt");
-        await File.WriteAllTextAsync(exact, "project data", Ct);
+        var exact = Path.Combine(unattended.SessionDirectory, "a.txt");
+        await File.WriteAllTextAsync(exact, "session data", Ct);
         var variant = Path.Combine(
-            Path.GetDirectoryName(unattended.ProjectDirectory)!,
-            Path.GetFileName(unattended.ProjectDirectory).ToUpperInvariant(),
+            Path.GetDirectoryName(unattended.SessionDirectory)!,
+            Path.GetFileName(unattended.SessionDirectory).ToUpperInvariant(),
             "a.txt");
 
         var exactRead = await unattended.EvaluateToolAsync("file_read", ToolInput.Create("Path", exact), Ct);

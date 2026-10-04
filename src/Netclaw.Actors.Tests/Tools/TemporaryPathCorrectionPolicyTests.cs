@@ -199,18 +199,28 @@ public sealed class TemporaryPathCorrectionPolicyTests
         Assert.Null(decision.AgentCorrection);
     }
 
-    [Fact]
-    public void Headless_temp_call_keeps_noninteractive_policy_result()
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "This case uses POSIX host path semantics.")]
+    [SlopwatchSuppress("SW001", "This test requires a POSIX storage path and Bash temporary path semantics.")]
+    public void Headless_temp_call_gets_the_managed_temporary_correction_of_a_chat()
     {
-        var decision = Evaluate(
+        // D2: a headless run gets the same advice as a chat.
+        var headless = Evaluate(
             BashEnvironment(),
             PosixTemp,
             "gh api repos/example/project",
             PosixSession,
             explicitWorkingDirectory: PosixTemp,
             interactive: false);
+        var attended = Evaluate(
+            BashEnvironment(),
+            PosixTemp,
+            "gh api repos/example/project",
+            PosixSession,
+            explicitWorkingDirectory: PosixTemp,
+            interactive: true);
 
-        Assert.Null(decision.AgentCorrection);
+        Assert.IsType<ToolCorrection.ManagedTemporaryDirectorySuggested>(attended.AgentCorrection);
+        Assert.Equal(attended.AgentCorrection, headless.AgentCorrection);
     }
 
     [Fact]
