@@ -1311,6 +1311,14 @@ assert_skill_scheduling_knowledge() {
         && stdout_no_skill_file_read_called
 }
 
+assert_skill_mattermost_current_session() {
+    stdout_response_contains 'current_session' \
+        && stdout_response_contains 'Mattermost' \
+        && daemon_log_skill_loaded_via_skill_tool 'netclaw-operations' \
+        && stdout_tool_called 'skill_read_resource' \
+        && stdout_no_skill_file_read_called
+}
+
 # CRON_TZ local-timezone discovery: for a local-time schedule the model must
 # surface the CRON_TZ prefix. That detail lives in references/scheduling.md, so
 # the model has to load netclaw-operations and recover it — not silently assume UTC.
@@ -2797,6 +2805,9 @@ run_all() {
         "What types of schedules can I create with set_reminder? Be specific about the formats." \
         "What scheduling formats do Netclaw reminders support?" \
         "Explain the different schedule types I can use with reminders"
+
+    run_case skill_mattermost_current_session "uses the current Mattermost conversation for a reminder" \
+        "Which delivery_kind should I use for a reminder that returns to this same Mattermost thread? Read the scheduling reference before answering. Do not create a reminder."
 
     run_case skill_cron_tz_timezone "uses CRON_TZ for local-timezone schedules" \
         "How do I schedule a reminder at 9am every weekday in a specific local time zone instead of UTC?" \
