@@ -6,9 +6,7 @@ Define chat-driven scheduled task creation, persistence, isolated execution
 via Akka timers, result reporting, task management, and failure handling
 guardrails. This capability enables Netclaw to manage its own schedule
 through conversation and execute tasks autonomously.
-
 ## Requirements
-
 ### Requirement: Chat-driven task creation
 
 The agent SHALL create scheduled tasks when the user requests recurring or
@@ -203,12 +201,11 @@ Task execution results SHALL be delivered according to
   canonical identifier produced by the transport's
   `IReminderTargetResolver` (never a raw LLM-supplied string).
 - `CurrentSession`: the reminder turn SHALL be routed through the
-  originating channel's existing inbound handling path. The daemon
-  hosts two server-side gateways; both implement a
-  `Receive<DeliverTrustedSessionTurn>` handler that reuses the
-  gateway's existing routing code. The reminder dispatcher SHALL tell
-  the appropriate gateway based on `Delivery.OriginChannelType`:
+  originating channel's existing session route. The reminder dispatcher
+  SHALL select the gateway from the stored `Delivery.OriginChannelType`:
   `ChannelType.Slack` → `SlackGatewayActor`;
+  `ChannelType.Discord` → `DiscordGatewayActor`;
+  `ChannelType.Mattermost` → `MattermostGatewayActor`;
   `ChannelType.Tui` or `ChannelType.SignalR` → `SignalRGatewayActor`.
   The channel-level inbound ACL SHALL be bypassed because the
   reminder's audience was validated at minting time. Any other
@@ -287,6 +284,30 @@ SHALL NOT affect routing.
 - **THEN** no message is posted and no session turn is delivered
 - **AND** the execution is recorded in
   `~/.netclaw/reminders/{id}.history.jsonl` with `success=true`
+
+#### Scenario: Mattermost current-session reminder preserves the thread and authority
+
+- **GIVEN** a Team-audience Mattermost session identified by `{channelId}/{rootPostId}`
+- **WHEN** `set_reminder` accepts `delivery_kind = current_session`
+- **THEN** the stored delivery contains that session ID and `OriginChannelType = Mattermost`
+- **AND** the stored audience does not exceed the creator's source audience
+- **WHEN** the reminder fires
+- **THEN** the dispatcher uses the Mattermost gateway, conversation, and session binding
+- **AND** the response reaches the original channel and thread
+- **AND** `delivery_required = true` succeeds only after a successful post
+
+#### Scenario: Unsupported current-session origin is rejected before persistence
+
+- **GIVEN** a webhook session without a current-session gateway
+- **WHEN** `set_reminder` receives `delivery_kind = current_session`
+- **THEN** the tool rejects the reminder before it sends a save command
+
+#### Scenario: Mattermost post failure does not count as delivery
+
+- **GIVEN** a Mattermost current-session reminder with `delivery_required = true`
+- **WHEN** the Mattermost post API rejects its response
+- **THEN** the execution records a failed outcome
+- **AND** a session acknowledgement does not count as a successful post
 
 ### Requirement: Task management
 

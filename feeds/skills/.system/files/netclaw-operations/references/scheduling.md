@@ -47,8 +47,11 @@ Rules:
 
 - Always choose `delivery_kind` explicitly.
 - Do not try to route via `delivery_instructions`.
-- `current_session` is the session check-back path and should be preferred for
-  conversational follow-ups in Slack/TUI/SignalR sessions.
+- Use `current_session` for a reminder that must return to the current conversation.
+  Slack, Discord, Mattermost, TUI, and SignalR support this route.
+  Mattermost uses the original channel and thread root ID.
+  Omit `delivery_transport` and `delivery_address` for this route.
+  Netclaw preserves the stored reminder audience when the reminder executes.
 - `channel` requires both transport + address and resolves names/handles to
   canonical IDs at set time; unresolved targets fail loud.
 - Discord reminder targets must be explicit because channel IDs and user IDs are
