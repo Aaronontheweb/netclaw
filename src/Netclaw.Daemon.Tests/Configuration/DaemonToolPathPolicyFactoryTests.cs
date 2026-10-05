@@ -14,13 +14,18 @@ namespace Netclaw.Daemon.Tests.Configuration;
 
 public sealed class DaemonToolPathPolicyFactoryTests
 {
-    // Owner decision (approval taxonomy stack 2, PR C): the agent may read its
-    // own configuration with a file tool. A write and a shell command that
-    // names the file stay denied, because shell text cannot show a read from a write.
+    // Owner decision D6: the agent may read each file under the config
+    // directory, with a file tool and with a read-only shell program, except
+    // secrets.json and the webhook route files. The shell text screen does not deny it. A write stays
+    // denied by the write list, which the shell trusted-root check applies.
     [Theory]
     [InlineData("netclaw.json")]
     [InlineData("tool-approvals.json")]
-    public void Own_config_is_readable_but_not_writable_or_shell_accessible(string fileName)
+    [InlineData("hard-deny-overrides.json")]
+    [InlineData("daemon.env")]
+    [InlineData("devices.json")]
+    [InlineData("bootstrap-state.json")]
+    public void Config_file_is_readable_but_not_writable(string fileName)
     {
         var paths = new NetclawPaths(Path.Combine(Path.GetTempPath(), "netclaw-policy-contract"));
         var policy = DaemonToolPathPolicyFactory.Create(
@@ -30,7 +35,7 @@ public sealed class DaemonToolPathPolicyFactoryTests
 
         Assert.False(policy.FileSystem.IsProtected(configPath, PathOperation.Read));
         Assert.True(policy.FileSystem.IsProtected(configPath, PathOperation.Write));
-        Assert.True(policy.CommandReferencesDeniedPath($"cat '{configPath}'"));
+        Assert.False(policy.CommandReferencesDeniedPath($"cat '{configPath}'"));
     }
 
     [Fact]
@@ -43,12 +48,8 @@ public sealed class DaemonToolPathPolicyFactoryTests
         string[] protectedPaths =
         [
             paths.SecretsPath,
+            Path.Combine(paths.WebhooksDirectory, "github-issues.json"),
             Path.Combine(paths.KeysDirectory, "key-1.xml"),
-            paths.WebhooksDirectory,
-            paths.HardDenyOverridesPath,
-            paths.DaemonEnvironmentFilePath,
-            paths.DevicesPath,
-            paths.BootstrapStatePath,
             paths.SqliteDbPath,
             paths.PidFilePath,
             paths.LockFilePath,
@@ -56,6 +57,54 @@ public sealed class DaemonToolPathPolicyFactoryTests
         ];
 
         Assert.All(protectedPaths, path => Assert.True(policy.FileSystem.IsProtected(path, PathOperation.Read), path));
+        // The shell text screen denies each of them, whatever the program.
+        Assert.All(protectedPaths, path => Assert.True(policy.CommandReferencesDeniedPath($"cat '{path}'"), path));
+    }
+
+    // Program text can name the config directory in another spelling. The text
+    // screen collapses "//", "/./", a trailing "/.", and "name/../" before it
+    // matches the ".netclaw/config" marker, so each spelling stays denied.
+    [Theory]
+    [InlineData("jq -n 'import \"secrets\" as $s {search: \"~/.netclaw/./config\"}; $s'")]
+    [InlineData("jq -n 'import \"secrets\" as $s {search: \"~/.netclaw//config\"}; $s'")]
+    [InlineData("jq -n 'import \"secrets\" as $s {search: \"~/.netclaw/x/../config\"}; $s'")]
+    [InlineData("jq -n 'import \"secrets\" as $s {search: \"$HOME/.netclaw/./config\"}; $s'")]
+    [InlineData("python3 -c \"import os; print(os.listdir('/srv/.netclaw/config/.'))\"")]
+    public void Program_text_that_spells_the_config_directory_stays_denied(string command)
+    {
+        var paths = new NetclawPaths("/home/user/.netclaw");
+        var policy = DaemonToolPathPolicyFactory.Create(
+            paths,
+            ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux));
+
+        Assert.True(policy.CommandReferencesDeniedPath(command), command);
+        Assert.False(policy.CommandReferencesDeniedPath("jq -n 'import \"x\" as $s {search: \"~/.netclaw/./skills\"}; $s'"));
+    }
+
+    // The Netclaw home below the launch HOME, as in the default layout. The shell
+    // screen denies each home form of a credential: "~user", "$HOME", "${HOME}",
+    // and a "/./" segment. No file is read or written.
+    [Theory]
+    [InlineData("cat ~{user}/.netclaw/config/secrets.json")]
+    [InlineData("cat \"$HOME\"/.netclaw/config/secrets.json")]
+    [InlineData("cat ${HOME}/.netclaw/./config/secrets.json")]
+    [InlineData("cat ~{user}/.netclaw/keys/key-1.xml")]
+    [InlineData("cat \"$HOME\"/.netclaw/keys/key-1.xml")]
+    [InlineData("cat ${HOME}/.netclaw/./keys/key-1.xml")]
+    [InlineData("cat ~{user}/.netclaw/config/webhooks/route.json")]
+    [InlineData("cat \"$HOME\"/.netclaw/config/webhooks/route.json")]
+    [InlineData("cat ${HOME}/.netclaw/./config/webhooks/route.json")]
+    public void Home_forms_of_a_credential_stay_denied(string template)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var environment = ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux);
+        var home = Assert.IsType<string>(environment.HomeDirectory);
+        var policy = DaemonToolPathPolicyFactory.Create(new NetclawPaths(Path.Combine(home, ".netclaw")), environment);
+        var command = template.Replace("{user}", Environment.UserName, StringComparison.Ordinal);
+
+        Assert.True(policy.CommandReferencesDeniedPath(command), command);
     }
 
     [Theory]
