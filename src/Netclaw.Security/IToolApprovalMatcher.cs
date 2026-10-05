@@ -473,7 +473,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (string.IsNullOrEmpty(verb))
             return null;
 
-        var isSideEffectVerb = ShellVerbPolicyData.SingleTokenSideEffectVerbs.Contains(verb);
+        var isSideEffectVerb = ShellVerbPolicyData.IsDataCommand(verb, shell);
         var clauseWorkingDirectory = GetClauseWorkingDirectory(
             occurrence,
             workingDirectory,
@@ -491,13 +491,8 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (directories is null)
             return null;
 
-        if (!ShellAssignmentDigestFactory.TryCreate(
-                shell,
-                occurrence.Assignments,
-                out var assignmentDigest))
-        {
+        if (!TryCreateAssignmentDigest(occurrence, shell, verb, isSideEffectVerb, out var assignmentDigest))
             return null;
-        }
 
         var verbTokens = commandWords.Words;
         if (verbTokens is not null
@@ -1790,9 +1785,11 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             : ApprovalShell.PowerShell;
 
         if (analysis.Commands.Any(command =>
-                !ShellAssignmentDigestFactory.TryCreate(
+                !TryCreateAssignmentDigest(
+                    command,
                     shell,
-                    command.Assignments,
+                    NormalizedVerb(command, shell),
+                    IsSideEffectCommand(command, shell),
                     out _)))
         {
             return true;
@@ -1875,7 +1872,42 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     }
 
     private static bool IsSideEffectCommand(ShellSyntaxTree.CommandOccurrence occurrence, ApprovalShell shell)
-        => ShellVerbPolicyData.SingleTokenSideEffectVerbs.Contains(NormalizedVerb(occurrence, shell));
+        => ShellVerbPolicyData.IsDataCommand(NormalizedVerb(occurrence, shell), shell);
+
+    /// <summary>
+    /// Returns the assignment digest of a command. A Bash data command with no
+    /// redirect and with proved data operands gets no digest.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: a Bash data command is a builtin, so an assignment cannot
+    /// change the program. An assignment can change only the operands. When
+    /// <see cref="ShellCommandAnalysis.HasProvedDataOperands"/> proves each
+    /// operand is data, the command has no path scope and no stored grant, so
+    /// <c>n=$(cmd); echo "$n"</c> needs no exact candidate. An unquoted word
+    /// with an unknown value can expand to the names in any folder, and a test
+    /// operand with <c>[</c> can run code. Such a command keeps its digest, and
+    /// so does a command with a redirect.
+    /// </remarks>
+    private static bool TryCreateAssignmentDigest(
+        ShellSyntaxTree.CommandOccurrence occurrence,
+        ApprovalShell shell,
+        string verb,
+        bool isDataCommand,
+        out ApprovalAssignmentDigest? digest)
+    {
+        if (shell == ApprovalShell.Bash
+            && isDataCommand
+            && occurrence.Redirects.Count == 0
+            && ShellCommandAnalysis.HasProvedDataOperands(
+                occurrence,
+                isTestBuiltin: ShellVerbPolicyData.BashTestBuiltins.Contains(verb)))
+        {
+            digest = null;
+            return true;
+        }
+
+        return ShellAssignmentDigestFactory.TryCreate(shell, occurrence.Assignments, out digest);
+    }
 
     // SECURITY: the phrase quotes a word with whitespace, so the program
     // "echo x" never reads as the side-effect verb echo.
@@ -1884,7 +1916,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         var clause = occurrence.Clause;
         var parsedVerb = clause.Verb.CanonicalVerb
             ?? ShellCommandWordText.FormatPhrase(shell, TrimTrailingValueTokens(clause.Verb.Tokens));
-        return ShellVerbPolicyData.ApplyVerbShortCircuit(parsedVerb);
+        return ShellVerbPolicyData.ApplyVerbShortCircuit(parsedVerb, shell);
     }
 
     public string FormatForDisplay(ToolName toolName, IDictionary<string, object?>? arguments)
