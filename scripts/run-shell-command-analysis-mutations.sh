@@ -481,7 +481,7 @@ security_mutations+=("ShellCommandPolicy.cs{$combine_start..$combine_end}")
 run_group \
   "stryker-shell-command-analysis.json" \
   "$output_path/security" \
-  215 \
+  221 \
   "${security_mutations[@]}"
 
 actor_mutations=()
