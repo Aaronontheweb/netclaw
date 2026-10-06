@@ -901,7 +901,7 @@ public sealed record ShellCommandAnalysis
         CommandOccurrence command,
         IReadOnlySet<ClauseElement> accountedRegionArguments)
         => command.Clause.Args.Any(arg =>
-                IsUnscopedExpansionWord(arg)
+                arg.Kind == ArgKind.DynamicSkip
                 && !arg.IsCwdAttribution
                 && !IsAccountedExecutionRegionArgument(
                     command,
@@ -917,12 +917,12 @@ public sealed record ShellCommandAnalysis
                 !IsAccountedExecutionRegionArgument(
                     argument,
                     accountedRegionArguments)
-                && HasUnsupportedArgumentDomain(argument)
+                && (HasUnsupportedArgumentDomain(argument) || IsUnscopedVariableWord(argument))
                 && !IsUnknownOutputData(command, argument));
 
     /// <summary>
-    /// Returns true when the word gets its value from an expansion and the
-    /// parser gives it no path scope.
+    /// Returns true when a variable word is not a path word, so it has no path
+    /// scope.
     /// </summary>
     /// <remarks>
     /// SECURITY: Netclaw computes a path scope only from a path word that the
@@ -932,16 +932,19 @@ public sealed record ShellCommandAnalysis
     /// <c>for d in ../x; do dotnet build "$d"; done</c> or
     /// <c>d=../x; dotnet build "$d"</c>, the value <c>../x</c> is outside the
     /// folder, but the candidate keeps only the working directory scope. Such a
-    /// word is an unknown operand, the same as a <see cref="ArgKind.DynamicSkip"/>
-    /// word, unless the parser types its value (see
-    /// <see cref="HasUnresolvedOperand"/>). Decision D1 then lets only a safe
-    /// phrase or a grant for anywhere cover the command. A variable word that
-    /// the parser resolves as a path (<c>"$HOME/x"</c>) keeps its path scope.
+    /// word is an unknown operand, so decision D1 lets only a safe phrase or a
+    /// grant for anywhere cover the command. ShellSyntaxTree 0.4.0-beta.19
+    /// gives a typed filesystem or data value only to a
+    /// <see cref="ArgKind.DynamicSkip"/> word, which keeps its own rule above.
+    /// A variable word that the parser marks as a path keeps its path scope,
+    /// or the path rule above makes it unknown when it has no resolved value.
+    /// A word whose proved value is an integer range (<c>"$?"</c>) is data, as
+    /// in <see cref="HasUnsupportedArgumentDomain(AnalyzedArgument)"/>.
     /// </remarks>
-    private static bool IsUnscopedExpansionWord(Arg arg)
-        => arg.Kind == ArgKind.DynamicSkip
-           || arg.Kind == ArgKind.EnvVar
-           && !(arg.IsPath && !string.IsNullOrWhiteSpace(arg.Resolved));
+    private static bool IsUnscopedVariableWord(AnalyzedArgument argument)
+        => argument.Argument.Kind == ArgKind.EnvVar
+           && !argument.Argument.IsPath
+           && argument.Value is not ShellValueDomain.IntegerRange;
 
     internal static bool TryCollectKnownExecutionRegionArguments(
         ShellSyntaxNode node,
