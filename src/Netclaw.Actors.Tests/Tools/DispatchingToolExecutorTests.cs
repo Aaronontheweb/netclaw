@@ -1340,7 +1340,7 @@ public partial class DispatchingToolExecutorTests : IDisposable
             TestContext.Current.CancellationToken);
 
         Assert.Equal(ToolAuthorizationOutcome.Denied, decision.Outcome);
-        Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+        Assert.Equal("shell_path_outside_trusted_roots", decision.DenyReason);
         Assert.Equal(0, approvalService.RequestCount);
     }
 
@@ -1388,7 +1388,7 @@ public partial class DispatchingToolExecutorTests : IDisposable
             TestContext.Current.CancellationToken);
 
         Assert.Equal(ToolAuthorizationOutcome.Denied, decision.Outcome);
-        Assert.Equal("shell_path_outside_trust_zone", decision.DenyReason);
+        Assert.Equal("shell_path_outside_trusted_roots", decision.DenyReason);
         Assert.Equal(0, approvalService.RequestCount);
     }
 

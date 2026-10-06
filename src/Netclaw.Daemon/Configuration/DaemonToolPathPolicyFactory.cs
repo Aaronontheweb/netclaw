@@ -12,7 +12,8 @@ internal static class DaemonToolPathPolicyFactory
 {
     public static ToolPathPolicy Create(
         NetclawPaths paths,
-        ShellExecutionEnvironment shellEnvironment)
+        ShellExecutionEnvironment shellEnvironment,
+        SkillFeedsConfig skillFeeds)
     {
         var sqlitePath = paths.SqliteDbPath;
         var sqliteSidecars = new[]
@@ -28,6 +29,21 @@ internal static class DaemonToolPathPolicyFactory
             paths.RestartManifestPath
         };
 
+        // Owner decision (2026-10-05): the system skill folder and the server feed
+        // folder are agent guidance, as the identity files are. They are not
+        // control plane, so they are not on this list. Netclaw cannot tell if a
+        // program reads or writes a path argument, so a write entry also denied
+        // "bash <skill script>" and "ls <skill folder>". The daemon start restores
+        // the system skills, and the feed sync restores a changed feed skill.
+        // The sync state of each feed holds the file hashes that the restore
+        // compares, so it is an integrity record and stays write-protected. The
+        // agent may read it.
+        var feedSyncStatePaths = skillFeeds.Feeds
+            .SelectMany(feed => new[]
+            {
+                paths.ServerFeedSyncStatePath(feed.Name),
+                paths.ServerFeedAgentSyncStatePath(feed.Name)
+            });
         string[] writeDenyList =
         [
             paths.ConfigDirectory,
@@ -36,9 +52,8 @@ internal static class DaemonToolPathPolicyFactory
             sqlitePath,
             ..sqliteSidecars,
             ..processControlPaths,
-            paths.SystemSkillsDirectory,
-            paths.ServerFeedsDirectory,
             paths.ToolingShadowDirectory,
+            ..feedSyncStatePaths,
         ];
         // Owner decision D6: the agent may read each file under the config
         // directory, with a file tool or a read-only shell program, except
