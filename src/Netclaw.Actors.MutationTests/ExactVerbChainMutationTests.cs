@@ -12,9 +12,10 @@ using Xunit;
 namespace Netclaw.Actors.MutationTests;
 
 /// <summary>
-/// A shell grant covers exactly its verb chain. A mutant that turns the
-/// equality check back into prefix matching lets a "gh" grant cover
-/// "gh auth logout", so these tests must reject it.
+/// A verb grant (two or more words) covers its words and any later words. A
+/// program-only grant covers its word alone. A mutant that lets a one-word
+/// grant cover a longer chain lets a "gh" grant cover "gh auth logout", so
+/// these tests must reject it.
 /// </summary>
 public sealed class ExactVerbChainMutationTests
 {
@@ -33,19 +34,32 @@ public sealed class ExactVerbChainMutationTests
     }
 
     [Fact]
-    public void Subcommand_grant_does_not_cover_a_longer_or_shorter_chain()
+    public void Verb_grant_covers_later_words_but_not_a_shorter_or_other_chain()
     {
-        Assert.False(Matches(Grant("git", "push"), "git", "push", "origin"));
+        Assert.True(Matches(Grant("git", "push"), "git", "push", "origin"));
+        Assert.True(Matches(Grant("git", "push", "upstream"), "git", "push", "upstream", "feature-x"));
         Assert.False(Matches(Grant("gh", "pr", "view"), "gh", "pr"));
+        Assert.False(Matches(Grant("git", "push", "upstream"), "git", "push", "origin", "main"));
+        Assert.False(Matches(Grant("git", "push", "origin", "feature-x"), "git", "push", "origin", "main"));
     }
 
     [Fact]
-    public void Legacy_phrase_does_not_cover_a_longer_chain()
+    public void Legacy_phrase_gets_the_same_rule()
     {
         var legacy = ApprovalEntry.CreateLegacyExact(ApprovalShell.Bash, "git push origin");
 
         Assert.True(Matches(legacy, "git", "push", "origin"));
-        Assert.False(Matches(legacy, "git", "push", "origin", "v1.5.1"));
+        Assert.True(Matches(legacy, "git", "push", "origin", "v1.5.1"));
+        Assert.False(Matches(legacy, "git", "push"));
+        Assert.False(Matches(ApprovalEntry.CreateLegacyExact(ApprovalShell.Bash, "gh"), "gh", "auth", "logout"));
+    }
+
+    // An empty word list is invalid data. It must cover nothing, not everything.
+    [Fact]
+    public void Empty_grant_words_cover_nothing()
+    {
+        Assert.False(ToolApprovalEntryComparer.CoversCommandWords([], ["git", "push"], ApprovalShell.Bash));
+        Assert.False(ToolApprovalEntryComparer.CoversCommandWords([], ["git"], ApprovalShell.Bash));
     }
 
     // R1: a program path names its file. A mutant that skips the join with the
@@ -133,10 +147,51 @@ public sealed class ExactVerbChainMutationTests
             Assert.False(ShellGrantFileWords.NamesEntry("missing", directory, out _));
             Assert.False(ShellGrantFileWords.NamesEntry("Phobos.slnx", null, out _));
             Assert.False(ShellGrantFileWords.NamesEntry("Phobos.slnx", relative, out _));
+            Assert.True(ShellGrantFileWords.NamesLink("Linked.slnx", directory, out var linkPath));
+            Assert.Equal(Path.Join(directory, "Linked.slnx"), linkPath);
+            Assert.False(ShellGrantFileWords.NamesLink("Phobos.slnx", directory, out _));
+            Assert.False(ShellGrantFileWords.NamesLink("missing", directory, out _));
         }
         finally
         {
             Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    // SECURITY: a plain word that names a link to a protected path is denied,
+    // command word or argument. A link to an ordinary file is not. A mutant that
+    // skips the screen lets a verb grant reach the link target.
+    [Fact]
+    public void Plain_word_link_to_a_protected_path_is_denied()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var root = Directory.CreateTempSubdirectory("netclaw-link-word-").FullName;
+        try
+        {
+            var protectedDirectory = Directory.CreateDirectory(Path.Join(root, "keys")).FullName;
+            File.WriteAllText(Path.Join(protectedDirectory, "a.pem"), string.Empty);
+            var work = Directory.CreateDirectory(Path.Join(root, "work")).FullName;
+            File.WriteAllText(Path.Join(work, "README.md"), string.Empty);
+            Directory.CreateSymbolicLink(Path.Join(work, "keylink"), protectedDirectory);
+            Directory.CreateSymbolicLink(Path.Join(work, "keys2"), protectedDirectory);
+            File.CreateSymbolicLink(Path.Join(work, "key1link"), Path.Join(protectedDirectory, "a.pem"));
+            File.CreateSymbolicLink(Path.Join(work, "readmelink"), Path.Join(work, "README.md"));
+            var policy = new ToolPathPolicy(ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux), [protectedDirectory]);
+
+            Assert.True(policy.CommandReferencesDeniedPath("mytool write keylink", work));
+            Assert.True(policy.CommandReferencesDeniedPath("mytool write keys2", work));
+            Assert.True(policy.CommandReferencesDeniedPath("mytool write key1link", work));
+            Assert.True(policy.CommandReferencesDeniedPath("mytool write README.md keylink", work));
+            Assert.True(policy.CommandReferencesDeniedPath($"cd {work} && mytool keylink", root));
+            Assert.False(policy.CommandReferencesDeniedPath("mytool write readmelink", work));
+            Assert.False(policy.CommandReferencesDeniedPath("mytool write keylink", root));
+            Assert.False(policy.CommandReferencesDeniedPath("keylink write", work));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
         }
     }
 

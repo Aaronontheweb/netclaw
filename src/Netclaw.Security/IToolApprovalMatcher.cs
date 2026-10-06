@@ -579,7 +579,8 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     /// (<c>bash deploy.sh</c>). A planted file named <c>push</c> must not change
     /// the identity of <c>git push</c>, and an interpreter grant must not cover
     /// each script. A link keeps its word, because the link target can be a
-    /// protected path. Each dropped word becomes a path scope of the candidate,
+    /// protected path; <see cref="ToolPathPolicy"/> checks that target for each
+    /// plain word. Each dropped word becomes a path scope of the candidate,
     /// the same as <c>./Phobos.slnx</c>, so the trusted-root and protected-path
     /// checks see it. When the occurrence directory is not known, no word drops.
     /// </para>
