@@ -8,7 +8,12 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading.Channels;
+using Akka;
 using Akka.Actor;
+using Akka.IO;
+using Akka.Streams;
+using Akka.Streams.Dsl;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -37,6 +42,13 @@ namespace Netclaw.Actors.Tests.Tools;
 /// the canonical text of the decision. The script runs the probe on two
 /// revisions and compares the lines. The probe replaces every run-specific path
 /// with a placeholder, so equal decisions give equal lines.
+/// <para>
+/// A shell state decides its corpus inputs in parallel lanes
+/// (<c>NETCLAW_CORPUS_PARALLELISM</c>). Each lane owns one harness, so a lane
+/// never shares the grant store, the store lookup count, or the folders of the
+/// harness. An ordered <c>SelectAsync</c> keeps the input order, and one file
+/// sink writes all lines. The output is therefore the same for each parallelism.
+/// </para>
 /// </remarks>
 [Collection(ShellApprovalMatrixCollection.Name)]
 public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
@@ -55,6 +67,13 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
         @"C:([/\\])netclaw-approval-matrix\1[0-9a-f]{32}",
         RegexOptions.CultureInvariant);
 
+    // Each harness root and each test process temporary root has a new GUID in
+    // its folder name. A ".." path or a basename can show the name without the
+    // full path, so the path placeholders do not replace it.
+    private static readonly Regex RunFolderGuid = new(
+        "netclaw-(approval-matrix|testrun)-[0-9a-f]{32}",
+        RegexOptions.CultureInvariant);
+
     [Fact]
     public async Task Run()
     {
@@ -67,16 +86,57 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
             : null;
         var commands = JsonSerializer.Deserialize<string[]>(await File.ReadAllTextAsync(input, ct))
             ?? throw new InvalidOperationException("The corpus file is empty.");
+        var parallelism = int.Parse(Required("NETCLAW_CORPUS_PARALLELISM"), NumberStyles.None, CultureInfo.InvariantCulture);
+        if (parallelism < 1)
+            throw new InvalidOperationException("NETCLAW_CORPUS_PARALLELISM must be 1 or more.");
 
         var temporaryRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath()));
         var cleaner = new Cleaner(temporaryRoot, Path.TrimEndingDirectorySeparator(Path.GetFullPath(repository)));
+        var file = new FileInfo(output);
+        using var materializer = fixture.ActorSystem.Materializer();
 
-        await using var writer = new StreamWriter(output, append: false, new UTF8Encoding(false));
-        await writer.WriteLineAsync($"#adapter\t{CorpusProbeAdapter.Name}");
+        await WriteAsync(Source.Single($"#adapter\t{CorpusProbeAdapter.Name}\n"), 1, file, FileMode.Create, materializer);
         foreach (var state in ShellStates().Where(state => selected?.Contains(state.Id) != false))
-            await RunShellStateAsync(writer, state, commands, temporaryRoot, cleaner, ct);
+            await RunShellStateAsync(file, state, commands, temporaryRoot, cleaner, parallelism, materializer, ct);
         foreach (var state in ToolStates().Where(state => selected?.Contains(state.Id) != false))
-            await RunToolStateAsync(writer, state, cleaner, ct);
+            await RunToolStateAsync(file, state, cleaner, materializer, ct);
+    }
+
+    /// <summary>
+    /// Runs one block of decision lines into the output file. Each element is the
+    /// text of one input: its decision line and the lines of its retries.
+    /// </summary>
+    /// <remarks>
+    /// The file sink is the only writer of the output. The method fails when an
+    /// element fails, when the sink reports an error, when the element count is
+    /// not the input count, or when the sink did not write every byte.
+    /// </remarks>
+    private static async Task WriteAsync(
+        Source<string, NotUsed> elements,
+        int expectedElements,
+        FileInfo file,
+        FileMode mode,
+        IMaterializer materializer)
+    {
+        // The Select stage runs one element at a time, and the counts are read
+        // only after the stream completes.
+        var count = 0;
+        var bytes = 0L;
+        var result = await elements
+            .Select(text =>
+            {
+                var data = ByteString.FromString(text, Encoding.UTF8);
+                count++;
+                bytes += data.Count;
+                return data;
+            })
+            .RunWith(FileIO.ToFile(file, mode), materializer);
+        if (!result.WasSuccessful)
+            throw new InvalidOperationException($"The corpus output sink failed after {result.Count} bytes.", result.Error);
+        if (count != expectedElements)
+            throw new InvalidOperationException($"The corpus probe wrote {count} elements, but {expectedElements} were expected.");
+        if (result.Count != bytes)
+            throw new InvalidOperationException($"The corpus output sink wrote {result.Count} of {bytes} bytes.");
     }
 
     private static string Required(string name)
@@ -111,14 +171,61 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
            select new ToolState($"tools-{audience}-{(interactive ? "i" : "u")}-{mode}", audience, interactive, mode);
 
     private async Task RunShellStateAsync(
-        StreamWriter writer,
+        FileInfo file,
         ShellState state,
         IReadOnlyList<string> commands,
         string temporaryRoot,
         Cleaner cleaner,
+        int parallelism,
+        IMaterializer materializer,
         CancellationToken ct)
     {
-        await using var harness = await ShellApprovalHarness.CreateAsync(
+        var lanes = new List<ShellLane>();
+        try
+        {
+            for (var lane = 0; lane < Math.Max(1, Math.Min(parallelism, commands.Count)); lane++)
+                lanes.Add(await CreateShellLaneAsync(state, cleaner, ct));
+
+            // Each element takes a lane that no other element uses, and gives it
+            // back before it completes. SelectAsync runs at most one element for
+            // each lane, so a free lane is always present.
+            var free = Channel.CreateUnbounded<ShellLane>();
+            foreach (var lane in lanes)
+                free.Writer.TryWrite(lane);
+
+            // Task.Run moves the decision off the stream stage: most of a decision
+            // is synchronous parse and policy work, which would otherwise run on
+            // the one thread of the stage.
+            var elements = Source.From(Enumerable.Range(0, commands.Count))
+                .SelectAsync(lanes.Count, index => Task.Run(async () =>
+                {
+                    if (!free.Reader.TryRead(out var lane))
+                        throw new InvalidOperationException("The corpus probe has no free lane.");
+                    try
+                    {
+                        return await DecideShellInputAsync(lane, state, commands[index], index, temporaryRoot, ct);
+                    }
+                    finally
+                    {
+                        free.Writer.TryWrite(lane);
+                    }
+                }, ct));
+            await WriteAsync(elements, commands.Count, file, FileMode.Append, materializer);
+        }
+        finally
+        {
+            foreach (var lane in lanes)
+                await lane.Scope.Harness.DisposeAsync();
+        }
+    }
+
+    // One harness and the values that its decisions read. A lane decides one
+    // input at a time.
+    private sealed record ShellLane(Scope Scope, DispatchingToolExecutor Executor, string External);
+
+    private async Task<ShellLane> CreateShellLaneAsync(ShellState state, Cleaner cleaner, CancellationToken ct)
+    {
+        var harness = await ShellApprovalHarness.CreateAsync(
             "corpus",
             new ShellApprovalInvocation("true", Interactive: state.Interactive, Host: state.Host),
             state.Grants switch
@@ -131,29 +238,54 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
             fixture.ActorSystem,
             ct,
             shellApprovalMode: state.Auto ? ToolApprovalMode.Auto : null);
-        harness.CreateProjectDirectory("sub");
-        var root = Path.GetDirectoryName(harness.ProjectDirectory)!;
-        var external = Path.Combine(root, "workspaces", "external");
-        var executor = PrivateField<DispatchingToolExecutor>(harness, "_executor");
-        var scope = new Scope(harness, root, cleaner);
-
-        for (var index = 0; index < commands.Count; index++)
+        try
         {
-            var command = commands[index]
-                .Replace("{P}", harness.ProjectDirectory, StringComparison.Ordinal)
-                .Replace("{X}", external, StringComparison.Ordinal)
-                .Replace("{S}", harness.SessionDirectory, StringComparison.Ordinal)
-                .Replace("{C}", harness.Paths.ConfigDirectory, StringComparison.Ordinal)
-                .Replace("{K}", harness.Paths.SkillsDirectory, StringComparison.Ordinal)
-                .Replace("{T}", temporaryRoot, StringComparison.Ordinal);
-            var call = new FunctionCallContent("corpus", ShellTool.ToolName, ToolInput.Create(
-                "Command", command, "WorkingDirectory", harness.ProjectDirectory));
-            await WriteWithOnceRetryAsync(writer, state.Id, index.ToString(CultureInfo.InvariantCulture), scope, executor, call,
-                TrustAudience.Personal, state.Interactive, ct);
+            harness.CreateProjectDirectory("sub");
+            var root = Path.GetDirectoryName(harness.ProjectDirectory)!;
+            return new ShellLane(
+                new Scope(harness, root, cleaner),
+                PrivateField<DispatchingToolExecutor>(harness, "_executor"),
+                Path.Combine(root, "workspaces", "external"));
+        }
+        catch
+        {
+            await harness.DisposeAsync();
+            throw;
         }
     }
 
-    private async Task RunToolStateAsync(StreamWriter writer, ToolState state, Cleaner cleaner, CancellationToken ct)
+    private static async Task<string> DecideShellInputAsync(
+        ShellLane lane,
+        ShellState state,
+        string input,
+        int index,
+        string temporaryRoot,
+        CancellationToken ct)
+    {
+        var harness = lane.Scope.Harness;
+        var command = input
+            .Replace("{P}", harness.ProjectDirectory, StringComparison.Ordinal)
+            .Replace("{X}", lane.External, StringComparison.Ordinal)
+            .Replace("{S}", harness.SessionDirectory, StringComparison.Ordinal)
+            .Replace("{C}", harness.Paths.ConfigDirectory, StringComparison.Ordinal)
+            .Replace("{K}", harness.Paths.SkillsDirectory, StringComparison.Ordinal)
+            .Replace("{T}", temporaryRoot, StringComparison.Ordinal);
+        var call = new FunctionCallContent("corpus", ShellTool.ToolName, ToolInput.Create(
+            "Command", command, "WorkingDirectory", harness.ProjectDirectory));
+        var lines = new StringBuilder();
+        await WriteWithOnceRetryAsync(lines, state.Id, index.ToString(CultureInfo.InvariantCulture), lane.Scope, lane.Executor, call,
+            TrustAudience.Personal, state.Interactive, ct);
+        return lines.ToString();
+    }
+
+    // A tool state runs in one lane and in input order: the chat grant that one
+    // input records stays in the harness for the next inputs.
+    private async Task RunToolStateAsync(
+        FileInfo file,
+        ToolState state,
+        Cleaner cleaner,
+        IMaterializer materializer,
+        CancellationToken ct)
     {
         await using var harness = await ShellApprovalHarness.CreateAsync(
             "corpus-tools",
@@ -169,27 +301,32 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
         var scope = new Scope(harness, root, cleaner);
 
         var inputs = ToolCorpus(harness.ProjectDirectory, harness.SessionDirectory, external, harness.Paths, mcp);
-        for (var index = 0; index < inputs.Count; index++)
-        {
-            var (_, toolName, arguments) = inputs[index];
-            var call = new FunctionCallContent("corpus", toolName, arguments);
-            var id = index.ToString(CultureInfo.InvariantCulture);
-            var request = await WriteWithOnceRetryAsync(writer, state.Id, id, scope, executor, call, state.Audience, state.Interactive, ct);
-
-            // A chat grant for the exact request must cover the call.
-            if (request is not null)
+        var elements = Source.From(Enumerable.Range(0, inputs.Count))
+            .SelectAsync(1, async index =>
             {
-                await RecordChatGrantAsync(harness, state.Audience, request, ct);
-                await WriteWithOnceRetryAsync(writer, state.Id, $"{id}+chat-grant", scope, executor, call, state.Audience, state.Interactive, ct);
-            }
-        }
+                var (_, toolName, arguments) = inputs[index];
+                var call = new FunctionCallContent("corpus", toolName, arguments);
+                var id = index.ToString(CultureInfo.InvariantCulture);
+                var lines = new StringBuilder();
+                var request = await WriteWithOnceRetryAsync(lines, state.Id, id, scope, executor, call, state.Audience, state.Interactive, ct);
+
+                // A chat grant for the exact request must cover the call.
+                if (request is not null)
+                {
+                    await RecordChatGrantAsync(harness, state.Audience, request, ct);
+                    await WriteWithOnceRetryAsync(lines, state.Id, $"{id}+chat-grant", scope, executor, call, state.Audience, state.Interactive, ct);
+                }
+
+                return lines.ToString();
+            });
+        await WriteAsync(elements, inputs.Count, file, FileMode.Append, materializer);
     }
 
     private sealed record Scope(ShellApprovalHarness Harness, string Root, Cleaner Cleaner);
 
     // Writes the decision, and when it asks for consent, the retry with a "Once" answer.
     private static async Task<ToolApprovalContext?> WriteWithOnceRetryAsync(
-        StreamWriter writer,
+        StringBuilder lines,
         string state,
         string id,
         Scope scope,
@@ -200,13 +337,13 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
         CancellationToken ct)
     {
         var first = await DecideAsync(scope, executor, call, CreateContext(scope.Harness, audience, interactive, oneTime: null), ct);
-        await writer.WriteAsync($"{state}\t{id}\t{first.Text}\n");
+        lines.Append(CultureInfo.InvariantCulture, $"{state}\t{id}\t{first.Text}\n");
         if (first.Request is not { } request)
             return null;
 
         var consent = OneTimeApprovalKeys.CreateConsent(call.Name, request);
         var retry = await DecideAsync(scope, executor, call, CreateContext(scope.Harness, audience, interactive, consent), ct);
-        await writer.WriteAsync($"{state}\t{id}+once\t{retry.Text}\n");
+        lines.Append(CultureInfo.InvariantCulture, $"{state}\t{id}+once\t{retry.Text}\n");
         return request;
     }
 
@@ -351,6 +488,7 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
             foreach (var (path, placeholder) in replacements)
                 text = text.Replace(path, placeholder, StringComparison.Ordinal);
 
+            text = RunFolderGuid.Replace(text, "netclaw-$1-{GUID}");
             return WindowsHarnessRoot.Replace(text, "C:$1{W}")
                 .Replace("\\", "\\\\", StringComparison.Ordinal)
                 .Replace("\n", "\\n", StringComparison.Ordinal)
