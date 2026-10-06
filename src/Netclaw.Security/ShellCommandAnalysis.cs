@@ -901,7 +901,7 @@ public sealed record ShellCommandAnalysis
         CommandOccurrence command,
         IReadOnlySet<ClauseElement> accountedRegionArguments)
         => command.Clause.Args.Any(arg =>
-                arg.Kind == ArgKind.DynamicSkip
+                IsUnscopedExpansionWord(arg)
                 && !arg.IsCwdAttribution
                 && !IsAccountedExecutionRegionArgument(
                     command,
@@ -919,6 +919,29 @@ public sealed record ShellCommandAnalysis
                     accountedRegionArguments)
                 && HasUnsupportedArgumentDomain(argument)
                 && !IsUnknownOutputData(command, argument));
+
+    /// <summary>
+    /// Returns true when the word gets its value from an expansion and the
+    /// parser gives it no path scope.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: Netclaw computes a path scope only from a path word that the
+    /// parser resolves, from a file word, and from a typed filesystem value. A
+    /// variable word such as <c>"$d"</c> is not a path word, also when the
+    /// parser proves its value. In
+    /// <c>for d in ../x; do dotnet build "$d"; done</c> or
+    /// <c>d=../x; dotnet build "$d"</c>, the value <c>../x</c> is outside the
+    /// folder, but the candidate keeps only the working directory scope. Such a
+    /// word is an unknown operand, the same as a <see cref="ArgKind.DynamicSkip"/>
+    /// word, unless the parser types its value (see
+    /// <see cref="HasUnresolvedOperand"/>). Decision D1 then lets only a safe
+    /// phrase or a grant for anywhere cover the command. A variable word that
+    /// the parser resolves as a path (<c>"$HOME/x"</c>) keeps its path scope.
+    /// </remarks>
+    private static bool IsUnscopedExpansionWord(Arg arg)
+        => arg.Kind == ArgKind.DynamicSkip
+           || arg.Kind == ArgKind.EnvVar
+           && !(arg.IsPath && !string.IsNullOrWhiteSpace(arg.Resolved));
 
     internal static bool TryCollectKnownExecutionRegionArguments(
         ShellSyntaxNode node,
