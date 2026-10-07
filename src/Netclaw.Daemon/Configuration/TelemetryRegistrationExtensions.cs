@@ -9,6 +9,7 @@ using Microsoft.Extensions.Options;
 using Netclaw.Channels.Telemetry;
 using Netclaw.Configuration;
 using OpenTelemetry;
+using OpenTelemetry.Exporter;
 using OpenTelemetry.Logs;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Resources;
@@ -54,7 +55,7 @@ public static class TelemetryRegistrationExtensions
             options.IncludeScopes = true;
             options.ParseStateValues = true;
             options.SetResourceBuilder(ResourceBuilder.CreateEmpty().AddAttributes(resource.Attributes));
-            options.AddOtlpExporter(otlp => otlp.Endpoint = endpoint);
+            options.AddOtlpExporter(otlp => otlp.Endpoint = ResolveSignalEndpoint(endpoint, otlp.Protocol, "v1/logs"));
         });
 
         builder.Services.AddOpenTelemetry()
@@ -63,8 +64,28 @@ public static class TelemetryRegistrationExtensions
             {
                 metrics.AddMeter(ChannelTelemetry.MeterName);
                 metrics.AddMeter(SessionTelemetry.MeterName);
-                metrics.AddOtlpExporter(otlp => otlp.Endpoint = endpoint);
+                metrics.AddOtlpExporter(otlp => otlp.Endpoint = ResolveSignalEndpoint(endpoint, otlp.Protocol, "v1/metrics"));
             });
+    }
+
+    /// <summary>
+    /// Returns the URL an OTLP exporter posts to. The SDK appends the signal path only when
+    /// the endpoint comes from the OTEL_EXPORTER_OTLP_* environment variables; an endpoint set
+    /// in code is used verbatim, so HTTP/protobuf would post to "/". Following the
+    /// OpenTelemetry specification, <c>Telemetry:Otlp:Endpoint</c> is a base URL and HTTP/protobuf
+    /// appends <paramref name="signalPath"/> (<c>v1/logs</c>, <c>v1/metrics</c>). A URL that already
+    /// ends with that signal path is kept as given. gRPC uses the endpoint unchanged.
+    /// </summary>
+    internal static Uri ResolveSignalEndpoint(Uri endpoint, OtlpExportProtocol protocol, string signalPath)
+    {
+        if (protocol != OtlpExportProtocol.HttpProtobuf)
+            return endpoint;
+
+        var path = endpoint.AbsolutePath.TrimEnd('/');
+        if (path.EndsWith("/" + signalPath, StringComparison.Ordinal))
+            return endpoint;
+
+        return new UriBuilder(endpoint) { Path = $"{path}/{signalPath}" }.Uri;
     }
 
     /// <summary>
