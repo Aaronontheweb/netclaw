@@ -19,6 +19,8 @@ namespace Netclaw.Cli.Tui;
 /// files — it deliberately does not call <see cref="WizardOrchestrator.WriteConfig"/>,
 /// which would clobber the existing <c>netclaw.json</c> with bootstrap defaults
 /// (simplify-netclaw-init: identity stays init-owned and is editable on its own).
+/// After a successful save the operator can start the guided identity chat, which hands
+/// the same onboarding trigger as the full wizard to <see cref="ChatNavigationState"/>.
 /// </summary>
 public sealed class IdentityRedoViewModel : ReactiveViewModel
 {
@@ -26,10 +28,12 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
     private readonly WizardOrchestrator _orchestrator;
     private readonly IdentityStepViewModel _step;
     private readonly NetclawPaths _paths;
+    private readonly ChatNavigationState _chatNavigationState;
 
-    public IdentityRedoViewModel(NetclawPaths paths)
+    public IdentityRedoViewModel(NetclawPaths paths, ChatNavigationState chatNavigationState)
     {
         _paths = paths;
+        _chatNavigationState = chatNavigationState;
         _step = new IdentityStepViewModel();
         _context = new WizardContext
         {
@@ -41,6 +45,8 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         _orchestrator = new WizardOrchestrator([_step], _context, singleStepMode: true);
     }
 
+    public const string ChatRoute = "/chat";
+
     public WizardContext Context => _context;
     public IdentityStepViewModel Step => _step;
     public IdentityStepView StepView { get; } = new();
@@ -51,7 +57,7 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
     {
         if (IsSaved.Value)
         {
-            Shutdown();
+            StartGuidedChat();
             return;
         }
 
@@ -64,10 +70,32 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
 
         // Identity collected. Rewrite identity files only; built-in agents are left
         // untouched so a redo never clobbers customized agent definitions.
-        _step.WriteIdentityFiles(_paths);
+        try
+        {
+            _step.WriteIdentityFiles(_paths);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // Stay on the form without offering chat: nothing was saved, so there is no
+            // updated identity for the guided interview to build on.
+            _context.StatusMessage.Value = $"Identity not saved: {ex.Message}";
+            NotifyContentChanged();
+            return;
+        }
+
         IsSaved.Value = true;
-        _context.StatusMessage.Value = "Identity updated. Run `netclaw chat` to talk to your agent.";
+        _context.StatusMessage.Value = "Identity updated.";
         NotifyContentChanged();
+    }
+
+    /// <summary>
+    /// Hands the onboarding trigger to chat, built from the identity values just saved.
+    /// Only reachable after a successful save.
+    /// </summary>
+    private void StartGuidedChat()
+    {
+        _chatNavigationState.InitialMessage = _step.BuildOnboardingTrigger(_paths);
+        Navigate?.Invoke(ChatRoute);
     }
 
     public void GoBack()

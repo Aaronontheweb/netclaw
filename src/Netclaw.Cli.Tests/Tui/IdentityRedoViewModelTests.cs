@@ -54,7 +54,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         Assert.False(File.Exists(_paths.SoulPath));
         Assert.False(File.Exists(_paths.ToolingPath));
 
-        using var vm = new IdentityRedoViewModel(_paths);
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
         DriveToSaved(vm);
 
         Assert.True(vm.IsSaved.Value);
@@ -76,7 +76,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
     public void GoBack_at_first_identity_field_routes_to_existing_install_menu()
     {
         File.WriteAllText(_paths.NetclawConfigPath, "{ \"configVersion\": 1 }");
-        using var vm = new IdentityRedoViewModel(_paths);
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
 
         string? route = null;
         SetNavigate(vm, r => route = r);

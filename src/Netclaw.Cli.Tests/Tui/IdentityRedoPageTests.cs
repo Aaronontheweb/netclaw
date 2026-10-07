@@ -3,11 +3,17 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Time.Testing;
+using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Tui;
 using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
 using Termina;
+using Termina.Hosting;
 using Termina.Input;
+using Termina.Layout;
+using Termina.Reactive;
 using Termina.Terminal;
 using Xunit;
 
@@ -88,11 +94,205 @@ public sealed class IdentityRedoPageTests : IDisposable
         Assert.Equal(TimeZoneInfo.Local.Id, vm.Step.UserTimezone);
     }
 
+    [Fact]
+    public async Task SavedScreen_OffersGuidedChatAndSkip()
+    {
+        var landing = new ChatLanding();
+        var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await RedoIdentityAsync(app, terminal, input, cts.Token, () => input.EnqueueKey(ConsoleKey.Q, control: true));
+
+        Assert.True(terminal.Contains("Identity updated."), $"Screen:\n{terminal}");
+        Assert.True(terminal.Contains("Press Enter to start the guided identity chat, or Esc to skip it."),
+            $"Screen:\n{terminal}");
+        Assert.True(terminal.Contains("[Enter] Start guided identity chat"), $"Screen:\n{terminal}");
+        Assert.True(terminal.Contains("[Esc] Skip"), $"Screen:\n{terminal}");
+        Assert.False(landing.Entered);
+    }
+
+    [Fact]
+    public async Task EnterOnSavedScreen_NavigatesToChatWithOnboardingTriggerFromUpdatedIdentity()
+    {
+        var landing = new ChatLanding();
+        var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        // Default completion action: start guided chat.
+        await RedoIdentityAsync(app, terminal, input, cts.Token, () => input.EnqueueKey(ConsoleKey.Enter));
+
+        Assert.True(landing.Entered, "Enter on the saved screen must navigate to chat.");
+        Assert.False(string.IsNullOrWhiteSpace(landing.InitialMessage));
+
+        // Built from the values just entered, not from defaults or stale state.
+        Assert.Contains("My name is Pat", landing.InitialMessage);
+        Assert.Contains("\"Concise & formal\"", landing.InitialMessage);
+        Assert.Contains(_paths.SoulPath, landing.InitialMessage);
+        Assert.Contains(_paths.AgentsPath, landing.InitialMessage);
+
+        // The interview still gates the playbook write on operator confirmation.
+        Assert.Contains("ask me to confirm it before writing either file", landing.InitialMessage);
+
+        var soul = File.ReadAllText(_paths.SoulPath);
+        Assert.Contains("Sentinel", soul);
+    }
+
+    [Fact]
+    public async Task EscOnSavedScreen_SkipsChatAndExits()
+    {
+        var landing = new ChatLanding();
+        var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await RedoIdentityAsync(app, terminal, input, cts.Token, () => input.EnqueueKey(ConsoleKey.Escape));
+
+        Assert.True(File.Exists(_paths.SoulPath), "Skip must not undo the saved identity.");
+        Assert.False(landing.Entered, "Skip must not launch chat.");
+        Assert.Null(landing.InitialMessage);
+        Assert.Null(landing.NavigationState.InitialMessage);
+    }
+
+    [Fact]
+    public async Task SaveFailure_DoesNotOfferOrLaunchChat()
+    {
+        // A directory where SOUL.md belongs makes the identity write fail.
+        Directory.CreateDirectory(_paths.SoulPath);
+
+        var landing = new ChatLanding();
+        var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await RedoIdentityAsync(app, terminal, input, cts.Token, () =>
+        {
+            input.EnqueueKey(ConsoleKey.Enter); // would start chat if the save had succeeded
+            input.EnqueueKey(ConsoleKey.Q, control: true);
+        });
+
+        Assert.False(landing.Entered, "A failed save must not launch chat.");
+        Assert.Null(landing.NavigationState.InitialMessage);
+        Assert.True(terminal.Contains("Identity not saved"), $"Screen:\n{terminal}");
+        Assert.False(terminal.Contains("Start guided identity chat"), $"Screen:\n{terminal}");
+    }
+
+    [Fact]
+    public async Task GuidedChatHandoff_LeavesConfigAndSecretsUntouched()
+    {
+        const string config = "{ \"configVersion\": 1, \"Security\": { \"DeploymentPosture\": \"Team\" }, "
+                              + "\"Providers\": { \"openrouter\": { \"BaseUrl\": \"https://openrouter.ai/api/v1\" } } }";
+        const string secrets = "{ \"Providers\": { \"openrouter\": { \"ApiKey\": \"sk-test-not-real\" } } }";
+        File.WriteAllText(_paths.NetclawConfigPath, config);
+        File.WriteAllText(_paths.SecretsPath, secrets);
+
+        var landing = new ChatLanding();
+        var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await RedoIdentityAsync(app, terminal, input, cts.Token, () => input.EnqueueKey(ConsoleKey.Enter));
+
+        Assert.True(landing.Entered);
+        Assert.Equal(config, File.ReadAllText(_paths.NetclawConfigPath));
+        Assert.Equal(secrets, File.ReadAllText(_paths.SecretsPath));
+    }
+
+    // Menu (first item: Redo identity setup) -> agent name -> communication style
+    // (second option) -> user name -> timezone, then the caller's completion keys.
+    // Keys sent while the menu hands over to the redo page would be lost, so the
+    // identity keys wait until the redo page is on screen.
+    private static async Task RedoIdentityAsync(
+        TerminaApplication app,
+        VirtualTerminal terminal,
+        VirtualInputSource input,
+        CancellationToken ct,
+        Action completionKeys)
+    {
+        var run = app.RunAsync(ct);
+
+        input.EnqueueKey(ConsoleKey.Enter); // menu: Redo identity setup
+        while (!terminal.Contains("Agent name"))
+        {
+            ct.ThrowIfCancellationRequested();
+            await Task.Yield();
+        }
+
+        input.EnqueueString("Sentinel");
+        input.EnqueueKey(ConsoleKey.Enter);
+        input.EnqueueKey(ConsoleKey.DownArrow);
+        input.EnqueueKey(ConsoleKey.Enter);
+        input.EnqueueString("Pat");
+        input.EnqueueKey(ConsoleKey.Enter);
+        input.EnqueueKey(ConsoleKey.Enter); // timezone default -> save
+        completionKeys();
+
+        await run;
+    }
+
+    // The existing-install menu, the real redo page, and a stub chat route that records
+    // what the real chat page would receive from ChatNavigationState (mirrors the
+    // StubChatPage pattern in SessionsPageTests).
+    private (VirtualTerminal Terminal, TerminaApplication App, ServiceProvider Services)
+        CreateExistingInstallApp(ChatLanding landing, out VirtualInputSource input)
+    {
+        var terminal = new VirtualTerminal(120, 40);
+        var virtualInput = new VirtualInputSource();
+        input = virtualInput;
+
+        var services = new ServiceCollection();
+        services.AddSingleton<IAnsiTerminal>(terminal);
+        services.AddTerminaVirtualInput(virtualInput);
+        services.AddSingleton(landing.NavigationState);
+        services.AddTermina(InitExistingInstallViewModel.MenuRoute, builder =>
+        {
+            builder.RegisterRoute<InitExistingInstallPage, InitExistingInstallViewModel>(
+                InitExistingInstallViewModel.MenuRoute,
+                _ => new InitExistingInstallPage(),
+                _ => new InitExistingInstallViewModel(
+                    _paths,
+                    new InitNavigationState(),
+                    (_, _) => Task.FromResult(new DaemonResult(true, "stopped")),
+                    _ => { },
+                    new FakeTimeProvider()));
+            builder.RegisterRoute<IdentityRedoPage, IdentityRedoViewModel>(
+                InitExistingInstallViewModel.IdentityRoute,
+                _ => new IdentityRedoPage(),
+                _ => new IdentityRedoViewModel(_paths, landing.NavigationState));
+            builder.RegisterRoute<StubChatPage, StubChatViewModel>(
+                IdentityRedoViewModel.ChatRoute,
+                _ => new StubChatPage(),
+                _ => new StubChatViewModel(landing));
+        });
+
+        var sp = services.BuildServiceProvider();
+        return (terminal, sp.GetRequiredService<TerminaApplication>(), sp);
+    }
+
+    private sealed class ChatLanding
+    {
+        public ChatNavigationState NavigationState { get; } = new();
+        public bool Entered { get; set; }
+        public string? InitialMessage { get; set; }
+    }
+
+    private sealed class StubChatViewModel(ChatLanding landing) : ReactiveViewModel
+    {
+        public override void OnActivated()
+        {
+            base.OnActivated();
+            landing.Entered = true;
+            landing.InitialMessage = landing.NavigationState.TakeInitialMessage();
+            Shutdown();
+        }
+    }
+
+    private sealed class StubChatPage : ReactivePage<StubChatViewModel>
+    {
+        public override ILayoutNode BuildLayout() => Layouts.Empty();
+    }
+
     private (VirtualTerminal Terminal, TerminaApplication App, IdentityRedoViewModel Vm)
         CreateHeadlessApp(out VirtualInputSource input)
         => HeadlessTerminaFixture.Create<IdentityRedoPage, IdentityRedoViewModel>(
             "/identity-redo",
             () => new IdentityRedoPage(),
-            () => new IdentityRedoViewModel(_paths),
+            () => new IdentityRedoViewModel(_paths, new ChatNavigationState()),
             out input);
 }
