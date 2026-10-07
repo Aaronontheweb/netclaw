@@ -142,6 +142,32 @@ public sealed class MemoryCommandTests : IDisposable
         Assert.Contains("embedded=0 skipped-hash-unchanged=1 failed=0", stdout);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BackfillEmbeddings_does_nothing_when_embeddings_are_disabled(bool force)
+    {
+        // No model is pre-placed and AutoDownload is on: before the fix this would try to
+        // download the model. Disabled must mean no provisioning, no embedding, and a pointer
+        // to the setting -- with or without --force.
+        var paths = CreateTempPaths(prePlaceValidModel: false);
+        var config = BuildConfig(autoDownload: true, enabled: false);
+
+        var store = new SQLiteMemoryStore(paths.SqliteDbPath, TimeProvider.System);
+        await store.InitializeAsync(TestContext.Current.CancellationToken);
+        await SeedDocumentAsync(store, "doc-1", "Doc One", "first body");
+
+        string[] args = force ? ["memory", "backfill-embeddings", "--force"] : ["memory", "backfill-embeddings"];
+        var (exitCode, stdout, stderr) = await RunCapturedWithStderrAsync(args, paths, config);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Memory.Embeddings.Enabled", stdout);
+        Assert.DoesNotContain("Provisioning", stdout);
+        Assert.Equal("", stderr);
+        Assert.False(File.Exists(Path.Combine(paths.EmbeddingModelDirectory(ModelId), "model.onnx")));
+        Assert.Empty(await store.GetEmbeddingsForModelAsync(ModelId, TestContext.Current.CancellationToken));
+    }
+
     private static async Task<(int ExitCode, string Stdout)> RunCapturedAsync(string[] args, NetclawPaths paths, IConfiguration config)
     {
         var (exitCode, stdout, _) = await RunCapturedWithStderrAsync(args, paths, config);
@@ -176,11 +202,11 @@ public sealed class MemoryCommandTests : IDisposable
         return paths;
     }
 
-    private static IConfiguration BuildConfig(bool autoDownload)
+    private static IConfiguration BuildConfig(bool autoDownload, bool enabled = true)
     {
         var settings = new Dictionary<string, string?>
         {
-            ["Memory:Embeddings:Enabled"] = "true",
+            ["Memory:Embeddings:Enabled"] = enabled ? "true" : "false",
             ["Memory:Embeddings:ModelId"] = ModelId,
             ["Memory:Embeddings:AutoDownload"] = autoDownload ? "true" : "false",
         };
