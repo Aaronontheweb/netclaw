@@ -212,7 +212,7 @@ public sealed class ApprovalTurnBoundaryTests : LlmSessionTestBase
         var body = new string('c', ApprovalOptionKeys.MaxCommandTextChars);
         var longCommand = _environment.Grammar == ShellGrammar.PowerShell
             ? $"Add-Content -NoNewline -Path launch-count.txt -Value '{body}'"
-            : $"printf '%s' '{body}' >> launch-count.txt";
+            : $"printf '%s' '{body}' | tee -a launch-count.txt";
         _chatClient.ToolCallsOnFirstCall = [CreateMarkerCall(callId, directory, longCommand)];
         var sessionId = new SessionId("approval-turn/long");
         var manager = ActorRegistry.Get<SessionManagerActorKey>();
@@ -263,7 +263,7 @@ public sealed class ApprovalTurnBoundaryTests : LlmSessionTestBase
 
     private string MarkerCommand => _environment.Grammar == ShellGrammar.PowerShell
         ? "Add-Content -NoNewline -Path launch-count.txt -Value x"
-        : "printf x >> launch-count.txt";
+        : "printf x | tee -a launch-count.txt";
 
     private static string MarkerPath(string directory)
         => Path.Combine(directory, "launch-count.txt");
@@ -538,7 +538,7 @@ public sealed class ApprovalRedriveBoundaryTests : LlmSessionTestBase
 
     private string MarkerCommand => _environment.Grammar == ShellGrammar.PowerShell
         ? "Add-Content -NoNewline -Path launch-count.txt -Value x"
-        : "printf x >> launch-count.txt";
+        : "printf x | tee -a launch-count.txt";
 
     private static string MarkerPath(string directory)
         => Path.Combine(directory, "launch-count.txt");

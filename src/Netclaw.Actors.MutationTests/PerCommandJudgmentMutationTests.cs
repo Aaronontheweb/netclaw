@@ -194,6 +194,24 @@ public sealed class PerCommandJudgmentMutationTests : IDisposable
             consent.Request.Options.Select(static option => option.Key.Value));
     }
 
+    // The authorizer gives a prompt with no candidate its full command text, so
+    // the decision does not show this fact. A source with no command candidate
+    // must stay unresolved for the rules before that point (advice, twins).
+    [Fact]
+    public void A_source_without_command_candidates_stays_unresolved()
+    {
+        const string command = "while read -r f; do cat \"$f\"; done < list.txt";
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironmentDefaults.Bash);
+        var approval = matcher.AnalyzeInvocation(
+            new ToolName(ShellTool.ToolName),
+            new Dictionary<string, object?> { ["Command"] = command, ["WorkingDirectory"] = "/work/project" });
+        Assert.True(approval.IsMessy);
+        Assert.Empty(approval.Candidates);
+        Assert.Empty(approval.CommandCandidates);
+
+        Assert.Same(approval, ToolAccessPolicy.WithCommandCandidates(approval));
+    }
+
     private static void AssertExactPrompt(AuthorizationDecision decision, string exact)
     {
         var consent = Assert.IsType<AuthorizationDecision.NeedsConsent>(decision);

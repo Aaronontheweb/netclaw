@@ -389,13 +389,14 @@ public sealed class HardDenyParityCorpusTests(ShellApprovalMatrixFixture fixture
         }
     }
 
-    // Unparseable input can ask for one exact retry. It never offers a reusable grant.
+    // Unparseable input can ask for one exact retry. It never offers a reusable
+    // grant. The prompt shows the full command text.
     private static void AssertExactConsentOnly(ApprovalObservation observation)
     {
         Assert.Equal(ApprovalOutcome.RequiresApproval, observation.Outcome);
         var prompt = Assert.IsType<ApprovalPromptObservation>(observation.Prompt);
         Assert.True(prompt.IsMessy);
-        Assert.Empty(prompt.CandidateVerbs);
+        Assert.Equal(prompt.Patterns.Count > 0 ? [] : [prompt.DisplayText], prompt.CandidateVerbs);
         Assert.All(
             prompt.OptionKeys,
             key => Assert.Contains(key, new[] { ObservedOptionKeys.ApproveOnce, ObservedOptionKeys.Deny }));

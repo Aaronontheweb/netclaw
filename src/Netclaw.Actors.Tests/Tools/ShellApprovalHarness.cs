@@ -83,6 +83,9 @@ internal sealed record ApprovalPromptObservation(
     /// <summary>The command text that a channel shows to the operator.</summary>
     public string DisplayText { get; init; } = string.Empty;
 
+    /// <summary>The patterns that a channel lists when the prompt has no candidate verb.</summary>
+    public IReadOnlyList<string> Patterns { get; init; } = [];
+
     /// <summary>The button labels, in the same order as <see cref="OptionKeys"/>.</summary>
     public IReadOnlyList<string> OptionLabels { get; init; } = [];
 
@@ -746,12 +749,22 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
     }
 
     private static ApprovalPromptObservation ObservePrompt(ToolApprovalContext approvalContext)
-        => new(
+    {
+        // Owner decision (October 2026): a consent request that names nothing
+        // is a defect. Every test that observes a prompt fails loudly here.
+        if (approvalContext.CandidateVerbs.Count == 0 && approvalContext.Patterns.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"The consent request for '{approvalContext.DisplayText}' has no displayable candidate.");
+        }
+
+        return new(
             approvalContext.CandidateVerbs,
             approvalContext.IsMessy,
             approvalContext.Options.Select(option => option.Key.Value).ToList())
         {
             DisplayText = approvalContext.DisplayText,
+            Patterns = approvalContext.Patterns,
             OptionLabels = approvalContext.Options.Select(option => option.Label).ToList(),
             CandidateDirectories = approvalContext.Candidates?
                 .Select(candidate => candidate.Directory)
@@ -759,6 +772,7 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
             Cwd = approvalContext.Cwd,
             OneTimeApprovalKeys = OneTimeApprovalKeys.Create(approvalContext)
         };
+    }
 
     internal static ApprovalOutcome ObserveOutcome(
         AuthorizationDecision decision)

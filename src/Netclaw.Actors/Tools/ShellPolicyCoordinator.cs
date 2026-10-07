@@ -188,8 +188,14 @@ internal sealed class ShellPolicyCoordinator(
             // A pure side effect has no directory and no assignment, so its
             // exemption does not depend on the role. The causal list role keeps
             // a directory change and its action uncovered; it does not change echo.
+            // Owner decision (October 2026): a command that runs no program
+            // is exempt too. The authorizer already judged each redirect of
+            // such a command with the file rules and the file tool modes of
+            // the audience (ToolAccessPolicy.ScreenNoProgramRedirects), so a
+            // grant or an answer can add no fact.
             foreach (var candidate in evaluation.Candidates.Where(static item =>
-                         ApprovalPatternMatching.IsPureSideEffect(item.Candidate)))
+                         ApprovalPatternMatching.IsPureSideEffect(item.Candidate)
+                         || item.Candidate is { RunsNoProgram: true, Unresolved: ShellUnresolvedPart.None }))
             {
                 evaluation.Cover(candidate, Coverage.Exempt.Instance);
             }
@@ -248,8 +254,11 @@ internal sealed class ShellPolicyCoordinator(
                 return true;
 
             // A candidate with no parser verb (a redirect-only clause) has no
-            // command identity at all, as before: exact approval only.
+            // command identity at all, as before: exact approval only. A
+            // proved redirect-only command runs no program, so the file rules
+            // judge it instead.
             if (candidate.Candidate.VerbTokens is null
+                && !candidate.Candidate.RunsNoProgram
                 && candidate.SourceOccurrence is { Clause.Verb.Tokens.Count: 0 })
             {
                 return true;
@@ -286,6 +295,14 @@ internal sealed class ShellPolicyCoordinator(
             // unusable input keeps failing closed.
             if (candidate.Candidate.VerbTokens is not { } tokens)
             {
+                // A redirect-only command has no parser verb. It never asks
+                // for a grant, so it needs no command identity.
+                if (candidate.Candidate.RunsNoProgram
+                    && candidate.SourceOccurrence is { Clause.Verb.Tokens.Count: 0 })
+                {
+                    continue;
+                }
+
                 if (candidate.SourceOccurrence?.Clause.Verb.Tokens is not { Count: > 0 } parserTokens
                     || parserTokens.Any(static token => token.Length == 0))
                 {

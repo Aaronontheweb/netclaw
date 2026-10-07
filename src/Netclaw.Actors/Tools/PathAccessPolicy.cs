@@ -240,17 +240,25 @@ internal sealed class PathAccessPolicy
     }
 
     /// <summary>Applies file protection to one parser-canonical shell path.</summary>
-    public PathAccessDecision EvaluateShellPath(
+    /// <param name="path">The parser-canonical path.</param>
+    /// <param name="context">The invocation that supplies the audience profile.</param>
+    /// <param name="operation">
+    /// <see cref="FileOperation.Write"/> for the shell trust zone.
+    /// <see cref="FileOperation.Read"/> for the input redirect of a command
+    /// that runs no program: the <c>file_read</c> rules, as an extra check.
+    /// </param>
+    internal PathAccessDecision EvaluateShellPath(
         CanonicalPath path,
-        ToolInvocationContext context)
+        ToolInvocationContext context,
+        FileOperation operation)
     {
         if (path.IsHostStyle)
-            return Evaluate(path.Value, context, FileOperation.Write);
+            return Evaluate(path.Value, context, operation);
 
         // Cross-platform parser tests can supply paths from another host style.
         // Only an explicit All profile has enough authority without a host
         // filesystem relationship check. Bounded profiles fail closed.
-        return HasUnrestrictedFileAccess(context, FileOperation.Write)
+        return HasUnrestrictedFileAccess(context, operation)
             ? PathAccessDecision.Allow(path.Value)
             : PathAccessDecision.Deny(
                 "Error: Path relationship could not be verified on this host.",
