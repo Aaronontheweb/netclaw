@@ -723,11 +723,37 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
   and an exact candidate keeps its words. The stored match kind keeps the name
   `TokenPrefix`, so the version-3 store does not change. A legacy phrase uses
   the same rule for its words.
-  Since approval taxonomy fix 5, the display verb does not count: the legacy
-  phrase `dotnet list package` covers `dotnet list package --vulnerable`, whose
-  prompt shows `dotnet list`. Policy data gives some programs a one-token chain
-  (`echo`, `which`, `jq`); a bare-program grant for them also covers their
-  plain words.
+  Policy data gives some programs a one-token chain (`echo`, `which`, `jq`); a
+  bare-program grant for them also covers their plain words.
+- Follows: a candidate has one grant identity. `ShellApprovalMatcher` owns it,
+  and the data is call-local. The candidate verb is the phrase text of the
+  command words, after the program path rule (R1) below. The prompt shows that
+  verb, the answer saves those words, and a grant matches those words.
+  `GrantIdentityApprovalTests` proves for each catalog command that the saved
+  grant has the text of the candidate verb and covers the candidate.
+
+  ```text
+  words    = CommandWords(occurrence) minus file words, with the program path
+  verb     = phrase(words)              # prompt, CandidateVerbs, match text
+  grant    = TokenPrefix(words, scope)  # the answer saves the same words
+  covered  = grant.words is a prefix of words
+             and (grant.words.Count >= 2 or words.Count == 1)
+  ```
+
+  Positive example: `pipedrive dealFields list --custom-only --json` shows
+  `pipedrive dealFields list`. The answer "This chat" saves those words, and
+  the grant covers `pipedrive dealFields list --json`. Negative example: that
+  grant does not cover `pipedrive organizationFields list` or
+  `pipedrive deals delete 42`, and a program-only grant `pipedrive` covers
+  neither. Before this rule, the verb came from the ShellSyntaxTree verb walk
+  (`Clause.Verb`). That walk stops at a word with an uppercase letter, so the
+  prompt showed `pipedrive` for a grant of three words. The verb walk now
+  serves policy only: the data-command rule, the one-token chain data, the
+  directory operand verbs, reviewed-safe phrases, and hard deny. Three
+  candidates keep another verb, because they save no grant from it:
+  an approval-exempt data command keeps its program name (`echo`),
+  a command with `Unknown` words keeps its policy verb, and an exact candidate
+  keeps its source text.
 - Follows: a program path names a file, not a spelling (R1). When the
   program word has a slash, `ShellApprovalMatcher` replaces it with the
   lexical absolute path: it joins a relative path with the occurrence working

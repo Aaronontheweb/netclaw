@@ -238,13 +238,16 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
         {
             "L12" => posixHost ? ["mkdir", "git clone"] : ["mkdir", "cd", "git clone"],
             "L14" => ["git remote", "git fetch origin", "git fetch upstream"],
-            "L15" => posixHost ? ["find"] : ["cd", "find", "head"],
+            "L15" => posixHost ? ["find f"] : ["cd", "find f", "head"],
             "L16" => ["git add", "git rebase"],
             "L17" => ["sort", "comm"],
             "L18" => ["cd", "ls", "head"],
             "L21" => ["cd", "git log", "grep"],
             "L22" => windowsHost ? ["cd", "python3"] : ["python3"],
             "L24" when posixHost => ["external-crm deals list"],
+            // The verb is the command words. The parser gives "-o" one value, so
+            // the second option value and the host are command words.
+            "L25" => ["ssh BatchMode=yes service.example.invalid"],
             "L29" => ["docker compose config"],
             "L30" => ["sed"],
             "L32" => ["gh api"],

@@ -15,8 +15,12 @@ using ShellSyntaxTree;
 namespace Netclaw.Security;
 
 /// <summary>
-/// One approval candidate extracted from a tool invocation. The verb is the
-/// command head plus subcommand chain (e.g., <c>find</c>, <c>git status</c>).
+/// One approval candidate extracted from a tool invocation. For a shell
+/// command with known command words, the verb is the phrase text of
+/// <see cref="VerbTokens"/> (e.g., <c>git status</c>,
+/// <c>pipedrive dealFields list</c>). The prompt shows it, and a grant from
+/// the prompt saves those words. An approval-exempt data command keeps its
+/// program name (<c>echo</c>), and an exact candidate keeps its source text.
 /// The directory identifies a path operand, a redirect parent, or an inherited
 /// shell directory. A null directory uses the spawned process cwd.
 /// One shell clause can produce multiple candidates when it accesses multiple
@@ -443,7 +447,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 
             if (!ShellAssignmentDigestFactory.TryCreate(
                     ApprovalShell.Bash,
-                    QualifyingAssignments(source.Assignments, ApprovalShell.Bash, candidate.Verb),
+                    QualifyingAssignments(source.Assignments, ApprovalShell.Bash, PolicyProgram(candidate)),
                     out var digest))
             {
                 return false;
@@ -455,6 +459,15 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         qualified = Array.AsReadOnly(result);
         return true;
     }
+
+    /// <summary>
+    /// Returns the program word that the data-command rule reads. The verb of a
+    /// candidate is its command words, so a data command with a redirect
+    /// (<c>echo hi &gt; out.txt</c>) has the verb <c>echo hi</c>. Its first
+    /// command word is the program. Unknown command words keep the policy verb.
+    /// </summary>
+    private static string PolicyProgram(ApprovalCandidate candidate)
+        => candidate.VerbTokens is { Count: > 0 } words ? words[0] : candidate.Verb;
 
     private ApprovalCandidate? CreateExactCandidate(
         string source,
@@ -571,15 +584,23 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
                 clauseWorkingDirectory,
                 out var programPath))
         {
-            verb = ReplaceProgram(
-                verb,
-                ShellCommandWordText.Quote(shell, clause.Verb.Tokens[0]),
-                ShellCommandWordText.Quote(shell, programPath));
             verbTokens = Array.AsReadOnly([programPath, .. verbTokens.Skip(1)]);
         }
 
+        // One grant identity: the prompt shows, the store saves, and a grant
+        // matches the same command words. The parser verb walk stops at a word
+        // such as "dealFields", so its text ("pipedrive") named a grant that
+        // the answer did not save. Unknown command words have no grant, so the
+        // policy verb only names the program.
+        var identity = verbTokens is null
+            ? verb
+            : ShellCommandWordText.FormatPhrase(shell, verbTokens);
         return directories
-            .Select(directory => new ApprovalCandidate(verb, directory)
+            .Select(directory => new ApprovalCandidate(
+                // An approval-exempt data command saves no grant. It keeps the
+                // policy verb, because IsPureSideEffect reads that verb.
+                isSideEffectVerb && directory is null && assignmentDigest is null ? verb : identity,
+                directory)
             {
                 AssignmentDigest = assignmentDigest,
                 VerbTokens = verbTokens,
@@ -691,14 +712,6 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
                && ShellProgramPath.TryResolve(programWord, workingDirectory, out programPath)
                && !string.Equals(programPath, programWord, StringComparison.Ordinal);
     }
-
-    // The display verb starts with the parser's program word. A launcher value
-    // ($HOME/x) and a relative path both show the file that runs.
-    private static string ReplaceProgram(string verb, string parserProgram, string programPath)
-        => verb.StartsWith(parserProgram, StringComparison.Ordinal)
-           && (verb.Length == parserProgram.Length || verb[parserProgram.Length] == ' ')
-            ? programPath + verb[parserProgram.Length..]
-            : verb;
 
     /// <summary>
     /// Returns the rewrite that gives a command known command words, or null

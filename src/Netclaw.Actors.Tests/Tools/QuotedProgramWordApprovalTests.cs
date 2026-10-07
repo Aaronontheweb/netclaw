@@ -98,7 +98,7 @@ public sealed class QuotedProgramWordApprovalTests(ShellApprovalMatrixFixture fi
 
         Assert.Equal(ApprovalOutcome.Allowed, exempt.Outcome);
         Assert.Equal(ApprovalOutcome.RequiresApproval, quoted.Outcome);
-        Assert.Equal(["'echo x'"], quoted.Prompt!.CandidateVerbs);
+        Assert.Equal(["'echo x' hi"], quoted.Prompt!.CandidateVerbs);
     }
 
     private Task<ShellApprovalHarness> CreateHarnessAsync()

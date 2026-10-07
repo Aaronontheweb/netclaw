@@ -338,14 +338,14 @@ public static class ShellApprovalCases
             "prose-quoted-program-word-prompts",
             Bash("I'm speaking at Stir Trek 2026 - I fly out of IAH. What's the best flight / hotel combination for me?"),
             Approvals.None,
-            ExpectedApproval.Require(["'Im speaking at Stir Trek 2026 - I fly out of IAH. Whats' the best flight"])),
+            ExpectedApproval.Require(["'Im speaking at Stir Trek 2026 - I fly out of IAH. Whats' the best flight hotel combination for"])),
         // A Windows host reads "/" as the drive root, a protected path, so
         // ApprovalContractBoundaryTests pins that denial.
         Case(
             "powershell7-prose-quoted-program-word-prompts",
             PowerShell7("I'm speaking at Stir Trek 2026 - I fly out of IAH. What's the best flight / hotel combination for me?"),
             Approvals.None,
-            ExpectedApproval.Require(["'Im speaking at Stir Trek 2026 - I fly out of IAH. Whats' the best flight"])) with { ReadsOutsidePathOnWindowsHost = true },
+            ExpectedApproval.Require(["'Im speaking at Stir Trek 2026 - I fly out of IAH. Whats' the best flight hotel combination for"])) with { ReadsOutsidePathOnWindowsHost = true },
         // Prose: the quotes join a program word with spaces, which is a normal
         // word (#2336). One grant lookup runs. A chat would prompt, so the
         // unattended run denies it (D2).
@@ -477,7 +477,7 @@ public static class ShellApprovalCases
             "unsafe-catalog-find-exec-prompts",
             Bash("find . -exec rm {} +"),
             Approvals.None,
-            ExpectedApproval.Require(["find"])),
+            ExpectedApproval.Require(["find rm {} +"])),
         Case(
             "unsafe-catalog-awk-system-prompts",
             Bash("awk 'BEGIN { system(\"touch marker\") }'"),
@@ -609,7 +609,7 @@ public static class ShellApprovalCases
             "reviewed-project-file-redirect-prompts",
             Bash("grep -n needle src/readme.txt > hits.txt"),
             Approvals.None,
-            ExpectedApproval.Require(["grep"])),
+            ExpectedApproval.Require(["grep needle"])),
         Case(
             "reviewed-null-device-with-file-redirect-prompts",
             Bash("ls src 2>/dev/null > listing.txt"),
@@ -619,7 +619,7 @@ public static class ShellApprovalCases
             "echo-external-redirect-prompts",
             Bash($"echo x > {TemporaryFile("netclaw-approval-echo.txt")}"),
             Approvals.None,
-            ExpectedApproval.Require(["echo"])),
+            ExpectedApproval.Require(["echo x"])),
         // On a POSIX host a backslash is a file-name character, not a separator.
         Case(
             "reviewed-backslash-pattern-allows",
@@ -868,13 +868,108 @@ public static class ShellApprovalCases
             "directory-listing-glob-pipeline-offers-persistent-grant",
             Bash("ls -d subdirs/*/ | xargs -n1 basename", ApprovalDirectoryShape.External),
             Approvals.None,
-            ExpectedApproval.Require(["xargs"])),
+            ExpectedApproval.Require(["xargs basename"])),
         // #2306: the command words of "git --no-pager status" are "git status", so the grant covers it.
         Case(
             "native-global-option-identity-gap-currently-prompts",
             Bash("git --no-pager status"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "git status"),
-            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:git")),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:git status")),
+
+        // One grant identity: the prompt shows the command words that the
+        // answer saves. The parser verb walk stops at "dealFields", so the
+        // prompt showed "pipedrive" and the answer saved "pipedrive dealFields
+        // list". The next pipedrive command then showed the same verb.
+        Case(
+            "grant-identity-mixed-case-verb-prompts-with-command-words",
+            Bash("pipedrive dealFields list --custom-only --json"),
+            Approvals.None,
+            ExpectedApproval.Require(["pipedrive dealFields list"])),
+        Case(
+            "grant-identity-mixed-case-pipeline-prompts-with-command-words",
+            Bash("pipedrive dealFields list --custom-only --json | jq '.[] | .name'"),
+            Approvals.None,
+            ExpectedApproval.Require(["pipedrive dealFields list"])),
+        Case(
+            "grant-identity-mixed-case-chat-grant-allows",
+            Bash("pipedrive dealFields list --json"),
+            Approvals.Session("pipedrive dealFields list"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:pipedrive dealFields list")),
+        Case(
+            "grant-identity-mixed-case-folder-grant-allows",
+            Bash("pipedrive dealFields list --json"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "pipedrive dealFields list"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:pipedrive dealFields list")),
+        // Negative controls: the grant covers its words only.
+        Case(
+            "grant-identity-mixed-case-grant-keeps-other-verb-prompt",
+            Bash("pipedrive deals delete 42"),
+            Approvals.Combine(
+                Approvals.Session("pipedrive dealFields list"),
+                Approvals.PersistentHere(ApprovalDirectoryShape.Project, "pipedrive dealFields list")),
+            ExpectedApproval.Require(["pipedrive deals delete"])),
+        Case(
+            "grant-identity-mixed-case-grant-keeps-next-verb-prompt",
+            Bash("pipedrive organizationFields list --json"),
+            Approvals.Session("pipedrive dealFields list"),
+            ExpectedApproval.Require(["pipedrive organizationFields list"])),
+        // SECURITY: a program-only grant stays exact. It does not become wider.
+        Case(
+            "grant-identity-program-only-grant-keeps-verb-prompt",
+            Bash("pipedrive dealFields list --json"),
+            Approvals.Combine(
+                Approvals.Session("pipedrive"),
+                Approvals.PersistentHere(ApprovalDirectoryShape.Project, "pipedrive")),
+            ExpectedApproval.Require(["pipedrive dealFields list"])),
+        Case(
+            "grant-identity-program-only-grant-allows-bare-program",
+            Bash("pipedrive"),
+            Approvals.Session("pipedrive"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:pipedrive")),
+        Case(
+            "grant-identity-lowercase-verb-prompts-unchanged",
+            Bash("pipedrive dealfields list"),
+            Approvals.None,
+            ExpectedApproval.Require(["pipedrive dealfields list"])),
+        Case(
+            "grant-identity-second-word-mixed-case-prompts-with-command-words",
+            Bash("mytool subCommand list"),
+            Approvals.None,
+            ExpectedApproval.Require(["mytool subCommand list"])),
+        Case(
+            "grant-identity-second-word-mixed-case-grant-allows",
+            Bash("mytool subCommand list --all"),
+            Approvals.Session("mytool subCommand list"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:mytool subCommand list")),
+        // The command words skip a word with a digit ("s3api"), so the grant
+        // is "aws listObjects". The prompt shows that grant.
+        Case(
+            "grant-identity-digit-word-prompts-with-command-words",
+            Bash("aws s3api listObjects --bucket b"),
+            Approvals.None,
+            ExpectedApproval.Require(["aws listObjects"])),
+        Case(
+            "grant-identity-digit-word-grant-allows",
+            Bash("aws s3api listObjects --bucket b"),
+            Approvals.Session("aws listObjects"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:aws listObjects")),
+        Case(
+            "grant-identity-digit-word-grant-keeps-other-verb-prompt",
+            Bash("aws s3api deleteObjects --bucket b"),
+            Approvals.Session("aws listObjects"),
+            ExpectedApproval.Require(["aws deleteObjects"])),
+        // PowerShell: an alias gives the canonical cmdlet, and a native program
+        // gives its command words.
+        Case(
+            "grant-identity-powershell-alias-grant-allows",
+            PowerShell7("gci"),
+            Approvals.Session("Get-ChildItem"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:Get-ChildItem")),
+        Case(
+            "grant-identity-powershell-mixed-case-native-verb-prompts-with-command-words",
+            PowerShell7("pipedrive dealFields list --json"),
+            Approvals.None,
+            ExpectedApproval.Require(["pipedrive dealFields list"])),
 
         Case(
             "semicolon-sequence-prompts",
@@ -1312,7 +1407,7 @@ public static class ShellApprovalCases
             "timeout-nested-shell-prompts",
             Bash("timeout 5 bash -lc \"git push\""),
             Approvals.None,
-            ExpectedApproval.Require(["timeout", "git push"])),
+            ExpectedApproval.Require(["timeout bash", "git push"])),
         Case(
             "subshell-prompts",
             Bash("(git status && git push)"),
@@ -1378,7 +1473,7 @@ public static class ShellApprovalCases
             "echo-substitution-data-prompts-for-unreviewed-inner-command",
             Bash("echo \"remote: $(git ls-remote --heads origin dev && echo yes)\""),
             Approvals.None,
-            ExpectedApproval.Require(["git ls-remote"])),
+            ExpectedApproval.Require(["git ls-remote dev"])),
         Case(
             "bash-substitution-quoted-path-operand-allows",
             Bash("cat \"$(git status)\""),
@@ -1685,7 +1780,7 @@ public static class ShellApprovalCases
             "workload-search-rg-external-grant-allows",
             Bash("rg -n \"TODO\" .", ApprovalDirectoryShape.External),
             Approvals.PersistentHere(ApprovalDirectoryShape.External, "rg"),
-            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:rg")),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:rg TODO")),
         Case(
             "workload-search-rg-head-pipeline-allows",
             Bash("rg -n \"TODO\" src | head -40"),
@@ -1815,12 +1910,12 @@ public static class ShellApprovalCases
             "workload-edit-printf-redirect-prompts",
             Bash("printf '%s\\n' \"text\" > reports/output.txt"),
             Approvals.None,
-            ExpectedApproval.Require(["printf"])),
+            ExpectedApproval.Require(["printf text"])),
         Case(
             "workload-edit-printf-redirect-grant-allows",
             Bash("printf '%s\\n' \"text\" > reports/output.txt"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "printf"),
-            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:printf")),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:printf text")),
         Case(
             "workload-edit-search-pipeline-redirect-in-project-prompts-for-writer",
             Bash("grep -R \"error\" logs | head -20 > reports/errors.txt"),
@@ -1842,7 +1937,7 @@ public static class ShellApprovalCases
             ExpectedApproval.Allow(
                 ApprovalAllowReason.StoredApproval,
                 1,
-                "persistent:grep",
+                "persistent:grep error",
                 "persistent:head")),
         Case(
             "workload-search-loop-inherited-state-prompts",
@@ -1894,7 +1989,7 @@ public static class ShellApprovalCases
             "echo-redirect-prompts",
             Bash("echo hello > result.txt"),
             Approvals.None,
-            ExpectedApproval.Require(["echo"])),
+            ExpectedApproval.Require(["echo hello"])),
         Case(
             "echo-control-word-argument-allows",
             Bash("echo done"),
@@ -2379,7 +2474,7 @@ public static class ShellApprovalCases
             "echo-read-value-is-data",
             Bash52("read -r n < README.md; echo \"$n\""),
             Approvals.None,
-            ExpectedApproval.Require(["read"])),
+            ExpectedApproval.Require(["read n"])),
         // Negative controls. Bash evaluates an array subscript in a -v operand as
         // arithmetic, and the arithmetic runs a command substitution. An operand
         // with "[" or with a value that the parser cannot prove is not data.
@@ -2547,7 +2642,7 @@ public static class ShellApprovalCases
                     "grep -c \"<PackageVersion\" \"$f\"",
                     "find . -name \"Directory.Build.props\""
                 ],
-                approvalMatches: ["persistent:cd", "persistent:find", "persistent:grep"])),
+                approvalMatches: ["persistent:cd", "persistent:find Directory.Packages.props", "persistent:grep worktree"])),
         Case(
             "data-command-redirect-after-failing-cd-keeps-prompt",
             Bash52($"cd sub && n=$(git fetch) && git fetch \"$n\"; echo \"---\" > {TemporaryFile("marker")}"),
