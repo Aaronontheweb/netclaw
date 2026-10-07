@@ -109,7 +109,8 @@ cleanup
 # Minimal provider/model config from the shared lib (deliberately no Daemon.Port — see
 # netclaw_smoke_env_args; Phase A needs the file's port to win over env).
 # shellcheck disable=SC2046  # intentional word-splitting of the -e args
-docker run -d --name "$CONTAINER" $(netclaw_smoke_env_args) "$IMAGE" >/dev/null
+# --health-interval only shortens the poll; the HEALTHCHECK command itself comes from the image.
+docker run -d --name "$CONTAINER" --health-interval 3s $(netclaw_smoke_env_args) "$IMAGE" >/dev/null
 
 wait_healthy "$DEFAULT_PORT" 60 || fail "supervised daemon never became healthy on :$DEFAULT_PORT"
 
@@ -142,6 +143,15 @@ done
 # The change took effect: the new port serves and the old one is gone.
 wait_healthy "$NEW_PORT" 60   || fail "daemon not healthy on the new port :$NEW_PORT after reload (re-bind did not take effect)"
 ! port_serving "$DEFAULT_PORT" || fail "old port :$DEFAULT_PORT still serving — the bind change did not apply"
+
+# The image HEALTHCHECK must follow the port change (it used to probe a hard-coded :5199).
+health=""
+for _ in $(seq 1 30); do
+    health="$(docker inspect -f '{{.State.Health.Status}}' "$CONTAINER")"
+    [[ "$health" == "healthy" ]] && break
+    sleep 1
+done
+[[ "$health" == "healthy" ]] || fail "container health is '$health' on :$NEW_PORT (HEALTHCHECK did not follow Daemon.Port)"
 
 # ...and it was an in-process restart, not a respawn / duplicate.
 count_a="$(daemon_count)"; pid_a="$(daemon_pid)"; sup_a="$(daemon_supervision)"

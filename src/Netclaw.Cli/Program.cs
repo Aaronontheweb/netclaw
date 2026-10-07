@@ -525,11 +525,40 @@ static async Task RunAsync(string[] args)
                 return;
 
             case "status":
+            {
                 var status = manager.GetStatus();
                 Console.WriteLine(status.Message);
-                if (status.IsRunning)
-                    Console.WriteLine("Tip: run `netclaw status` for detailed runtime connector and telemetry health.");
+                if (!status.IsRunning)
+                {
+                    Environment.ExitCode = 1;
+                    return;
+                }
+
+                // The container HEALTHCHECK runs this command, so readiness is probed at the
+                // endpoint the CLI resolves (netclaw.json, NETCLAW_* env, default) instead of a
+                // port baked into the image.
+                using var statusHost = CreateQuietHostBuilder(args).Build();
+                var statusApi = statusHost.Services.GetRequiredService<DaemonApi>();
+                bool ready;
+                try
+                {
+                    ready = (await statusApi.ProbeReadinessAsync()).Healthy;
+                }
+                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+                {
+                    ready = false;
+                }
+
+                if (!ready)
+                {
+                    Console.WriteLine($"Daemon process is running but {statusApi.Endpoint}/api/health/ready did not answer.");
+                    Environment.ExitCode = 1;
+                    return;
+                }
+
+                Console.WriteLine("Tip: run `netclaw status` for detailed runtime connector and telemetry health.");
                 return;
+            }
 
             case "install":
                 var installResult = await manager.InstallAsync();
@@ -1350,7 +1379,7 @@ static void WriteDaemonHelp()
     Console.WriteLine("Subcommands:");
     Console.WriteLine("  start                        Start daemon as a background process");
     Console.WriteLine("  stop                         Stop daemon gracefully");
-    Console.WriteLine("  status                       Show daemon process status");
+    Console.WriteLine("  status                       Show daemon process status (exit 1 if not running or not ready)");
     Console.WriteLine("  install                      Install systemd user service (Linux)");
     Console.WriteLine("  uninstall                    Remove systemd user service (Linux)");
     Console.WriteLine("  pair                         Generate a pairing code for remote device access");
