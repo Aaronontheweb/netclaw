@@ -354,6 +354,46 @@ read -r messy_start messy_end < <(
 )
 security_mutations+=("IToolApprovalMatcher.cs{$messy_start..$messy_end}")
 
+# #2364: an option value can name a path for the program. A value that can
+# leave the working directory gets the scope of a path word with the same
+# text, so a folder or repository grant cannot cover it. A mutant that drops
+# the scope, skips a value, or calls an outside value inside must die.
+read -r option_use_start option_use_end < <(
+  find_span \
+    "$matcher_file" \
+    "private static IReadOnlyList<string?>? ResolveCommandDirectories(" \
+    "for (var index = 1; index < occurrence.Arguments.Count; index++)" \
+    "directories)))"
+)
+security_mutations+=("IToolApprovalMatcher.cs{$option_use_start..$option_use_end}")
+
+read -r option_value_start option_value_end < <(
+  find_span \
+    "$matcher_file" \
+    "private static IReadOnlyList<Arg>? ResolveOptionValuePathWords(" \
+    "var isGlob = value.Argument.Kind == ArgKind.Glob;" \
+    "return words;"
+)
+security_mutations+=("IToolApprovalMatcher.cs{$option_value_start..$option_value_end}")
+
+read -r option_location_start option_location_end < <(
+  find_span \
+    "$matcher_file" \
+    "private static bool TryCreateLocation(" \
+    "return CanonicalPath.IsHostPathStyle(pathStyle)" \
+    "&& CanonicalPath.TryCreate(text, cwd.Value, pathStyle, out location);"
+)
+security_mutations+=("IToolApprovalMatcher.cs{$option_location_start..$option_location_end}")
+
+read -r option_stays_start option_stays_end < <(
+  find_span \
+    "$matcher_file" \
+    "private static bool StaysInWorkingDirectory(" \
+    "=> FileSystemAuthority.EvaluateMembership(" \
+    "[new PathBoundary.Folder(cwd, LinkRule.BelowRoot)]) is PathDecision.Allowed;"
+)
+security_mutations+=("IToolApprovalMatcher.cs{$option_stays_start..$option_stays_end}")
+
 # ShellSyntaxTree 0.4.0-beta.17 facts. Decision D5 (option A): a glob word gets
 # the decision of each literal path that its segments can match.
 path_policy_file="$repo_root/src/Netclaw.Security/ToolPathPolicy.cs"
@@ -481,7 +521,7 @@ security_mutations+=("ShellCommandPolicy.cs{$combine_start..$combine_end}")
 run_group \
   "stryker-shell-command-analysis.json" \
   "$output_path/security" \
-  221 \
+  279 \
   "${security_mutations[@]}"
 
 actor_mutations=()

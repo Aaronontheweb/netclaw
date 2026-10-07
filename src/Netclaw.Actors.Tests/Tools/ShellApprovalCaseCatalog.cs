@@ -3219,8 +3219,186 @@ public static class ShellApprovalCases
             "unassigned-operand-unattended-uses-global-grant",
             Bash52("rm -rf \"$BUILD_DIR/out\"", interactive: false),
             Approvals.PersistentAnywhere("rm"),
-            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:rm -rf \"$BUILD_DIR/out\""))
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:rm -rf \"$BUILD_DIR/out\"")),
+        .. OptionValueScopeCases(),
+        // Controls for #2364: an option value inside the folder, a value that
+        // is not a path, and an API route keep their result.
+        Case(
+            "option-value-short-option-data-uses-folder-grant",
+            Bash52("dotnet build -c Release"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build")),
+        Case(
+            "option-value-inline-data-uses-folder-grant",
+            Bash52("dotnet build --configuration=Release"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build")),
+        Case(
+            "option-value-inside-folder-uses-folder-grant",
+            Bash52("dotnet build --output=bin/x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build")),
+        Case(
+            "option-value-api-route-uses-folder-grant",
+            Bash52("gh api /repos/o/r"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "gh api"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:gh api")),
+        Case(
+            "option-value-with-api-route-uses-folder-grant",
+            Bash52("gh api --method=GET /repos/o/r"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "gh api"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:gh api")),
+        // An option value below an absent top-level directory gets the rule of
+        // a path word with the same value: no file exists below it, so it has
+        // no path scope (#2317).
+        Case(
+            "option-value-under-absent-top-level-uses-folder-grant",
+            Bash52("dotnet build --output=/netclaw-approval-absent/x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build")),
+        Case(
+            "path-word-under-absent-top-level-uses-folder-grant",
+            Bash52("dotnet build --output /netclaw-approval-absent/x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build")),
+        // SECURITY: the protected-path check reads each option value.
+        Case(
+            "option-value-protected-path-denied",
+            Bash52("dotnet build --file=~/.netclaw/config/secrets.json"),
+            Approvals.PersistentAnywhere("dotnet build"),
+            ExpectedApproval.Deny("shell_references_protected_path")),
+        // A glob option value gets the rule of a path word with the same
+        // text. Inside the folder it keeps the grant, also with a separator or
+        // a Bash escape. Outside the folder it gives a reusable prompt.
+        Case(
+            "option-value-inside-glob-uses-folder-grant",
+            Bash52("dotnet build --output=*.x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build")),
+        Case(
+            "option-value-inside-glob-with-separator-uses-folder-grant",
+            Bash52("dotnet format --include=src/*.cs"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet format"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet format")),
+        Case(
+            "option-value-recursive-glob-uses-folder-grant",
+            Bash52("dotnet format --exclude=**/bin/**"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet format"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet format")),
+        Case(
+            "unattended-option-value-recursive-glob-uses-folder-grant",
+            Bash52("dotnet format --exclude=*/bin/*", interactive: false),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet format"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet format")),
+        Case(
+            "option-value-escaped-glob-text-uses-folder-grant",
+            Bash52("dotnet test --filter=Name\\.Space.*"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet test"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet test")),
+        Case(
+            "option-value-outside-glob-prompts-with-folder-grant",
+            Bash52("dotnet build --output=../outside/*.x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Require(["dotnet build"])),
+        // The rule uses the parser fact, not the "--name=value" shape: an
+        // element with an option argument and a value argument.
+        Case(
+            "option-value-colon-name-prompts-with-folder-grant",
+            Bash52("dotnet build -p:OutDir=../outside/x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Require(["dotnet build"])),
+        // A glob value with an expansion before the glob character has no
+        // fixed anchor. It gets the result of its separate path word.
+        Case(
+            "option-value-expansion-before-glob-prompts-with-folder-grant",
+            Bash52("dotnet build --output=$HOME/*.x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Require(["dotnet build --output=$HOME/*.x"])),
+        Case(
+            "unattended-option-value-expansion-before-glob-denied",
+            Bash52("dotnet build --output=$HOME/*.x", interactive: false),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.DenyUnattended()),
+        Case(
+            "power-shell-option-value-expansion-before-glob-prompts-with-folder-grant",
+            PowerShell7("dotnet build --output=$env:USERPROFILE\\*.x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        // PowerShell: an expansion in the value gets the same rule, and a
+        // value that is not a path adds no scope.
+        Case(
+            "power-shell-option-value-home-prompts-with-folder-grant",
+            PowerShell7("dotnet build --output=$HOME/x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Require(["dotnet build"])),
+        Case(
+            "power-shell-option-value-profile-prompts-with-folder-grant",
+            PowerShell7("dotnet build --output=$env:USERPROFILE\\x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Require(["dotnet build"])),
+        Case(
+            "power-shell-option-value-url-uses-folder-grant",
+            PowerShell7("dotnet build --source=https://example.com/a/b"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build"))
     ];
+
+    /// <summary>
+    /// Gives the rows of #2364: each spelling of an inline option value
+    /// outside the folder, with a folder grant. A repository grant needs a Git
+    /// repository, so <c>OptionValueScopeApprovalTests</c> holds its rows.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: an option value can name a path for the program. A folder or a
+    /// repository grant covers the command only when each such path is in its
+    /// scope. A chat grant and a grant for anywhere have no path scope, so they
+    /// cover it; one spelling proves that.
+    /// </remarks>
+    private static IEnumerable<ShellApprovalCase> OptionValueScopeCases()
+    {
+        (string Name, string Command)[] spellings =
+        [
+            ("inline", "dotnet build --output=../outside/x"),
+            ("inline-home", "dotnet build --output=$HOME/x"),
+            ("inline-absolute", "dotnet build --output=/etc/x"),
+            ("inline-parent", "dotnet build --output=.."),
+            ("inline-escaped-equals", "dotnet build --output\\=../outside/x"),
+            ("inline-quoted-equals", "dotnet build --output'='../outside/x"),
+            ("inline-quoted-word", "dotnet build \"--output=../outside/x\"")
+        ];
+
+        foreach (var (name, command) in spellings)
+        {
+            yield return Case(
+                $"option-value-{name}-prompts-with-folder-grant",
+                Bash52(command),
+                Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+                ExpectedApproval.Require(["dotnet build"]));
+        }
+
+        const string inline = "dotnet build --output=../outside/x";
+        yield return Case(
+            "unattended-option-value-inline-with-folder-grant-denied",
+            Bash52(inline, interactive: false),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.DenyUnattended());
+        yield return Case(
+            "option-value-inline-uses-chat-grant",
+            Bash52(inline),
+            Approvals.Session("dotnet build"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:dotnet build"));
+        yield return Case(
+            "option-value-inline-uses-global-grant",
+            Bash52(inline),
+            Approvals.PersistentAnywhere("dotnet build"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build"));
+        // Control: the separate word is a path word.
+        yield return Case(
+            "option-value-separate-word-prompts-with-folder-grant",
+            Bash52("dotnet build --output ../outside/x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
+            ExpectedApproval.Require(["dotnet build"]));
+    }
 
     private static readonly FrozenDictionary<string, ShellApprovalCase> CasesById =
         All.ToFrozenDictionary(testCase => testCase.Id, StringComparer.Ordinal);

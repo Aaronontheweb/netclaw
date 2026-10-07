@@ -294,6 +294,22 @@ covered:
   resolves as a path (`"$HOME/x"`) or types as a file value (`cat "$x"`) keeps
   its scope. A data command (`echo "$f"`) and a protected path keep their own
   rules.
+- An option value can name a path (0.27.2). In `dotnet build --output=../x`,
+  the value `../x` is outside the folder, so a folder or repository grant for
+  `dotnet build` does not cover the command. The same is true for
+  `--output=$HOME/x` (Bash and PowerShell), `--output\=../x`,
+  `--output'='../x`, `"--output=../x"`, and `-p:OutDir=../x`. A value inside
+  the folder (`--output=bin/x`, `--include=src/*.cs`), a value that is not a
+  path (`--configuration=Release`), and a URL keep the grant. A chat grant and
+  an `Always anywhere` grant cover the command. Free text that starts with
+  `../` or `/` also prompts, for example `--message="../x y"`.
+  These forms get no path scope, because no general parser fact splits them:
+  `-o../x`, `--data=@../x`, `--path=a:../b`, `--files=a,../b`,
+  `--output=file:///etc/x`, `make PREFIX=../x`, `dd of=../x`, and
+  `/p:OutDir=../x`, and a PowerShell value that is relative to a drive
+  (`--output=D:x`). The protected-path check still reads them. A glob value
+  with an expansion before the glob character (`--output=$HOME/*.x`) gets
+  `Once` and `Deny`, as its separate word does.
 - Each command inside `if`, `case`, `while`, `until`, or a background list
   (`server &`) gets its own decision.
 - A Bash redirect to `/dev/null` (for example `2>/dev/null`) writes no file,
