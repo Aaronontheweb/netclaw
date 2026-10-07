@@ -406,6 +406,42 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         return candidates;
     }
 
+    /// <summary>
+    /// Gives the candidates of a literal twin the assignment digest of its
+    /// source command. Returns false when the source assignments have no
+    /// digest.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: a twin text is one command with no assignment, but the
+    /// shell-state assignments that reach the source command reach each run
+    /// (<c>x=1; for n in a b; do gh api x/$n; done</c>). A candidate keeps that
+    /// qualification, so a grant without the same assignments cannot cover it.
+    /// An approval-exempt output candidate has no digest, as for a typed
+    /// command. When the method returns false, the source command keeps its own
+    /// candidates.
+    /// </remarks>
+    internal static bool TryQualifyTwinCandidates(
+        IReadOnlyList<ApprovalCandidate> twinCandidates,
+        CommandOccurrence source,
+        out IReadOnlyList<ApprovalCandidate> qualified)
+    {
+        ArgumentNullException.ThrowIfNull(twinCandidates);
+        ArgumentNullException.ThrowIfNull(source);
+        qualified = twinCandidates;
+        if (!ShellAssignmentDigestFactory.TryCreate(ApprovalShell.Bash, source.Assignments, out var digest))
+            return false;
+
+        if (digest is null)
+            return true;
+
+        qualified = Array.AsReadOnly(twinCandidates
+            .Select(candidate => ApprovalPatternMatching.IsPureSideEffect(candidate)
+                ? candidate
+                : candidate with { AssignmentDigest = digest })
+            .ToArray());
+        return true;
+    }
+
     private ApprovalCandidate? CreateExactCandidate(
         string source,
         CommandOccurrence occurrence,

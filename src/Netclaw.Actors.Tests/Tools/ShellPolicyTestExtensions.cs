@@ -112,6 +112,14 @@ internal static class ShellPolicyTestExtensions
             approval = ToolAccessPolicy.WithDirectoryScopes(approval, proof);
             directoryScopes = proof;
         }
+        else if (analysis is not null && approval is not null
+                 && policy.TryProjectLiteralTwins(analysis, out var twins))
+        {
+            if (policy.ScreenLiteralTwins(twins, context) is { } twinDenial)
+                return Stop(twinDenial);
+
+            approval = ToolAccessPolicy.WithLiteralTwins(approval, twins);
+        }
 
         if (analysis is not null
             && policy.ScreenShellTrustZone(analysis, workingDirectory, context) is { } fileDenial)

@@ -837,13 +837,7 @@ public sealed record ShellCommandAnalysis
         CommandOccurrence command,
         IReadOnlySet<ClauseElement> accountedRegionArguments)
     {
-        if (!command.IsComplete
-            || !Enum.IsDefined(command.ImmediateRole)
-            || command.ImmediateRole == CommandOccurrenceRole.Unknown
-            || command.Ancestry.Any(static frame =>
-                !IsKnownAncestor(frame.Ancestor)
-                || !Enum.IsDefined(frame.Region)
-                || frame.Region == CommandAncestryRegion.Unknown)
+        if (!HasKnownStructure(command)
             || HasUnsupportedWorkingDirectory(command.WorkingDirectory)
             || command.Clause.Verb.IsDynamic
             || HasDynamicProgramWord(command)
@@ -880,6 +874,23 @@ public sealed record ShellCommandAnalysis
             ? ShellUnresolvedPart.Operand
             : ShellUnresolvedPart.None;
     }
+
+    /// <summary>
+    /// Returns true when the parser proves the structure of one command: the
+    /// command is complete, and its role and each ancestor are known.
+    /// </summary>
+    /// <remarks>
+    /// A literal twin has the structure of one top-level command, so the
+    /// structure of its source command must pass this check.
+    /// </remarks>
+    internal static bool HasKnownStructure(CommandOccurrence command)
+        => command.IsComplete
+           && Enum.IsDefined(command.ImmediateRole)
+           && command.ImmediateRole != CommandOccurrenceRole.Unknown
+           && !command.Ancestry.Any(static frame =>
+               !IsKnownAncestor(frame.Ancestor)
+               || !Enum.IsDefined(frame.Region)
+               || frame.Region == CommandAncestryRegion.Unknown);
 
     // ShellSyntaxTree 0.4.0-beta.17 gives no command words for a bracket
     // pattern in the program word, such as ["ci","build"], but it reports the

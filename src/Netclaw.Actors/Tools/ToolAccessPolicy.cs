@@ -363,8 +363,40 @@ public sealed class ToolAccessPolicy
     internal ToolAuthorizationDecision? ScreenDirectoryScopes(
         BashDirectoryScopeProjection proof,
         ToolExecutionContext context)
+        => ScreenScopedSlices(proof.Slices, context);
+
+    /// <summary>
+    /// Returns the literal twins of the Bash commands of a call (owner decision
+    /// F1). A command without twins keeps its own candidates.
+    /// </summary>
+    /// <remarks>
+    /// The caller must screen each twin with <see cref="ScreenLiteralTwins"/>
+    /// before it uses the twin candidates.
+    /// </remarks>
+    internal bool TryProjectLiteralTwins(
+        ShellCommandAnalysis analysis,
+        [NotNullWhen(true)] out BashLiteralTwinSlices? twins)
+        => BashLiteralTwinSlices.TryCreate(
+            analysis,
+            _shellCommandPolicy,
+            _shellApprovalMatcher,
+            out twins);
+
+    /// <summary>
+    /// Screens each literal twin as if the operator typed it: hard deny,
+    /// protected text, and file protection in the directory of the twin.
+    /// </summary>
+    /// <returns>The first denial of a twin. One denied twin denies the call.</returns>
+    internal ToolAuthorizationDecision? ScreenLiteralTwins(
+        BashLiteralTwinSlices twins,
+        ToolExecutionContext context)
+        => ScreenScopedSlices(twins.Slices, context);
+
+    private ToolAuthorizationDecision? ScreenScopedSlices(
+        IEnumerable<ScopedShellApprovalSlice> slices,
+        ToolExecutionContext context)
     {
-        foreach (var slice in proof.Slices)
+        foreach (var slice in slices)
         {
             var denial = ScreenHardDeny(slice.Analysis)
                 ?? ScreenProtectedShellText(slice.Analysis)
@@ -390,6 +422,15 @@ public sealed class ToolAccessPolicy
                 IsMessy = false
             }
             : approval;
+
+    /// <summary>
+    /// Replaces the candidates of each command that has literal twins with the
+    /// candidates of its screened twins.
+    /// </summary>
+    internal static ShellApprovalAnalysis WithLiteralTwins(
+        ShellApprovalAnalysis approval,
+        BashLiteralTwinSlices twins)
+        => twins.Apply(approval);
 
     /// <summary>Replaces the unresolved candidates with the candidates of a screened directory proof.</summary>
     internal static ShellApprovalAnalysis WithDirectoryScopes(
@@ -508,14 +549,20 @@ public sealed class ToolAccessPolicy
     /// The coordinator must call this method before it checks stored grants or reviewed-safe coverage.
     /// </remarks>
     /// <param name="candidates">The path facts of each candidate, with its source occurrence.</param>
-    /// <param name="analysis">The analysis that owns the source occurrences.</param>
+    /// <param name="analyses">
+    /// The analyses that own the source occurrences: the call analysis and the
+    /// analysis of each literal twin. A twin gets the read rule of its typed literal.
+    /// </param>
     /// <param name="context">The invocation that supplies the trusted roots.</param>
     internal ToolAuthorizationDecision? EnforceProjectedShellFileProtection(
         IReadOnlyList<(ShellPolicyCandidatePathFacts PathFacts, CommandOccurrence? Occurrence)> candidates,
-        ShellCommandAnalysis? analysis,
+        IReadOnlyList<ShellCommandAnalysis> analyses,
         ToolInvocationContext context)
     {
-        var readOnly = analysis is null ? [] : ReadOnlyOccurrences(analysis);
+        var readOnly = new HashSet<CommandOccurrence>(ReferenceEqualityComparer.Instance);
+        foreach (var owner in analyses)
+            readOnly.UnionWith(ReadOnlyOccurrences(owner));
+
         return EnforceKnownShellPaths(
             candidates.SelectMany(candidate => EnumerateKnownShellPaths(
                 candidate.PathFacts,

@@ -343,7 +343,7 @@ internal sealed record BashDirectoryScopeProjection(
     // SECURITY: the slice parses again without the statements before it. A launch
     // variable that an earlier statement can change is unknown in the full parse, but
     // the slice alone sees the launch value. Every value must match the full parse.
-    private static bool HasSameArgumentValues(CommandOccurrence scoped, CommandOccurrence analyzed)
+    internal static bool HasSameArgumentValues(CommandOccurrence scoped, CommandOccurrence analyzed)
         => scoped.Arguments.Count == analyzed.Arguments.Count
            && scoped.Arguments.Zip(analyzed.Arguments).All(static pair =>
                HasSameValue(pair.First.Value, pair.Second.Value)
@@ -374,7 +374,7 @@ internal sealed record BashDirectoryScopeProjection(
             _ => false
         };
 
-    private static bool HasSameAuthoredElements(Clause first, Clause second)
+    internal static bool HasSameAuthoredElements(Clause first, Clause second)
         => first.Elements.Count == second.Elements.Count
            && first.Elements.Zip(second.Elements).All(static pair =>
                pair.First.Role == pair.Second.Role
