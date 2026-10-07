@@ -42,11 +42,13 @@ internal static class ApprovalsCommand
         var clock = timeProvider ?? TimeProvider.System;
         var subcommand = args.Length > 1 ? args[1] : "help";
 
-        // A help token after list or revoke is otherwise rejected as an unknown flag. The
-        // trust-verb phrase is free text, so only its first operand can ask for help.
-        var helpRequested = subcommand is "trust-verb"
-            ? args.Length > 2 && CliArgsParser.IsHelpToken(args[2])
-            : CliArgsParser.HasTrailingHelpToken(args, startIndex: 2);
+        // A help flag after list or revoke is otherwise rejected as an unknown flag. The
+        // trust-verb phrase is free text, so only its first operand can ask for help, and a
+        // tool or phrase may be called "help", so only the flags count.
+        var helpRequested = CliArgsParser.HasTrailingHelpToken(
+            subcommand is "trust-verb" ? args[..Math.Min(args.Length, 3)] : args,
+            startIndex: 2,
+            includeBareHelp: false);
         if (helpRequested)
             return Task.FromResult(WriteHelp(paths, writer, clock));
 

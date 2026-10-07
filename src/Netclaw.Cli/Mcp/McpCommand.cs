@@ -47,11 +47,12 @@ internal static class McpCommand
         var writer = output ?? Console.Out;
         var subcommand = args.Length > 1 ? args[1] : "help";
 
-        // `tools` and `permissions` print their own help. Every other subcommand takes a server
-        // name, and `add` also takes free-form arguments after "--", so a help token before
-        // "--" would otherwise be read as the server name.
-        if (subcommand is not ("tools" or "permissions")
-            && CliArgsParser.HasTrailingHelpToken([.. args.TakeWhile(arg => arg != "--")], startIndex: 2))
+        // `tools` and `permissions` print their own help, and the subcommands that act on an
+        // existing server decide in TryReadExistingServerName, because a server may be called
+        // "--help". `add` and `list` take free-form arguments after "--", so a help flag before
+        // "--" would otherwise be read as a server name or a command.
+        if (subcommand is not ("tools" or "permissions" or "auth" or "get" or "remove" or "enable" or "disable")
+            && HasHelpFlag(args))
             return WriteHelp(writer);
 
         return subcommand switch
@@ -69,6 +70,11 @@ internal static class McpCommand
             _ => WriteHelp(writer)
         };
     }
+
+    // Only -h and --help count: a server, command or argument may be called "help".
+    private static bool HasHelpFlag(string[] args, int startIndex = 2)
+        => CliArgsParser.HasTrailingHelpToken(
+            [.. args.TakeWhile(arg => arg != "--")], startIndex, includeBareHelp: false);
 
     internal static async Task<int> RunAddAsync(
         string[] args,
@@ -181,7 +187,7 @@ internal static class McpCommand
             return 1;
         }
 
-        if (!TryReadServerName(positional[0], writer, out var serverName))
+        if (!TryReadNewServerName(positional[0], writer, out var serverName))
             return 1;
 
         transport ??= "stdio";
@@ -241,7 +247,7 @@ internal static class McpCommand
 
         // Non-sensitive env vars go to netclaw.json; all env vars also go to secrets.json for security
         // Headers always go to secrets.json (they may contain auth tokens)
-        var (config, _) = LoadConfigFiles(paths);
+        var (config, secretsBefore) = LoadConfigFiles(paths);
 
         var mcpServers = GetOrCreateSection(config, "McpServers");
 
@@ -249,11 +255,29 @@ internal static class McpCommand
         // audience grants, approval modes and allow-lists belong to the operator, so only a
         // new server gets the secure defaults.
         var isNewServer = !mcpServers.TryGetValue(serverName.Value, out var existingEntry);
+        var replaced = new List<string>();
+        var dropped = new List<string>();
         if (!isNewServer)
         {
-            // A disabled server stays disabled when its URL or secret is rotated.
-            entry.Enabled = JsonSerializer.Deserialize<McpServerEntry>(
-                JsonSerializer.Serialize(existingEntry))?.Enabled ?? true;
+            var existing = ConfigFileHelper.DeserializeSection<JsonElement>(existingEntry!);
+            if (!TryReadEnabled(existing, out var enabled))
+            {
+                writer.WriteLine($"Error: The 'Enabled' value of MCP server '{serverName.Value}' in netclaw.json is not true or false. "
+                    + "Fix it by hand, then run the command again. Nothing was changed.");
+                return 1;
+            }
+
+            // A disabled server stays disabled, and keeps its grant category, when its URL or
+            // secret is rotated.
+            entry.Enabled = enabled;
+            entry.GrantCategory = ReadString(existing, "GrantCategory");
+
+            var existingSecrets = GetSectionOrNull(secretsBefore, "McpServers") is { } secretServers
+                && secretServers.TryGetValue(serverName.Value, out var rawSecrets)
+                    ? ConfigFileHelper.DeserializeSection<JsonElement>(rawSecrets)
+                    : default;
+            CollectConnectionChanges(existing, entry, existingSecrets, envVars.Count > 0, headers.Count > 0,
+                oauthClientSecret is not null, replaced, dropped);
         }
 
         mcpServers[serverName.Value] = SerializeEntry(entry);
@@ -319,6 +343,16 @@ internal static class McpCommand
             writer.WriteLine($"Updated MCP server '{serverName.Value}' ({transport})");
             writer.WriteLine();
             writer.WriteLine("Audience grants, approval modes and allow-lists are unchanged.");
+            writer.WriteLine(replaced.Count + dropped.Count == 0
+                ? "Connection settings are unchanged."
+                : "Connection settings: "
+                    + string.Join("; ", new[]
+                    {
+                        replaced.Count > 0 ? $"replaced {string.Join(", ", replaced)}" : null,
+                        dropped.Count > 0 ? $"dropped {string.Join(", ", dropped)} (pass the option again to keep it)" : null,
+                    }.Where(part => part is not null)) + ".");
+            if (!entry.Enabled)
+                writer.WriteLine($"The server stays disabled. Run `netclaw mcp enable {serverName.Value}` to turn it on.");
             if (grantAll)
                 writer.WriteLine("--grant-all ignored: it applies only when a server is first added.");
         }
@@ -425,22 +459,15 @@ internal static class McpCommand
 
     private static async Task<int> RunAuthAsync(string[] args, NetclawPaths paths, DaemonApi? daemonApi, TextWriter writer)
     {
-        if (args.Length < 3)
-        {
-            writer.WriteLine("Usage: netclaw mcp auth <name>");
-            return 1;
-        }
-
-        if (!TryReadServerName(args[2], writer, out var serverName))
-            return 1;
+        var servers = LoadMcpServers(paths);
+        if (!TryReadExistingServerName(args, "Usage: netclaw mcp auth <name>", servers.Keys, writer, out var serverName, out var exitCode))
+            return exitCode;
 
         if (daemonApi is null)
         {
             writer.WriteLine("Error: DaemonApi not available. Is the daemon configured?");
             return 1;
         }
-
-        var servers = LoadMcpServers(paths);
 
         if (!servers.TryGetValue(serverName.Value, out var entry))
         {
@@ -817,16 +844,9 @@ internal static class McpCommand
 
     private static int RunGet(string[] args, NetclawPaths paths, TextWriter writer)
     {
-        if (args.Length < 3)
-        {
-            writer.WriteLine("Usage: netclaw mcp get <name>");
-            return 1;
-        }
-
-        if (!TryReadServerName(args[2], writer, out var serverName))
-            return 1;
-
         var servers = LoadMcpServers(paths);
+        if (!TryReadExistingServerName(args, "Usage: netclaw mcp get <name>", servers.Keys, writer, out var serverName, out var exitCode))
+            return exitCode;
 
         if (!servers.TryGetValue(serverName.Value, out var entry))
         {
@@ -876,22 +896,37 @@ internal static class McpCommand
 
     private static int RunRemove(string[] args, NetclawPaths paths, TextWriter writer)
     {
-        if (args.Length < 3)
+        var (config, _) = LoadConfigFiles(paths);
+        var configured = ConfiguredServerNames(config);
+        if (!TryReadExistingServerName(args, "Usage: netclaw mcp remove <name>", configured, writer, out var serverName, out var exitCode))
+            return exitCode;
+
+        // Names are case-sensitive everywhere but the allow-list, so a name that differs from a
+        // configured server only by case is a typo, not a leftover to clean up.
+        if (!configured.Contains(serverName.Value, StringComparer.Ordinal)
+            && configured.FirstOrDefault(name => name.Equals(serverName.Value, StringComparison.OrdinalIgnoreCase)) is { } configuredName)
         {
-            writer.WriteLine("Usage: netclaw mcp remove <name>");
+            writer.WriteLine($"Error: There is no MCP server named '{serverName.Value}'. The configured server is '{configuredName}' "
+                + "(names are case-sensitive). Nothing was removed.");
             return 1;
         }
 
-        if (!TryReadServerName(args[2], writer, out var serverName))
+        // Check the approval store before changing anything, so a store that cannot be read
+        // does not leave the server half removed.
+        var savedApprovals = FindSavedApprovals(paths, serverName, configured, out var store);
+        if (savedApprovals is null)
+        {
+            writer.WriteLine($"Error: The approval store is unavailable, so nothing was removed for '{serverName.Value}'. "
+                + "Fix or restore the store (see `netclaw approvals list`), then run `netclaw mcp remove "
+                + $"{serverName.Value}` again.");
             return 1;
-
-        var (config, _) = LoadConfigFiles(paths);
+        }
 
         // Everything keyed by the server name goes with it. A name that survives in an
         // audience profile, the token store or the approval store would be inherited by
         // the next server added under that name.
         var removed = GetSectionOrNull(config, "McpServers")?.Remove(serverName.Value) == true;
-        removed |= RemoveServerFromAudienceProfiles(config, serverName);
+        removed |= RemoveServerFromAudienceProfiles(config, serverName, configured);
         if (removed)
             WriteConfigFile(paths.NetclawConfigPath, config);
 
@@ -902,11 +937,18 @@ internal static class McpCommand
             return (removedSecret, removedSecret);
         });
 
-        var approvals = RemoveSavedApprovals(paths, serverName, writer);
-        if (approvals < 0)
-            return 1;
+        foreach (var (audience, tool) in savedApprovals)
+        {
+            if (store!.TryRemoveAllForTool(audience, tool) is ApprovalStoreChangeResult.Completed completed)
+            {
+                removed |= completed.ChangeCount > 0;
+                continue;
+            }
 
-        removed |= approvals > 0;
+            writer.WriteLine($"Error: Could not revoke the saved approvals for '{tool}'. The server's configuration and secrets "
+                + $"are already removed. Run `netclaw mcp remove {serverName.Value}` again to finish.");
+            return 1;
+        }
 
         if (removed)
         {
@@ -919,12 +961,26 @@ internal static class McpCommand
     }
 
     /// <summary>
-    /// Removes the server's entries from every audience profile: the allow-list, the tool
-    /// grants, the approval default, and the per-tool approval overrides
-    /// (<c>server/tool</c> and the <c>server__tool</c> alias). Returns <c>true</c> when
-    /// anything was removed.
+    /// Whether a tool key (<c>server/tool</c> or the <c>server__tool</c> alias) belongs to
+    /// <paramref name="serverName"/>. Server names may contain <c>/</c> and <c>__</c>, so a key
+    /// that starts with <c>git__</c> can belong to the configured server <c>git__x</c>: the
+    /// longest configured server name that prefixes the key owns it.
     /// </summary>
-    private static bool RemoveServerFromAudienceProfiles(Dictionary<string, object> config, McpServerName serverName)
+    private static bool IsToolOfServer(string key, McpServerName serverName, IEnumerable<string> configuredServers)
+        => StartsWithServer(key, serverName.Value)
+           && !configuredServers.Any(other => other.Length > serverName.Value.Length && StartsWithServer(key, other));
+
+    private static bool StartsWithServer(string key, string server)
+        => key.StartsWith(server + "/", StringComparison.Ordinal)
+           || key.StartsWith(server + "__", StringComparison.Ordinal);
+
+    /// <summary>
+    /// Removes the server's entries from every audience profile: the allow-list, the tool
+    /// grants, the approval default, and the per-tool approval overrides. Entries that another
+    /// configured server uses are kept. Returns <c>true</c> when anything was removed.
+    /// </summary>
+    private static bool RemoveServerFromAudienceProfiles(
+        Dictionary<string, object> config, McpServerName serverName, string[] configured)
     {
         var profiles = GetSectionOrNull(config, "Tools") is { } tools
             ? GetSectionOrNull(tools, "AudienceProfiles")
@@ -938,10 +994,13 @@ internal static class McpCommand
             if (GetSectionOrNull(profiles, audience.ToString()) is not { } profile)
                 continue;
 
-            // The runtime compares AllowedMcpServers ignoring case, so removal does too.
+            // The runtime compares AllowedMcpServers ignoring case, so an entry that differs
+            // only by case still names this server, unless another configured server owns it.
             if (profile.TryGetValue("AllowedMcpServers", out var rawAllowed)
                 && ConfigFileHelper.DeserializeSection<List<string>>(rawAllowed) is { } allowed
-                && allowed.RemoveAll(name => name.Equals(serverName.Value, StringComparison.OrdinalIgnoreCase)) > 0)
+                && allowed.RemoveAll(name => name.Equals(serverName.Value, StringComparison.OrdinalIgnoreCase)
+                    && !configured.Any(other => other != serverName.Value
+                        && other.Equals(name, StringComparison.OrdinalIgnoreCase))) > 0)
             {
                 profile["AllowedMcpServers"] = allowed;
                 removed = true;
@@ -957,8 +1016,7 @@ internal static class McpCommand
             if (GetSectionOrNull(approvalPolicy, "ToolOverrides") is { } toolOverrides)
             {
                 var staleKeys = toolOverrides.Keys
-                    .Where(key => key.StartsWith(serverName.Value + "/", StringComparison.Ordinal)
-                                  || key.StartsWith(serverName.Value + "__", StringComparison.Ordinal))
+                    .Where(key => IsToolOfServer(key, serverName, configured))
                     .ToList();
                 foreach (var key in staleKeys)
                     toolOverrides.Remove(key);
@@ -971,53 +1029,45 @@ internal static class McpCommand
     }
 
     /// <summary>
-    /// Revokes the persistent approvals saved for the server's tools (<c>server/tool</c>) in
-    /// every audience, through <see cref="ToolApprovalStore"/>. An approval is keyed by tool
-    /// name alone, so it would otherwise authorize whichever server is later added under the
-    /// same name. Returns the number revoked, or -1 when the approval store is unavailable.
+    /// Lists the persistent approvals saved for the server's tools in every audience. An
+    /// approval is keyed by tool name alone, so it would otherwise authorize whichever server
+    /// is later added under the same name. Reading goes through <see cref="ToolApprovalStore"/>,
+    /// which also takes the store's lock, so a store that is malformed or locked returns
+    /// <c>null</c>. Revoking is left to the caller.
     /// </summary>
-    private static int RemoveSavedApprovals(NetclawPaths paths, McpServerName serverName, TextWriter writer)
+    private static List<(TrustAudience Audience, string Tool)>? FindSavedApprovals(
+        NetclawPaths paths, McpServerName serverName, string[] configured, out ToolApprovalStore? store)
     {
+        store = null;
         if (!File.Exists(paths.ToolApprovalsPath))
-            return 0;
+            return [];
 
-        var store = ApprovalsCommand.CreateStore(paths, TimeProvider.System);
+        store = ApprovalsCommand.CreateStore(paths, TimeProvider.System);
         if (store.TryLoad() is not ApprovalStoreLoadResult.Ready ready)
-        {
-            writer.WriteLine("Error: The approval store is unavailable, so the saved approvals for "
-                + $"'{serverName.Value}' were not revoked. Fix the store, then run `netclaw approvals revoke --tool <name> --all`.");
-            return -1;
-        }
+            return null;
 
-        var prefix = serverName.Value + "/";
-        var revoked = 0;
+        var found = new List<(TrustAudience, string)>();
         foreach (var audience in TrustAudiences.All)
         {
             if (!ready.Data.Audiences.TryGetValue(audience.ToWireValue(), out var tools))
                 continue;
 
-            foreach (var tool in tools.Keys.Where(name => name.StartsWith(prefix, StringComparison.Ordinal)))
-            {
-                if (store.TryRemoveAllForTool(audience, tool) is ApprovalStoreChangeResult.Completed completed)
-                {
-                    revoked += completed.ChangeCount;
-                    continue;
-                }
-
-                writer.WriteLine($"Error: Could not revoke the saved approvals for '{tool}'.");
-                return -1;
-            }
+            found.AddRange(tools.Keys
+                .Where(tool => IsToolOfServer(tool, serverName, configured))
+                .Select(tool => (audience, tool)));
         }
 
-        return revoked;
+        return found;
     }
 
-    private static bool TryReadServerName(string raw, TextWriter writer, out McpServerName serverName)
+    // Only a new name is restricted: 0.27.1 could create servers named "--help", "-x" or
+    // "help", and those must stay reachable by the commands that act on an existing server.
+    private static bool TryReadNewServerName(string raw, TextWriter writer, out McpServerName serverName)
     {
         serverName = default;
-        if (raw.StartsWith('-'))
+        if (raw.StartsWith('-') || raw == "help")
         {
-            writer.WriteLine($"Error: '{raw}' is not a valid server name. A name must not start with '-'. "
+            writer.WriteLine($"Error: '{raw}' is not a valid server name. A name must not start with '-' and must not be 'help'. "
                 + "Run `netclaw mcp --help` for usage.");
             return false;
         }
@@ -1026,18 +1076,133 @@ internal static class McpCommand
         return true;
     }
 
-    private static int RunToggle(string[] args, NetclawPaths paths, bool enabled, TextWriter writer)
+    /// <summary>
+    /// Reads the server name for a subcommand that acts on a configured server. A name that
+    /// exists is always honoured, even when it looks like a help flag. Otherwise a help flag
+    /// prints usage; <c>--</c> ends the flags so <c>mcp remove -- -x</c> names a server "-x".
+    /// Returns <c>false</c> with <paramref name="exitCode"/> set when the caller must stop.
+    /// </summary>
+    private static bool TryReadExistingServerName(
+        string[] args,
+        string usage,
+        IReadOnlyCollection<string> configuredServers,
+        TextWriter writer,
+        out McpServerName serverName,
+        out int exitCode)
     {
-        if (args.Length < 3)
+        serverName = default;
+        exitCode = 1;
+        var nameIndex = args.Length > 2 && args[2] == "--" ? 3 : 2;
+        if (args.Length <= nameIndex)
         {
-            writer.WriteLine($"Usage: netclaw mcp {(enabled ? "enable" : "disable")} <name>");
-            return 1;
+            writer.WriteLine(usage);
+            return false;
         }
 
-        if (!TryReadServerName(args[2], writer, out var serverName))
-            return 1;
+        var exists = configuredServers.Contains(args[nameIndex], StringComparer.Ordinal);
+        if (nameIndex == 2 && HasHelpFlag(args, startIndex: exists ? 3 : 2))
+        {
+            exitCode = WriteHelp(writer);
+            return false;
+        }
 
+        serverName = new McpServerName(args[nameIndex]);
+        return true;
+    }
+
+    private static string[] ConfiguredServerNames(Dictionary<string, object> config)
+        => GetSectionOrNull(config, "McpServers")?.Keys.ToArray() ?? [];
+
+    private static string? ReadString(JsonElement entry, string property)
+        => entry.ValueKind is JsonValueKind.Object
+           && entry.TryGetProperty(property, out var value)
+           && value.ValueKind is JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    // Reads Enabled the way the configuration binder does: a bool, or text that parses as one.
+    private static bool TryReadEnabled(JsonElement entry, out bool enabled)
+    {
+        enabled = true;
+        if (entry.ValueKind is not JsonValueKind.Object || !entry.TryGetProperty("Enabled", out var value))
+            return true;
+
+        switch (value.ValueKind)
+        {
+            case JsonValueKind.True:
+            case JsonValueKind.False:
+                enabled = value.GetBoolean();
+                return true;
+            case JsonValueKind.String when bool.TryParse(value.GetString(), out var parsed):
+                enabled = parsed;
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    // Re-adding replaces the connection definition and the server's secrets as a whole, so
+    // every field the old definition had and the new command line lacks is dropped.
+    private static void CollectConnectionChanges(
+        JsonElement existing,
+        McpServerEntry entry,
+        JsonElement existingSecrets,
+        bool hasEnv,
+        bool hasHeaders,
+        bool hasClientSecret,
+        List<string> replaced,
+        List<string> dropped)
+    {
+        var current = JsonSerializer.SerializeToElement(entry);
+        void Compare(string label, string property)
+        {
+            // The stored entry spells absent fields as null.
+            if (existing.ValueKind is not JsonValueKind.Object
+                || !existing.TryGetProperty(property, out var before)
+                || before.ValueKind is JsonValueKind.Null)
+                return;
+
+            if (!current.TryGetProperty(property, out var after) || after.ValueKind is JsonValueKind.Null)
+                dropped.Add(label);
+            else if (before.GetRawText() != after.GetRawText())
+                replaced.Add(label);
+        }
+
+        Compare("transport", "Transport");
+        Compare("command", "Command");
+        Compare("arguments", "Arguments");
+        Compare("url", "Url");
+        Compare("OAuth client id", "OAuthClientId");
+        Compare("OAuth scope", "OAuthScope");
+
+        foreach (var (label, property, supplied) in new[]
+                 {
+                     ("environment variables", "EnvironmentVariables", hasEnv),
+                     ("headers", "Headers", hasHeaders),
+                     ("OAuth client secret", "OAuthClientSecret", hasClientSecret),
+                 })
+        {
+            if (existingSecrets.ValueKind is JsonValueKind.Object && existingSecrets.TryGetProperty(property, out _))
+            {
+                if (supplied)
+                    replaced.Add(label);
+                else
+                    dropped.Add(label);
+            }
+        }
+    }
+
+    private static int RunToggle(string[] args, NetclawPaths paths, bool enabled, TextWriter writer)
+    {
         var (config, _) = LoadConfigFiles(paths);
+        if (!TryReadExistingServerName(
+                args,
+                $"Usage: netclaw mcp {(enabled ? "enable" : "disable")} <name>",
+                ConfiguredServerNames(config),
+                writer,
+                out var serverName,
+                out var exitCode))
+            return exitCode;
 
         var mcpServers = GetSectionOrNull(config, "McpServers");
         if (mcpServers is null || !mcpServers.ContainsKey(serverName.Value))

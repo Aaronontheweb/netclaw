@@ -74,25 +74,146 @@ public sealed class CommandHelpTests : IDisposable
     }
 
     [Theory]
-    [InlineData("add")]
-    [InlineData("auth")]
-    [InlineData("get")]
-    [InlineData("remove")]
-    [InlineData("enable")]
-    [InlineData("disable")]
-    public async Task McpServerName_StartingWithDash_IsRejected(string subcommand)
+    [InlineData("-x")]
+    [InlineData("help")]
+    public async Task McpAdd_NewServerNamedLikeAHelpRequest_IsRejected(string name)
     {
-        // `add` gets a URL as well, so only the name guard stops it from creating the server.
-        string[] args = subcommand == "add"
-            ? ["mcp", "add", "--transport", "http", "-x", "https://mcp.example.test/mcp"]
-            : ["mcp", subcommand, "-x"];
         using var output = new StringWriter();
 
-        var exitCode = await McpCommand.RunAsync(args, _paths, output: output);
+        var exitCode = await McpCommand.RunAsync(
+            ["mcp", "add", "--transport", "http", name, "https://mcp.example.test/mcp"],
+            _paths,
+            output: output);
 
         Assert.Equal(1, exitCode);
-        Assert.Contains("must not start with '-'", output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("is not a valid server name", output.ToString(), StringComparison.Ordinal);
         Assert.False(File.Exists(_paths.NetclawConfigPath));
+    }
+
+    [Theory]
+    [InlineData("--help")]
+    [InlineData("-x")]
+    [InlineData("help")]
+    public async Task McpExistingServerNamedLikeAHelpRequest_CanStillBeDisabledEnabledAndRemoved(string name)
+    {
+        // 0.27.1 could create all three, so they must stay reachable. After "--" the name is
+        // never read as a flag.
+        File.WriteAllText(
+            _paths.NetclawConfigPath,
+            new System.Text.Json.Nodes.JsonObject
+            {
+                ["McpServers"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    [name] = new System.Text.Json.Nodes.JsonObject { ["Transport"] = "stdio", ["Command"] = "npx" },
+                    ["keep"] = new System.Text.Json.Nodes.JsonObject { ["Transport"] = "stdio", ["Command"] = "npx" },
+                },
+            }.ToJsonString());
+
+        foreach (var (verb, expected) in new[] { ("disable", "Disabled"), ("enable", "Enabled"), ("remove", "Removed") })
+        {
+            using var output = new StringWriter();
+            Assert.Equal(0, await McpCommand.RunAsync(["mcp", verb, "--", name], _paths, output: output));
+            Assert.StartsWith($"{expected} MCP server '{name}'", output.ToString(), StringComparison.Ordinal);
+        }
+
+        var config = File.ReadAllText(_paths.NetclawConfigPath);
+        Assert.Contains("\"keep\"", config, StringComparison.Ordinal);
+        Assert.DoesNotContain($"\"{name}\"", config, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("--help")]
+    [InlineData("-x")]
+    public async Task McpRemove_ExistingServerNamedLikeAFlag_IsRemovedWithoutTheSeparator(string name)
+    {
+        File.WriteAllText(
+            _paths.NetclawConfigPath,
+            new System.Text.Json.Nodes.JsonObject
+            {
+                ["McpServers"] = new System.Text.Json.Nodes.JsonObject
+                {
+                    [name] = new System.Text.Json.Nodes.JsonObject { ["Transport"] = "stdio", ["Command"] = "npx" },
+                },
+            }.ToJsonString());
+        using var output = new StringWriter();
+
+        Assert.Equal(0, await McpCommand.RunAsync(["mcp", "remove", name], _paths, output: output));
+
+        Assert.DoesNotContain($"\"{name}\"", File.ReadAllText(_paths.NetclawConfigPath), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("remove", "-x")]
+    [InlineData("disable", "-x")]
+    public async Task McpUnknownServerNamedLikeAFlag_IsNotFoundNotCreated(string verb, string name)
+    {
+        using var output = new StringWriter();
+
+        var exitCode = await McpCommand.RunAsync(["mcp", verb, "--", name], _paths, output: output);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("not found", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task McpRemove_HelpFlagBesideAnExistingName_PrintsUsageAndRemovesNothing()
+    {
+        File.WriteAllText(
+            _paths.NetclawConfigPath,
+            """{"McpServers":{"keep":{"Transport":"stdio","Command":"npx"}}}""");
+        var before = Snapshot();
+        using var output = new StringWriter();
+
+        Assert.Equal(0, await McpCommand.RunAsync(["mcp", "remove", "keep", "--help"], _paths, output: output));
+
+        Assert.StartsWith("Usage: netclaw mcp", output.ToString(), StringComparison.Ordinal);
+        Assert.Equal(before, Snapshot());
+    }
+
+    [Fact]
+    public async Task McpAdd_HelpAsAnOperand_IsNotAHelpRequest()
+    {
+        using var output = new StringWriter();
+
+        var exitCode = await McpCommand.RunAsync(
+            ["mcp", "add", "-t", "stdio", "srv", "npx", "help"], _paths, output: output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Added MCP server 'srv'", output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task SecretsSet_KeyNamedHelp_StoresTheSecret()
+    {
+        using var output = new StringWriter();
+
+        Assert.Equal(0, SecretsCommand.Run(["secrets", "set", "help", "v"], _paths, output));
+
+        Assert.Contains("help", File.ReadAllText(_paths.SecretsPath), StringComparison.Ordinal);
+    }
+
+    public static TheoryData<string> BareHelpOperands() =>
+    [
+        "approvals trust-verb help",
+        "approvals revoke --tool help --all",
+        "skill show help",
+        "skill search help",
+        "skill source add help --path /tmp",
+        "provider remove help",
+    ];
+
+    [Theory]
+    [MemberData(nameof(BareHelpOperands))]
+    public async Task BareHelp_AsAnOperand_IsNotAHelpRequest(string commandLine)
+    {
+        string[] args = commandLine.Split(' ');
+        using var help = new StringWriter();
+        await RunAsync([args[0], "--help"], help);
+        using var output = new StringWriter();
+
+        await RunAsync(args, output);
+
+        Assert.NotEqual(help.ToString(), output.ToString());
     }
 
     [Fact]

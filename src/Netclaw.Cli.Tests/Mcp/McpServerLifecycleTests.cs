@@ -115,6 +115,18 @@ public sealed class McpServerLifecycleTests : IDisposable
         var approvals = new ToolApprovalStore(_paths.ToolApprovalsPath).Snapshot();
         Assert.DoesNotContain(approvals.Values.SelectMany(tools => tools.Keys), tool => tool.StartsWith("notion/", StringComparison.Ordinal));
 
+        // The allow-list entries (any case), grants, defaults and overrides are gone from Team
+        // and Public, and the other server's are not.
+        foreach (var audience in new[] { "Team", "Public" })
+        {
+            var profile = ReadConfig()["Tools"]!["AudienceProfiles"]![audience]!;
+            Assert.Equal(
+                ["unrelated", "OTHER", "other"],
+                profile["AllowedMcpServers"]!.AsArray().Select(node => node!.GetValue<string>()));
+            var overrideKeys = profile["ApprovalPolicy"]!["ToolOverrides"]!.AsObject().Select(pair => pair.Key);
+            Assert.Equal(["file_write", "other/fetch", "other__search"], overrideKeys.Order(StringComparer.Ordinal));
+        }
+
         // Other servers and first-party approvals are untouched.
         Assert.Equal(otherConfigBefore, OtherServerConfig());
         Assert.True(NewCredentialStore().HasAnyActive(new McpServerName("other")));
@@ -150,6 +162,213 @@ public sealed class McpServerLifecycleTests : IDisposable
         Assert.DoesNotContain("notion", File.ReadAllText(_paths.NetclawConfigPath), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task Remove_NameDifferingOnlyByCase_IsRefusedAndChangesNothing()
+    {
+        WriteServers("github", "git", "git__x");
+        ConfigureOperatorState("github");
+        ConfigureOperatorState("git__x");
+        SeedApprovals("github/search", "git__x/fetch");
+        var before = SnapshotState();
+
+        Assert.Equal(1, await McpCommand.RunAsync(["mcp", "remove", "GITHUB"], _paths, output: _output));
+
+        Assert.Contains("configured server is 'github'", _output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("Removed", _output.ToString(), StringComparison.Ordinal);
+        Assert.Equal(before, SnapshotState());
+    }
+
+    [Fact]
+    public async Task Remove_ServerWithCaseVariantSibling_KeepsEntriesTheSiblingUses()
+    {
+        WriteServers("github", "GITHUB");
+        ConfigureOperatorState("github");
+        ConfigureOperatorState("GITHUB");
+
+        Assert.Equal(0, await McpCommand.RunAsync(["mcp", "remove", "github"], _paths, output: _output));
+
+        foreach (var audience in new[] { "Team", "Public" })
+        {
+            var profile = ReadConfig()["Tools"]!["AudienceProfiles"]![audience]!;
+            // The runtime reads these allow-list entries as the surviving server too.
+            Assert.Contains("github", profile["AllowedMcpServers"]!.AsArray().Select(node => node!.GetValue<string>()));
+            Assert.Contains("GITHUB", profile["AllowedMcpServers"]!.AsArray().Select(node => node!.GetValue<string>()));
+            Assert.Null(profile["McpServerToolGrants"]!["github"]);
+            Assert.NotNull(profile["McpServerToolGrants"]!["GITHUB"]);
+            Assert.NotNull(profile["ApprovalPolicy"]!["McpServerDefaults"]!["GITHUB"]);
+            Assert.NotNull(profile["ApprovalPolicy"]!["ToolOverrides"]!["GITHUB/fetch"]);
+            Assert.Null(profile["ApprovalPolicy"]!["ToolOverrides"]!["github/fetch"]);
+        }
+    }
+
+    [Theory]
+    [InlineData("git", "git__x")]
+    [InlineData("a", "a/b")]
+    public async Task Remove_ServerWhoseNameStartsAnotherServersName_LeavesTheOtherServersStateIntact(string removed, string survivor)
+    {
+        WriteServers(removed, survivor);
+        ConfigureOperatorState(removed);
+        ConfigureOperatorState(survivor);
+        SeedApprovals($"{removed}/fetch", $"{survivor}/fetch", $"{survivor}__search");
+        var survivorOverrides = OverridesOf(survivor);
+        var survivorApprovals = ApprovalsOf(survivor);
+
+        Assert.Equal(0, await McpCommand.RunAsync(["mcp", "remove", removed], _paths, output: _output));
+
+        Assert.Empty(OverridesOf(removed));
+        Assert.Empty(ApprovalsOf(removed));
+        Assert.Equal(survivorOverrides, OverridesOf(survivor));
+        Assert.Equal(survivorApprovals, ApprovalsOf(survivor));
+        Assert.NotEmpty(survivorApprovals);
+        Assert.Contains(survivor, ReadConfig()["McpServers"]!.AsObject().Select(pair => pair.Key));
+    }
+
+    [Fact]
+    public async Task Remove_UnconfiguredLeftovers_AreClearedByTheExactNameOnly()
+    {
+        WriteServers("git__x");
+        ConfigureOperatorState("git");
+        ConfigureOperatorState("git__x");
+        SeedApprovals("git/fetch", "git__x/fetch");
+        var survivorOverrides = OverridesOf("git__x");
+
+        Assert.Equal(0, await McpCommand.RunAsync(["mcp", "remove", "git"], _paths, output: _output));
+
+        Assert.Empty(OverridesOf("git"));
+        Assert.Empty(ApprovalsOf("git"));
+        Assert.Equal(survivorOverrides, OverridesOf("git__x"));
+        Assert.NotEmpty(ApprovalsOf("git__x"));
+    }
+
+    [Fact]
+    public async Task Remove_UnavailableApprovalStore_FailsBeforeChangingAnything()
+    {
+        await AddNotionAsync("client-secret");
+        ConfigureOperatorState("notion");
+        File.WriteAllText(_paths.ToolApprovalsPath, "{ not json");
+        var before = SnapshotState();
+
+        Assert.Equal(1, await McpCommand.RunAsync(["mcp", "remove", "notion"], _paths, output: _output));
+
+        Assert.Contains("nothing was removed", _output.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("Removed MCP server", _output.ToString(), StringComparison.Ordinal);
+        Assert.Equal(before, SnapshotState());
+    }
+
+    [Fact]
+    public async Task Add_ExistingServer_KeepsGrantCategoryAndSaysWhatTheCommandLineReplacedAndDropped()
+    {
+        await AddNotionAsync("old-secret");
+        var config = ReadConfig();
+        config["McpServers"]!["notion"]!["GrantCategory"] = "custom-category";
+        config["McpServers"]!["notion"]!["OAuthScope"] = "read";
+        File.WriteAllText(_paths.NetclawConfigPath, config.ToJsonString());
+        Assert.Equal(0, await McpCommand.RunAsync(["mcp", "disable", "notion"], _paths, output: _output));
+        _output.GetStringBuilder().Clear();
+
+        Assert.Equal(0, await McpCommand.RunAsync(
+            ["mcp", "add", "--transport", "http", "notion", "https://changed.example.test/mcp"],
+            _paths,
+            output: _output));
+
+        var entry = ReadConfig()["McpServers"]!["notion"]!;
+        Assert.Equal("custom-category", entry["GrantCategory"]!.GetValue<string>());
+        Assert.False(entry["Enabled"]!.GetValue<bool>());
+        var text = _output.ToString();
+        Assert.Contains("replaced url", text, StringComparison.Ordinal);
+        Assert.Contains("dropped OAuth client id, OAuth scope, OAuth client secret", text, StringComparison.Ordinal);
+        Assert.Contains("stays disabled", text, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("false", false)]
+    [InlineData("True", true)]
+    public async Task Add_ExistingServerWithTextualEnabled_ReadsItLikeTheConfigurationBinder(string text, bool expected)
+    {
+        await AddNotionAsync(clientSecret: null);
+        var config = ReadConfig();
+        config["McpServers"]!["notion"]!["Enabled"] = text;
+        File.WriteAllText(_paths.NetclawConfigPath, config.ToJsonString());
+
+        Assert.Equal(0, await McpCommand.RunAsync(
+            ["mcp", "add", "--transport", "http", "notion", Url], _paths, output: _output));
+
+        Assert.Equal(expected, ReadConfig()["McpServers"]!["notion"]!["Enabled"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public async Task Add_ExistingServerWithUnreadableEnabled_FailsWithoutChangingAnything()
+    {
+        await AddNotionAsync(clientSecret: null);
+        var config = ReadConfig();
+        config["McpServers"]!["notion"]!["Enabled"] = "maybe";
+        File.WriteAllText(_paths.NetclawConfigPath, config.ToJsonString());
+        var before = SnapshotState();
+
+        Assert.Equal(1, await McpCommand.RunAsync(
+            ["mcp", "add", "--transport", "http", "notion", Url], _paths, output: _output));
+
+        Assert.Contains("not true or false", _output.ToString(), StringComparison.Ordinal);
+        Assert.Equal(before, SnapshotState());
+    }
+
+    private void WriteServers(params string[] names)
+    {
+        var servers = new JsonObject();
+        foreach (var name in names)
+            servers[name] = new JsonObject { ["Transport"] = "http", ["Url"] = Url };
+
+        var config = File.Exists(_paths.NetclawConfigPath) ? ReadConfig().AsObject() : new JsonObject();
+        config["McpServers"] = servers;
+        if (config["Tools"] is null)
+        {
+            var profiles = new JsonObject();
+            foreach (var audience in new[] { "Personal", "Team", "Public" })
+            {
+                profiles[audience] = new JsonObject
+                {
+                    ["McpServerToolGrants"] = new JsonObject(),
+                    ["ApprovalPolicy"] = new JsonObject { ["McpServerDefaults"] = new JsonObject() },
+                };
+            }
+
+            config["Tools"] = new JsonObject { ["AudienceProfiles"] = profiles };
+        }
+
+        File.WriteAllText(_paths.NetclawConfigPath, config.ToJsonString());
+    }
+
+    private void SeedApprovals(params string[] tools)
+    {
+        var store = new ToolApprovalStore(_paths.ToolApprovalsPath);
+        foreach (var tool in tools)
+            store.AddApproval(TrustAudience.Team, tool, ApprovalEntry.CreateNonShell(tool));
+    }
+
+    // The two tool-override keys the tests seed for a server, in both spellings.
+    private string[] OverridesOf(string server) =>
+    [
+        .. new[] { "Team", "Public" }.SelectMany(audience =>
+            ReadConfig()["Tools"]!["AudienceProfiles"]![audience]!["ApprovalPolicy"]!["ToolOverrides"]!.AsObject()
+                .Select(pair => $"{audience}:{pair.Key}={pair.Value}")
+                .Where(entry => entry.Contains($":{server}/fetch=", StringComparison.Ordinal)
+                                || entry.Contains($":{server}__search=", StringComparison.Ordinal))),
+    ];
+
+    private string[] ApprovalsOf(string server) =>
+    [
+        .. new ToolApprovalStore(_paths.ToolApprovalsPath).Snapshot().SelectMany(audience =>
+            audience.Value.Keys
+                .Where(tool => tool == $"{server}/fetch" || tool == $"{server}__search")
+                .Select(tool => $"{audience.Key}:{tool}")),
+    ];
+
+    // Every file the command may touch, byte for byte.
+    private string SnapshotState() => string.Join(
+        "\n",
+        new[] { _paths.NetclawConfigPath, _paths.SecretsPath, _paths.ToolApprovalsPath }
+            .Select(path => File.Exists(path) ? File.ReadAllText(path) : "<missing>"));
+
     private Task AddNotionAsync(string? clientSecret)
     {
         var args = new List<string> { "mcp", "add", "--transport", "http", "--client-id", "client" };
@@ -174,16 +393,22 @@ public sealed class McpServerLifecycleTests : IDisposable
         {
             var profile = profiles[audience]!.AsObject();
             profile["McpServersMode"] = "Allowlist";
-            profile["AllowedMcpServers"] = new JsonArray("unrelated", server.ToUpperInvariant(), server);
+            var allowed = profile["AllowedMcpServers"]?.AsArray() ?? [];
+            foreach (var name in new[] { "unrelated", server.ToUpperInvariant(), server })
+            {
+                if (!allowed.Any(node => node!.GetValue<string>() == name))
+                    allowed.Add(name);
+            }
+
+            profile["AllowedMcpServers"] = allowed;
             profile["McpServerToolGrants"]![server] = new JsonArray([.. grants.Select(tool => (JsonNode)tool)]);
             var policy = profile["ApprovalPolicy"]!.AsObject();
             policy["McpServerDefaults"]![server] = mode;
-            policy["ToolOverrides"] = new JsonObject
-            {
-                [$"{server}/fetch"] = overrideMode,
-                [$"{server}__search"] = overrideMode,
-                ["file_write"] = "Deny",
-            };
+            var overrides = policy["ToolOverrides"]?.AsObject() ?? [];
+            overrides[$"{server}/fetch"] = overrideMode;
+            overrides[$"{server}__search"] = overrideMode;
+            overrides["file_write"] = "Deny";
+            policy["ToolOverrides"] = overrides;
         }
 
         File.WriteAllText(_paths.NetclawConfigPath, config.ToJsonString());

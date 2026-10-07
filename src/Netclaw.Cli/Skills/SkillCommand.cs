@@ -30,11 +30,13 @@ internal static class SkillCommand
         var writer = output ?? Console.Out;
 
         // The search query is free text, so only its first word can ask for help. Every other
-        // subcommand takes names or paths, which a help token would otherwise replace.
+        // subcommand takes names or paths, which a help flag would otherwise replace. A skill
+        // or source may be called "help", so only the flags count after the subcommand.
         var helpRequested = subcommand is "help" or "-h" or "--help"
-            || (subcommand is "search"
-                ? args.Length > 2 && CliArgsParser.IsHelpToken(args[2])
-                : CliArgsParser.HasTrailingHelpToken(args, startIndex: 2));
+            || CliArgsParser.HasTrailingHelpToken(
+                subcommand is "search" ? args[..Math.Min(args.Length, 3)] : args,
+                startIndex: 2,
+                includeBareHelp: false);
         if (helpRequested)
             return Task.FromResult(WriteHelp(writer));
 

@@ -604,7 +604,7 @@ static async Task RunAsync(string[] args)
             case "devices":
             {
                 var devicesSubcmd = args.Length > 2 ? args[2] : "list";
-                if (IsHelpToken(devicesSubcmd) || CliArgsParser.HasTrailingHelpToken(args, startIndex: 3))
+                if (DaemonCommandDispatch.ShouldShowDevicesHelp(args))
                 {
                     WriteDaemonDevicesHelp();
                     return;

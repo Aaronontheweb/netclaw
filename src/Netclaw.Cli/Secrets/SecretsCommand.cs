@@ -21,8 +21,9 @@ internal static class SecretsCommand
         var writer = output ?? Console.Out;
         var subcommand = args.Length > 1 ? args[1] : "help";
 
-        // The value operand is free text, so only the key slot can ask for help.
-        if (args.Length > 2 && CliArgsParser.IsHelpToken(args[2]))
+        // The value operand is free text and a key may be called "help", so only a help flag
+        // in the key slot asks for help.
+        if (CliArgsParser.HasTrailingHelpToken(args[..Math.Min(args.Length, 3)], startIndex: 2, includeBareHelp: false))
             return RunHelp(writer);
 
         return subcommand switch
