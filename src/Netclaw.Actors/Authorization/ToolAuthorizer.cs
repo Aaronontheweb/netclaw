@@ -179,6 +179,7 @@ internal sealed class ToolAuthorizer
         decision ??= ProtectedPath(call);
         decision ??= WorkingDirectoryParentSegment(call);
         decision ??= DirectoryProofScreen(call);
+        decision ??= LiteralTwinScreen(call);
         decision ??= TrustedRoot(call);
         decision ??= ApprovalModeDenial(call);
         decision ??= NativeToolAdvice(call);
@@ -232,6 +233,12 @@ internal sealed class ToolAuthorizer
     private ToolAuthorizationDecision? DirectoryProofScreen(ShellCall call)
         => call.DirectoryProof is { } proof
             ? call.Finish(_policy.ScreenDirectoryScopes(proof, call.Context))
+            : null;
+
+    // Prohibition and filesystem authority for each literal twin, as for a typed command (F1).
+    private ToolAuthorizationDecision? LiteralTwinScreen(ShellCall call)
+        => call.LiteralTwins is { } twins
+            ? call.Finish(_policy.ScreenLiteralTwins(twins, call.Context))
             : null;
 
     // Filesystem authority: the working directory and every known path must be inside a trusted root.
@@ -293,7 +300,7 @@ internal sealed class ToolAuthorizer
             call.Evaluation.CandidateStates
                 .Select(static state => (state.PathFacts, state.Candidate.SourceOccurrence))
                 .ToArray(),
-            call.Analysis,
+            call.CandidateAnalyses,
             call.Context.Invocation));
 
     // Unresolved input: syntax without reusable candidates gets one exact retry, advice, or a Once-only prompt.
@@ -414,6 +421,7 @@ internal sealed class ToolAuthorizer
         private Lazy<ShellCommandAnalysis?>? _analysis;
         private Lazy<ShellApprovalAnalysis?>? _parsedApproval;
         private Lazy<BashDirectoryScopeProjection?>? _directoryProof;
+        private Lazy<BashLiteralTwinSlices?>? _literalTwins;
         private Lazy<ToolApprovalMode>? _mode;
         private Lazy<ShellPolicyPreflightResult>? _preflight;
         private Lazy<ToolCorrectionCollection?>? _corrections;
@@ -450,14 +458,37 @@ internal sealed class ToolAuthorizer
                 : null)).Value;
 
         /// <summary>
+        /// The literal twins of the Bash commands, or null when no command has
+        /// twins. A directory proof already gives each command its exact
+        /// directory, so a call with one gets no twins.
+        /// </summary>
+        internal BashLiteralTwinSlices? LiteralTwins => (_literalTwins ??= new(() =>
+            DirectoryProof is null
+            && Analysis is { } analysis
+            && authorizer._policy.TryProjectLiteralTwins(analysis, out var twins)
+                ? twins
+                : null)).Value;
+
+        /// <summary>
         /// The consent candidates: from the directory proof when one applies,
-        /// else one candidate set for each command.
+        /// else one candidate set for each command, with the candidates of the
+        /// literal twins in place of their source command.
         /// </summary>
         internal ShellApprovalAnalysis? Approval => DirectoryProof is { } proof
             ? ToolAccessPolicy.WithDirectoryScopes(ParsedApproval!, proof)
             : ParsedApproval is { } parsed
-                ? ToolAccessPolicy.WithCommandCandidates(parsed)
+                ? WithLiteralTwins(ToolAccessPolicy.WithCommandCandidates(parsed))
                 : null;
+
+        /// <summary>The analyses that own the candidate occurrences: the call and each literal twin.</summary>
+        internal IReadOnlyList<ShellCommandAnalysis> CandidateAnalyses =>
+        [
+            .. Analysis is { } analysis ? [analysis] : Array.Empty<ShellCommandAnalysis>(),
+            .. LiteralTwins?.Slices.Select(static slice => slice.Analysis) ?? []
+        ];
+
+        private ShellApprovalAnalysis WithLiteralTwins(ShellApprovalAnalysis approval)
+            => LiteralTwins is { } twins ? ToolAccessPolicy.WithLiteralTwins(approval, twins) : approval;
 
         internal ToolApprovalMode Mode => (_mode ??= new(() =>
             authorizer._policy.GetShellApprovalMode(_toolName, context, call.Arguments, Analysis))).Value;

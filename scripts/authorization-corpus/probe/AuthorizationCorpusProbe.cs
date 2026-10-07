@@ -157,6 +157,13 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
             foreach (var interactive in new[] { true, false })
             foreach (var auto in new[] { false, true })
                 yield return new($"bash-{grants}-{(interactive ? "i" : "u")}-{(auto ? "auto" : "approval")}", ShellApprovalHost.Bash, grants, interactive, auto);
+
+            // A Bash 5.2 host has the fresh no-startup state of a production daemon.
+            // Only that state gives literal twins (F1) and the complete launch
+            // environment (F3). A chat and a folder grant cover a literal twin.
+            foreach (var grants in new[] { "none", "anywhere", "project", "chat" })
+                yield return new($"bash52-{grants}-i-approval", ShellApprovalHost.Bash52, grants, Interactive: true, Auto: false);
+            yield return new("bash52-project-u-approval", ShellApprovalHost.Bash52, "project", Interactive: false, Auto: false);
         }
 
         foreach (var grants in new[] { "none", "anywhere" })
@@ -233,6 +240,8 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
                 "none" => Approvals.None,
                 "anywhere" => Approvals.PersistentAnywhere(GrantedVerbs),
                 "external" => Approvals.PersistentHere(ApprovalDirectoryShape.External, GrantedVerbs),
+                "project" => Approvals.PersistentHere(ApprovalDirectoryShape.Project, GrantedVerbs),
+                "chat" => Approvals.Session(GrantedVerbs),
                 _ => throw new ArgumentOutOfRangeException(nameof(state), state.Grants, "Unknown grant state.")
             },
             fixture.ActorSystem,

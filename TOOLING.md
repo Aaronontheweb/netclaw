@@ -31,7 +31,7 @@
 
 All focused gates run in one job definition, `mutation-gates` in `pr_validation.yml`, on each pull request, merge group, and `dev` push.
 The job has four Linux matrix groups that run in parallel with the normal test matrix.
-The groups hold about 13 to 14 minutes of gates each. The sum of all gates is about 54 minutes of runner time. The job timeout is 25 minutes.
+The groups hold about 13 to 14 minutes of gates each. The sum of all gates is about 59 minutes of runner time. The job timeout is 25 minutes.
 Each group runs its gates in sequence after one checkout and tool restore, and it reports every failed gate.
 To add a gate, add its script name (`scripts/run-<name>-mutations.sh`) to the lightest group. Do not add a new job.
 
@@ -58,6 +58,7 @@ coverage. They do not replace positive and negative behavior tests.
 | `SkillManageTool.GuardMutationTarget` and the filesystem authority link and protection results | A skill mutation cannot follow a link, write a protected path, or skip the atomic-write temp file | 5 killed | `./scripts/run-skill-manage-guard-mutations.sh` |
 | `ToolAccessPolicy.ReadOnlyOccurrences`, the read relaxation in `ToolAccessPolicy.EnforceKnownShellPaths`, `PathAccessPolicy.EvaluateShellReadPath`, `FileSystemAuthority.HoldsReadProtectedPath`, and the read-operand exemption of the `ToolPathPolicy` text screen | Decision D6: a read-only shell program (`cat`, `head`, `tail`, `wc`, `grep`, `jq`, `diff`) with bounded arguments can read one exact config file; only a write-protected path gets read protection; a redirect that writes keeps write protection; a directory operand that holds a read-protected path, a plain word that names an entry, a glob, a brace or `$'...'` word, a `..`, the config directory itself, and program text that names it in any spelling (`//`, `/./`, `name/../`, split quotes) stay denied | 58 killed | `./scripts/run-shell-config-read-mutations.sh` |
 | `ToolApprovalEntryComparer.CoversCommandWords`, `ShellPolicyCoordinator.SelectCommandWordsCorrection`, `ShellApprovalMatcher.TryResolveProgramPath`, `ShellProgramPath.MatchesLegacyRelative`, `ShellApprovalMatcher.ProjectCommandWords`, `ShellGrantFileWords.TryFindEntry`, and `ToolPathPolicy.PlainWordLinkReachesDeniedPath` | A verb grant (two or more words) covers its command words and any later words, and a program-only grant covers its word alone, so a `gh` grant does not cover `gh auth logout`; an empty grant covers nothing; the matcher and the store hygiene use this one rule; Unknown command words get a rewrite correction; a program path names its file (R1), so a `./tool` grant does not cover another file named `tool` or `mytool`; a word after the verb slot that names an existing file or directory leaves the command words and becomes a path scope, while the program word, the verb slot, a link, a word without a file, and a word that is not one entry of the directory stay; a plain word that names a link to a protected path is denied, command word or argument; the store and the doctor use the same rule | 49 detected | `./scripts/run-exact-verb-chain-mutations.sh` |
+| `BashLiteralTwinSlices.Apply` and the denial check of `ToolAccessPolicy.ScreenScopedSlices` | Decision F1: the strictest literal twin result decides a call. The candidates of every twin replace the candidates of their source command, an unresolved source keeps its exact answer, twins without their source command fail loudly, and one denied twin denies the call | 9 killed | `./scripts/run-literal-twin-mutations.sh` |
 
 Run the path-access check locally:
 
@@ -664,9 +665,9 @@ How it works:
    `EvaluateAuthorizationResultAsync` (revisions up to authorization PR 6c).
    The `authorizer` adapter reads `ToolAuthorizer`. `auto` picks the
    production path of the revision.
-3. The probe evaluates 16 shell states (Bash: 3 grant states, interactive or
-   unattended, Approval or Auto; PowerShell 7: 2 grant states, Approval or Auto)
-   and 24 tool states (3 audiences, interactive or unattended, 4 consent modes)
+3. The probe evaluates 21 shell states (Bash: 3 grant states, interactive or
+   unattended, Approval or Auto; Bash 5.2: 5 Approval states, see below;
+   PowerShell 7: 2 grant states, Approval or Auto) and 24 tool states (3 audiences, interactive or unattended, 4 consent modes)
    with the 62 tool inputs of the differential test. After a consent request,
    it also evaluates the retry with a "Once" answer. After a tool consent
    request, it records a chat grant and evaluates the call again. The probe
@@ -683,6 +684,22 @@ in the `netclaw-testrun-<GUID>` temporary folder of the test process with
 `{GUID}`. A `..` path or a basename can show these names. The
 compare step also replaces the parent of the private temporary root, which a
 `..` path can reach. Grant timestamps compare by presence only.
+
+Bash 5.2 states:
+
+- The `bash` states use a Bash host with no proved version, so the parser
+  state is `Unknown`. A production daemon on Bash 5.2 or 5.3 has the fresh
+  no-startup state. Only that state gives literal twins (F1) and the complete
+  launch environment (F3).
+- The `bash52` states use the Bash 5.2 host: no grant, a grant for anywhere, a
+  folder grant in the project, and a chat grant, each interactive, plus an
+  unattended folder grant. Use them for a change to twins, assignments, or
+  launch facts:
+
+```bash
+python3 scripts/authorization-corpus/run.py --base upstream/dev \
+  --states bash52-none-i-approval,bash52-anywhere-i-approval,bash52-project-i-approval,bash52-chat-i-approval,bash52-project-u-approval
+```
 
 Parallel lanes:
 

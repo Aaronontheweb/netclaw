@@ -369,6 +369,37 @@ public sealed class ShellExecutionEnvironment
             .TryProjectFiniteScopes(source, out projection);
     }
 
+    /// <summary>
+    /// Gives the literal twins of each Bash command whose changeable words have
+    /// a proved finite set of values. The parser uses the same options as the
+    /// approval parse of the submitted source.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: a twin is evidence only. Bash runs the submitted source, never
+    /// a twin text. The parser gives no twins under
+    /// <see cref="BashInitialStateMode.Unknown"/>, and a <c>~</c> gets twins
+    /// only with the live launch <c>HOME</c> of <see cref="CreateLaunchEnvironment"/>.
+    /// </remarks>
+    internal bool TryProjectLiteralBashTwins(
+        string source,
+        string? workingDirectory,
+        ManagedTemporaryLocation? temporary,
+        out BashLiteralTwinProjection? projection)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        if (Grammar != ShellGrammar.Bash)
+        {
+            projection = null;
+            return false;
+        }
+
+        return CreateBashParser(
+                workingDirectory,
+                publishAuthoredSourceFacts: true,
+                CreateLaunchEnvironment(temporary))
+            .TryProjectLiteralTwins(source, out projection);
+    }
+
     private BashParser CreateBashParser(
         string? workingDirectory,
         bool publishAuthoredSourceFacts,

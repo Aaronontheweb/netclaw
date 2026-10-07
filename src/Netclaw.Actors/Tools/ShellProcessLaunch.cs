@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 using Netclaw.Security;
 using Netclaw.Security.Authorization.Filesystem;
 using Netclaw.Tools;
@@ -113,6 +114,13 @@ public sealed class ShellProcessLaunch
                 AddPaths(slice.Analysis);
         }
 
+        // Each literal twin that authorized a command names its paths too (F1).
+        if (TryProjectLiteralTwins(analysis, out var twins))
+        {
+            foreach (var slice in twins.Slices)
+                AddPaths(slice.Analysis);
+        }
+
         return paths.Order(StringComparer.Ordinal).Select(static path =>
         {
             FileSystemAuthority.TryResolveLinks(path, out var target);
@@ -144,8 +152,32 @@ public sealed class ShellProcessLaunch
             throw new ShellProcessStartException($"Error: Command blocked by hard deny policy: {decision.DenyReason}");
         if (_pathPolicy.CommandReferencesDeniedPath(analysis))
             throw new ShellProcessStartException("Error: Command references a protected file path. Access denied by security policy.");
+
+        // The authorizer screens each literal twin as a typed command (F1), so the
+        // launch repeats those screens.
+        if (TryProjectLiteralTwins(analysis, out var twins))
+        {
+            foreach (var slice in twins.Slices)
+            {
+                var twinDecision = _commandPolicy.Evaluate(slice.Analysis);
+                if (!twinDecision.Allowed)
+                    throw new ShellProcessStartException($"Error: Command blocked by hard deny policy: {twinDecision.DenyReason}");
+                if (_pathPolicy.CommandReferencesDeniedPath(slice.Analysis))
+                    throw new ShellProcessStartException("Error: Command references a protected file path. Access denied by security policy.");
+            }
+        }
+
         return analysis;
     }
+
+    private bool TryProjectLiteralTwins(
+        ShellCommandAnalysis analysis,
+        [NotNullWhen(true)] out BashLiteralTwinSlices? twins)
+        => BashLiteralTwinSlices.TryCreate(
+            analysis,
+            _commandPolicy,
+            new ShellApprovalMatcher(Environment),
+            out twins);
 
     private void PrepareDirectories()
     {

@@ -2428,7 +2428,7 @@ public static class ShellApprovalCases
             "loop-control-with-write-stays-unresolved",
             Bash52("for d in a b; do touch \"$d.txt\"; continue; done"),
             Approvals.None,
-            ExpectedApproval.Require(["touch \"$d.txt\""])),
+            ExpectedApproval.Require(["touch"])),
         // In PowerShell, test is not a builtin, so it keeps its candidate.
         Case(
             "power-shell-test-word-prompts",
@@ -2582,7 +2582,7 @@ public static class ShellApprovalCases
             "loop-outside-operand-prompts-with-folder-grant",
             Bash52("for d in ../outside/x.slnx; do dotnet build \"$d\"; done"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
-            ExpectedApproval.Require(["dotnet build \"$d\""])),
+            ExpectedApproval.Require(["dotnet build"])),
         Case(
             "literal-outside-operand-prompts-with-folder-grant",
             Bash52("dotnet build ../outside/x.slnx"),
@@ -2592,22 +2592,28 @@ public static class ShellApprovalCases
             "assigned-outside-operand-prompts-with-folder-grant",
             Bash52("d=../outside/x.slnx; dotnet build \"$d\""),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
-            ExpectedApproval.Require(["dotnet build \"$d\""])),
+            ExpectedApproval.Require(["dotnet build"])),
         Case(
             "loop-absolute-operand-prompts-with-folder-grant",
             Bash52("for n in /etc/shadow a; do gh api \"$n\"; done"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "gh api"),
-            ExpectedApproval.Require(["gh api \"$n\""])),
+            ExpectedApproval.Require(["gh api"], approvalMatches: ["persistent:gh api a"])),
         Case(
             "loop-unquoted-outside-operand-prompts-with-folder-grant",
             Bash52("for n in ../outside/x a; do gh api $n; done"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "gh api"),
-            ExpectedApproval.Require(["gh api $n"])),
+            ExpectedApproval.Require(["gh api"], approvalMatches: ["persistent:gh api a"])),
         Case(
             "loop-outside-operand-prompts-with-chat-grant",
             Bash52("for d in ../outside/x.slnx; do dotnet build \"$d\"; done"),
             Approvals.Session("dotnet build"),
-            ExpectedApproval.Require(["dotnet build \"$d\""])),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:dotnet build")),
+        // Control: a chat grant covers the typed literal in the same way.
+        Case(
+            "literal-outside-operand-uses-chat-grant",
+            Bash52("dotnet build ../outside/x.slnx"),
+            Approvals.Session("dotnet build"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:dotnet build")),
         Case(
             "unattended-loop-outside-operand-with-folder-grant-denied",
             Bash52("for d in ../outside/x.slnx; do dotnet build \"$d\"; done", interactive: false),
@@ -2617,12 +2623,12 @@ public static class ShellApprovalCases
             "loop-outside-operand-uses-global-grant",
             Bash52("for d in ../outside/x.slnx; do dotnet build \"$d\"; done"),
             Approvals.PersistentAnywhere("dotnet build"),
-            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build \"$d\"")),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build")),
         Case(
             "unattended-loop-outside-operand-uses-global-grant",
             Bash52("for d in ../outside/x.slnx; do dotnet build \"$d\"; done", interactive: false),
             Approvals.PersistentAnywhere("dotnet build"),
-            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build \"$d\"")),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:dotnet build")),
         // The owner's live loop: a grant for anywhere still covers it.
         Case(
             "loop-issue-update-uses-global-grant",
@@ -2631,7 +2637,85 @@ public static class ShellApprovalCases
             ExpectedApproval.Allow(
                 ApprovalAllowReason.StoredApproval,
                 1,
-                "persistent:gh api -X PATCH repos/o/r/issues/$n -f milestone=157 >/dev/null")),
+                "persistent:gh api",
+                "persistent:gh api")),
+        // Owner decision F1: each literal twin of a loop command gets the
+        // decision of the typed literal. The twins of the owner's loop are
+        // "gh api -X PATCH repos/o/r/issues/8250 ..." and "... 8244 ...", so a
+        // chat or folder grant for "gh api" covers them, as for the typed
+        // commands. The strictest twin result decides the call.
+        Case(
+            "loop-twins-use-chat-grant",
+            Bash52("for n in 8250 8244; do gh api -X PATCH repos/o/r/issues/$n -f milestone=157 >/dev/null && echo \"moved $n\"; done"),
+            Approvals.Session("gh api"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:gh api", "session:gh api")),
+        Case(
+            "loop-twins-use-folder-grant",
+            Bash52("for n in 8250 8244; do gh api -X PATCH repos/o/r/issues/$n -f milestone=157 >/dev/null && echo \"moved $n\"; done"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "gh api"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:gh api", "persistent:gh api")),
+        Case(
+            "unattended-loop-twins-use-folder-grant",
+            Bash52("for n in 8250 8244; do gh api -X PATCH repos/o/r/issues/$n -f milestone=157 >/dev/null && echo \"moved $n\"; done", interactive: false),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "gh api"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:gh api", "persistent:gh api")),
+        // Negative control: without a grant, the twins prompt with reusable choices.
+        Case(
+            "loop-twins-prompt-with-reusable-choices",
+            Bash52("for n in 8250 8244; do gh api -X PATCH repos/o/r/issues/$n -f milestone=157 >/dev/null && echo \"moved $n\"; done"),
+            Approvals.None,
+            ExpectedApproval.Require(["gh api"])),
+        // SECURITY: one denied twin denies the call.
+        Case(
+            "loop-twin-with-credential-path-denied",
+            Bash52("for f in notes.txt ~/.netclaw/config/secrets.json; do cat \"$f\"; done"),
+            Approvals.PersistentAnywhere("cat"),
+            ExpectedApproval.Deny("shell_references_protected_path")),
+        Case(
+            "loop-twin-with-credential-key-among-allowed-twins-denied",
+            Bash52("for f in a.txt b.txt ~/.netclaw/keys/key-1.xml; do head -n 1 \"$f\"; done"),
+            Approvals.PersistentAnywhere("head"),
+            ExpectedApproval.Deny("shell_references_protected_path")),
+        // A loop value from a command substitution has no finite set, so the
+        // command gets no twins and keeps its decision. The unquoted word can
+        // glob, so the model gets the quote correction. In quotes, the command
+        // keeps its exact candidate (decision D1).
+        Case(
+            "loop-over-substitution-keeps-quote-correction",
+            Bash52("for n in $(gh issue list); do gh api x/$n; done"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "gh api"),
+            ExpectedApproval.Correct()),
+        Case(
+            "loop-over-substitution-keeps-exact-candidate",
+            Bash52("for n in $(gh issue list); do gh api \"x/$n\"; done"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "gh api"),
+            ExpectedApproval.Require(["gh api \"x/$n\""])),
+        // A program word from a loop value is not a static verb word, so it gets
+        // no twin, and no grant covers it.
+        Case(
+            "loop-program-word-gets-no-twin",
+            Bash52("for p in /bin/rm; do $p x; done"),
+            Approvals.PersistentAnywhere("rm", "/bin/rm"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        // A loop value in the verb slot gives each twin its own command words.
+        Case(
+            "loop-verb-twins-use-reviewed-safe-policy",
+            Bash52("for v in status log; do git $v; done"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ReviewedSafePolicy)),
+        Case(
+            "loop-verb-twins-prompt-for-uncovered-twin",
+            Bash52("for v in push fetch; do git $v origin; done"),
+            Approvals.Session("git push"),
+            ExpectedApproval.Require(["git fetch origin"], approvalMatches: ["session:git push origin"])),
+        // SECURITY: a twin keeps the shell-state assignments of its source
+        // command, so a grant without the same assignments does not cover it.
+        // The exported assignment reaches each run.
+        Case(
+            "assigned-loop-twins-keep-assignment-qualification",
+            Bash52("x=1; export x; for n in a b; do gh api x/$n; done"),
+            Approvals.Session("gh api", "export x"),
+            ExpectedApproval.Require(["export x", "gh api"])),
         // F2: a data command over a listing keeps its exemption.
         Case(
             "cd-loop-over-listing-output-stays-allowed",
@@ -2745,7 +2829,7 @@ public static class ShellApprovalCases
             "assigned-branch-is-not-covered-by-another-branch-grant",
             Bash52("b=main; git push origin \"$b\""),
             Approvals.PersistentAnywhere("git push origin feature-x"),
-            ExpectedApproval.Require(["git push origin \"$b\""])),
+            ExpectedApproval.Require(["git push origin main"])),
         // ShellSyntaxTree 0.4.0-beta.12 shows the command inside an assignment
         // substitution, so the hard-deny list sees it.
         Case(

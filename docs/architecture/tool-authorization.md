@@ -173,7 +173,7 @@ shell rules, in order:
 1. Admission: audience, then shell capability.
 2. Prohibition: hard deny, then protected shell text.
 3. Filesystem authority: a `..` in the working directory, then each slice of a
-   `cd` directory proof.
+   `cd` directory proof, then each literal twin (decision F1, below).
 4. Filesystem authority: the working directory and the known paths must be in
    a trusted root of the audience profile. A protected path stays denied.
 5. Admission: a Deny consent mode.
@@ -187,8 +187,56 @@ shell rules, in order:
    A variable word (`"$d"`) is an unknown operand unless the parser resolves
    it as a path, or types its value as a filesystem value or as data. A loop
    or assignment value that names a path does not give the candidate a scope.
+   Owner decision F1 (0.27.2): when the parser gives the literal twins of a
+   command, the twin candidates replace the candidates of that command (see
+   "Literal twins" below).
 8. Consent: a covering grant (stored grant, side-effect exemption, reviewed-safe
    policy), then the uncovered candidates.
+
+Literal twins (owner decision F1, October 2026). ShellSyntaxTree
+0.4.0-beta.23 writes each Bash command whose changeable words have a proved
+finite set of values as one literal command for each combination of values
+(`BashParser.TryProjectLiteralTwins`). Netclaw judges each twin as if the
+operator typed it. `BashLiteralTwinSlices` (`Netclaw.Actors/Tools`) owns the
+judgment. Its data is call-local.
+
+```text
+schematic: one shell call, after the parse
+twins = TryProjectLiteralTwins(source)      # none under an Unknown initial state
+for each command that has twins:
+    for each twin:
+        analysis = analyze(twin.Source, twin.WorkingDirectory)   # never run it
+        require: one complete command, with the facts of twin.Occurrence
+        candidates = normal candidates of the analysis
+        add the assignment digest of the source command
+    any twin that fails -> the command keeps its own candidates
+screen each twin: hard deny, protected text, trusted root      # rule 3
+replace the candidates of each twinned command with the union of its twins
+cover each candidate as usual                                   # rule 8
+```
+
+- The strictest twin result wins. One denied twin denies the call. One
+  uncovered twin candidate prompts, with the union of the uncovered
+  candidates. The call runs with no prompt only when each twin candidate is
+  covered.
+- Example: `for n in 8250 8244; do gh api -X PATCH repos/o/r/issues/$n -f
+  milestone=157; done` gives the twins `gh api -X PATCH repos/o/r/issues/8250
+  ...` and `... 8244 ...`. A chat or folder grant for `gh api` covers them,
+  and a prompt offers the normal choices.
+- Negative example: `for d in ../outside/x.slnx; do dotnet build "$d"; done`
+  gives the twin `dotnet build ../outside/x.slnx`. A folder grant for
+  `dotnet build` does not cover the path outside the folder.
+- A command without twins keeps its earlier rule. Examples: a value from
+  `$(...)` (`for n in $(gh issue list); do gh api "x/$n"; done`), a program
+  word from a value (`for p in /bin/rm; do $p x; done`), and any source on a
+  Bash host without a proved fresh state.
+- A twin keeps the shell-state assignments of its source command as an
+  assignment digest, so a grant without the same assignments does not cover
+  it (`x=1; for n in a b; do gh api x/$n; done`).
+- `ShellProcessLaunch` screens each twin again for hard deny and protected
+  text, and it rechecks the paths of each twin before the process starts.
+- A call with a `cd` directory proof gets no twins: the proof already gives
+  each command its exact directory.
 
 Decision D2 (October 2026): an attended and an unattended call use the same
 rules above. The file reach of an unattended call is the reach of its audience
@@ -239,7 +287,7 @@ Leaks today:
 | Item | Current state |
 | --- | --- |
 | Question | What does this command do, in general shell terms? |
-| Classes | ShellSyntaxTree through [`ShellCommandAnalysis`](../../src/Netclaw.Security/ShellCommandAnalysis.cs); candidate extraction in `ShellApprovalMatcher` ([`IToolApprovalMatcher.cs`](../../src/Netclaw.Security/IToolApprovalMatcher.cs)); [`ShellTokenizer`](../../src/Netclaw.Security/ShellTokenizer.cs) and [`ShellApprovalSemantics`](../../src/Netclaw.Security/ShellApprovalSemantics.cs) (legacy parser); [`BashDirectoryScopeProjection`](../../src/Netclaw.Actors/Tools/BashDirectoryScopeProjection.cs) (the directory of each occurrence after a Bash `cd`); [`ShellPolicyPathFacts`](../../src/Netclaw.Actors/Tools/ShellPolicyPathFacts.cs); [`ShellFileSystemTreeAccessPolicy`](../../src/Netclaw.Security/ShellFileSystemTreeAccessPolicy.cs) |
+| Classes | ShellSyntaxTree through [`ShellCommandAnalysis`](../../src/Netclaw.Security/ShellCommandAnalysis.cs); candidate extraction in `ShellApprovalMatcher` ([`IToolApprovalMatcher.cs`](../../src/Netclaw.Security/IToolApprovalMatcher.cs)); [`ShellTokenizer`](../../src/Netclaw.Security/ShellTokenizer.cs) and [`ShellApprovalSemantics`](../../src/Netclaw.Security/ShellApprovalSemantics.cs) (legacy parser); [`BashDirectoryScopeProjection`](../../src/Netclaw.Actors/Tools/BashDirectoryScopeProjection.cs) (the directory of each occurrence after a Bash `cd`); [`BashLiteralTwinSlices`](../../src/Netclaw.Actors/Tools/BashLiteralTwinSlices.cs) (the literal twins of a Bash command, F1); [`ShellPolicyPathFacts`](../../src/Netclaw.Actors/Tools/ShellPolicyPathFacts.cs); [`ShellFileSystemTreeAccessPolicy`](../../src/Netclaw.Security/ShellFileSystemTreeAccessPolicy.cs) |
 | Published contract | `ShellCommandPolicy.Analyze(...)` returns a `ShellCommandAnalysis`. `ShellApprovalMatcher.AnalyzeInvocation(...)` returns candidates and an "unresolved" flag (`IsMessy` in code). |
 | Must not know | Grants, audience, the private grammar of an executable. |
 | Data | Call-local. |
@@ -249,9 +297,10 @@ Leaks today:
 
 - Two parsers read one command: ShellSyntaxTree and the legacy tokenizer.
   Hard deny and the protected-path check use both.
-- Two projections produce candidates for one compound Bash command: the
-  matcher candidates of the full parse, and the directory proof for a list
-  with an exact `cd`. The directory proof also marks the diagnostics of a
+- Three projections produce candidates for one compound Bash command: the
+  matcher candidates of the full parse, the directory proof for a list with
+  an exact `cd`, and the literal twins of a command with proved finite values
+  (`BashLiteralTwinSlices`). The directory proof also marks the diagnostics of a
   causal list (`cd dir && action; diagnostic`) for the reviewed-safe intent
   rule. That rule and the headless denial of a causal list stay until the
   owner changes the outcomes that they protect. The side-effect exemption
@@ -867,6 +916,7 @@ and the approval tooling is in
 | `skill_manage` mutations refuse links and protected paths. | `SkillToolTests`; the skill_manage guard mutation gate ([TOOLING.md § Skill Manage Guard Gate](../../TOOLING.md#skill-manage-guard-gate)) |
 | A shell grant never authorizes `file_read`. | No test yet. Consolidation PR 1b adds it. |
 | `ToolAuthorizer` gives the same decision as the gate on `dev`. | The corpus differential ([TOOLING.md § Authorization Corpus Differential](../../TOOLING.md#authorization-corpus-differential)) |
+| One denied literal twin denies the call, and every twin candidate needs coverage (F1). | `LiteralTwinApprovalTests`; catalog `loop-twin*` rows; the literal twin mutation gate |
 | No `ToolAuthorizer` rule can move ahead of an earlier rule. | The tool authorizer order mutation gate ([TOOLING.md § Tool Authorizer Order Gate](../../TOOLING.md#tool-authorizer-order-gate)) |
 
 Model guidance (which tool the model should choose, and how it should declare

@@ -278,3 +278,31 @@ touch {C}/tool-approvals.json
 cp {P}/notes.txt {C}/secrets.json
 echo x | tee {C}/webhooks/route.json
 sed -i s/a/b/ {C}/netclaw.json
+for n in 8250 8244; do gh api -X PATCH repos/o/r/issues/$n -f milestone=157 >/dev/null && echo "moved $n"; done
+for n in 8250 8244; do gh api repos/o/r/issues/$n; done
+for f in notes.txt ~/.netclaw/config/secrets.json; do cat "$f"; done
+for f in a.txt b.txt ~/.netclaw/keys/key-1.xml; do head -n 1 "$f"; done
+for d in ../outside/x.slnx; do dotnet build "$d"; done
+for d in a.slnx ../outside/x.slnx; do make "$d"; done
+for n in $(gh issue list); do gh api x/$n; done
+for n in $(gh issue list); do gh api "x/$n"; done
+for p in /bin/rm; do $p x; done
+for v in status log; do git $v; done
+for v in push fetch; do git $v origin; done
+for f in a.txt b.txt; do rm "$f"; done
+for f in a.txt /etc/hosts; do cat "$f"; done
+d=../outside/x.slnx; make "$d"
+x=1; for n in a b; do gh api x/$n; done
+x=1; export x; for n in a b; do gh api x/$n; done
+b=$(git branch --show-current); git log origin/$b..HEAD
+b=$(git branch --show-current); git log "origin/$b..HEAD"
+b=$(git branch --show-current); git fetch origin
+b=$(git branch --show-current); git push origin "$b"
+st=$(git status --short); echo "$st"
+b=1; git status
+b=1; export b; git status
+b=1 git status
+set -a; b=1; git status
+GIT_DIR=/tmp/x; git status
+d=key; echo ../netclaw/"${d}s"/*
+d=key; ls ../netclaw/"${d}s"/*
