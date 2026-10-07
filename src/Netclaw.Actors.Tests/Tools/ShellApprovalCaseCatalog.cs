@@ -931,6 +931,19 @@ public static class ShellApprovalCases
             Bash("pipedrive dealfields list"),
             Approvals.None,
             ExpectedApproval.Require(["pipedrive dealfields list"])),
+        // Bash words compare with case, so these two commands save two grants.
+        // The prompt shows both verbs.
+        Case(
+            "grant-identity-case-variants-prompt-with-both-verbs",
+            Bash("pipedrive dealFields list; pipedrive dealfields list"),
+            Approvals.None,
+            ExpectedApproval.Require(["pipedrive dealFields list", "pipedrive dealfields list"])),
+        // PowerShell words compare without case, so one grant covers both commands.
+        Case(
+            "grant-identity-powershell-case-variants-prompt-with-one-verb",
+            PowerShell7("pipedrive dealFields list; pipedrive dealfields list"),
+            Approvals.None,
+            ExpectedApproval.Require(["pipedrive dealFields list"])),
         Case(
             "grant-identity-second-word-mixed-case-prompts-with-command-words",
             Bash("mytool subCommand list"),

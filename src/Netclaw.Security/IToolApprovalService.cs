@@ -89,7 +89,12 @@ public sealed record ToolApprovalCandidateCheck(
     ApprovalCandidate Candidate,
     ToolApprovalMatch? ApprovedMatch);
 
-/// <summary>The grant that covered one candidate phrase.</summary>
+/// <summary>
+/// One candidate that a grant covered. <see cref="Pattern"/> is the verb of the
+/// candidate (the command words of the call), and <see cref="Scope"/> is the
+/// scope of the grant. The words of the grant can be fewer: the grant
+/// <c>git push</c> covers the candidate <c>git push origin</c>.
+/// </summary>
 public sealed record ToolApprovalMatch(
     string Pattern,
     GrantScope Scope);

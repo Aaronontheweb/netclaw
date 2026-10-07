@@ -19,8 +19,8 @@ namespace Netclaw.Security;
 /// command with known command words, the verb is the phrase text of
 /// <see cref="VerbTokens"/> (e.g., <c>git status</c>,
 /// <c>pipedrive dealFields list</c>). The prompt shows it, and a grant from
-/// the prompt saves those words. An approval-exempt data command keeps its
-/// program name (<c>echo</c>), and an exact candidate keeps its source text.
+/// the prompt saves those words. A command with unknown command words keeps
+/// its policy verb, and an exact candidate keeps its source text.
 /// The directory identifies a path operand, a redirect parent, or an inherited
 /// shell directory. A null directory uses the spawned process cwd.
 /// One shell clause can produce multiple candidates when it accesses multiple
@@ -285,7 +285,8 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
     public IReadOnlyList<string> ExtractCandidateVerbs(ToolName toolName, IDictionary<string, object?>? arguments)
         => ExtractCandidates(toolName, arguments)
             .Select(c => c.Verb)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Distinct(ApprovalPatternMatching.VerbTextComparer(
+                Environment.Grammar == ShellGrammar.Bash ? ApprovalShell.Bash : ApprovalShell.PowerShell))
             .ToList();
 
     public IReadOnlyList<ApprovalCandidate> ExtractCandidates(ToolName toolName, IDictionary<string, object?>? arguments)
@@ -447,7 +448,10 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 
             if (!ShellAssignmentDigestFactory.TryCreate(
                     ApprovalShell.Bash,
-                    QualifyingAssignments(source.Assignments, ApprovalShell.Bash, PolicyProgram(candidate)),
+                    QualifyingAssignments(
+                        source.Assignments,
+                        ApprovalShell.Bash,
+                        ApprovalPatternMatching.PolicyProgram(candidate)),
                     out var digest))
             {
                 return false;
@@ -459,15 +463,6 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         qualified = Array.AsReadOnly(result);
         return true;
     }
-
-    /// <summary>
-    /// Returns the program word that the data-command rule reads. The verb of a
-    /// candidate is its command words, so a data command with a redirect
-    /// (<c>echo hi &gt; out.txt</c>) has the verb <c>echo hi</c>. Its first
-    /// command word is the program. Unknown command words keep the policy verb.
-    /// </summary>
-    private static string PolicyProgram(ApprovalCandidate candidate)
-        => candidate.VerbTokens is { Count: > 0 } words ? words[0] : candidate.Verb;
 
     private ApprovalCandidate? CreateExactCandidate(
         string source,
@@ -596,11 +591,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             ? verb
             : ShellCommandWordText.FormatPhrase(shell, verbTokens);
         return directories
-            .Select(directory => new ApprovalCandidate(
-                // An approval-exempt data command saves no grant. It keeps the
-                // policy verb, because IsPureSideEffect reads that verb.
-                isSideEffectVerb && directory is null && assignmentDigest is null ? verb : identity,
-                directory)
+            .Select(directory => new ApprovalCandidate(identity, directory)
             {
                 AssignmentDigest = assignmentDigest,
                 VerbTokens = verbTokens,

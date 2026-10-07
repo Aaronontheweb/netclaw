@@ -1590,50 +1590,22 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             new ApprovalCandidate("git push", Directory: null)));
     }
 
+    // The exemption of a data command reads the program word, not the verb
+    // text, so `echo hello` (the verb `echo hello`) stays approval-exempt.
     [Fact]
-    public void ExtractCandidates_caps_echo_at_one_token()
+    public void ExtractCandidates_data_command_with_words_stays_approval_exempt()
     {
-        // Without the SingleTokenSideEffectVerbs cap, the verb-chain
-        // extractor would capture `echo hello` as a 2-token verb (since
-        // `hello` neither starts with `-` nor matches LooksLikeArgument)
-        // and the side-effect skip list would not match. Aaron's real
-        // dogfood case used `echo "---REMOTE-INFO---"` which already
-        // breaks at the leading `-` — but operators routinely run
-        // `echo hello`-shape commands in build scripts.
-        // (`echo done` would be the more obvious example but `done` is
-        // a bash control-flow keyword and triggers IsMessyCompoundCommand,
-        // which returns zero candidates.)
         var candidates = _matcher.ExtractCandidates(
             new ToolName("shell_execute"),
             new Dictionary<string, object?> { ["Command"] = "echo hello" });
 
         var c = Assert.Single(candidates);
-        Assert.Equal("echo", c.Verb);
+        Assert.Equal("echo hello", c.Verb);
         Assert.True(ApprovalPatternMatching.IsPureSideEffect(c));
     }
 
-    // One grant identity: the verb that the prompt shows is the phrase of the
-    // command words that the answer saves and that a grant matches. The
-    // parser verb walk stops at "user" ("whoami" takes no subcommand) and at a
-    // word with an uppercase letter ("dealFields"). The command words do not.
-    [Theory]
-    [InlineData("whoami user", "whoami user")]
-    [InlineData("pipedrive dealFields list --custom-only --json", "pipedrive dealFields list")]
-    [InlineData("pipedrive organizationFields list --json", "pipedrive organizationFields list")]
-    [InlineData("pipedrive dealfields list", "pipedrive dealfields list")]
-    [InlineData("mytool subCommand list", "mytool subCommand list")]
-    [InlineData("aws s3api listObjects --bucket b", "aws listObjects")]
-    public void ExtractCandidates_verb_is_the_phrase_of_the_command_words(string command, string expected)
-    {
-        var candidate = Assert.Single(_matcher.ExtractCandidates(
-            new ToolName("shell_execute"),
-            new Dictionary<string, object?> { ["Command"] = command }));
-
-        Assert.Equal(expected, candidate.Verb);
-        Assert.Equal(expected.Split(' '), candidate.VerbTokens);
-        Assert.Equal(ApprovalShell.Bash, candidate.Shell);
-    }
-
+    // One grant identity: the verb is the phrase of the command words. The
+    // parser verb walk stops at "user", and the command words do not.
     [Fact]
     public void ExtractCandidates_keeps_distinct_occurrences_with_their_own_command_words()
     {
@@ -1670,18 +1642,20 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         Assert.Equal("/opt/app/bin/tool runJob now", candidate.Verb);
     }
 
-    // An approval-exempt data command saves no grant, so it keeps its program
-    // name. The exemption reads that name.
+    // SECURITY: an exact candidate keeps its source text and is never exempt,
+    // also when its command words are only the data command.
     [Fact]
-    public void ExtractCandidates_exempt_data_command_keeps_its_program_name()
+    public void Exact_candidate_of_a_data_command_is_not_approval_exempt()
     {
-        var candidate = Assert.Single(_matcher.ExtractCandidates(
-            new ToolName("shell_execute"),
-            Args("echo hello world", "/work")));
+        var exact = new ApprovalCandidate("echo $x", Directory: null)
+        {
+            Shell = ApprovalShell.Bash,
+            VerbTokens = ["echo"],
+            Unresolved = ShellUnresolvedPart.Command,
+        };
 
-        Assert.Equal("echo", candidate.Verb);
-        Assert.Equal(["echo", "hello", "world"], candidate.VerbTokens);
-        Assert.True(ApprovalPatternMatching.IsPureSideEffect(candidate));
+        Assert.False(ApprovalPatternMatching.IsPureSideEffect(exact));
+        Assert.True(ApprovalPatternMatching.IsPureSideEffect(exact with { Verb = "echo", Unresolved = ShellUnresolvedPart.None }));
     }
 
     // PowerShell uses the canonical cmdlet name of an alias in the command words,
@@ -2077,7 +2051,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
                 ["Command"] = "cd /tmp && echo \"done\""
             });
 
-        Assert.Contains(candidates, c => c.Verb == "echo" && c.Directory == null);
+        Assert.Contains(candidates, c => c.Verb == "echo done" && c.Directory == null);
     }
 
     [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
@@ -2354,7 +2328,8 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             });
 
         var printfCandidate = Assert.Single(candidates);
-        Assert.Equal("printf", printfCandidate.Verb);
+        Assert.Equal("printf %d", printfCandidate.Verb);
+        Assert.True(ApprovalPatternMatching.IsPureSideEffect(printfCandidate));
         Assert.Null(printfCandidate.Directory);
     }
 

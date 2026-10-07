@@ -62,72 +62,41 @@ public sealed class GrantIdentityApprovalTests(ShellApprovalMatrixFixture fixtur
         await AssertPromptsForAsync(harness, "pipedrive", "pipedrive");
     }
 
-    // SECURITY: a program-only grant stays exact. A store can hold such a grant
-    // from an answer to the bare program. The rule does not make it wider.
-    [SlopwatchSuppress("SW001", "The Bash cases require a POSIX host.")]
-    [Fact(SkipUnless = nameof(IsPosix), Skip = "The Bash cases require a POSIX host.")]
-    public async Task Program_only_grant_does_not_cover_a_verb_of_the_program()
-    {
-        await using var harness = await CreateHarnessAsync();
-        harness.AddStoredShellEntry(
-            TrustAudience.Personal,
-            ApprovalEntry.CreateTokenPrefix(ApprovalShell.Bash, ["pipedrive"]));
-
-        await AssertAllowedByStoredGrantAsync(harness, "pipedrive");
-        await AssertPromptsForAsync(harness, "pipedrive dealFields list --json", "pipedrive dealFields list");
-        await AssertPromptsForAsync(harness, "pipedrive deals delete 42", "pipedrive deals delete");
-    }
-
-    [SlopwatchSuppress("SW001", "The Bash cases require a POSIX host.")]
-    [Theory(SkipUnless = nameof(IsPosix), Skip = "The Bash cases require a POSIX host.")]
-    [InlineData("mytool subCommand list", "mytool subCommand list", "mytool otherCommand list")]
-    [InlineData("aws s3api listObjects --bucket b", "aws listObjects", "aws s3api deleteObjects --bucket b")]
-    [InlineData("pipedrive deals list", "pipedrive deals list", "pipedrive deals delete 42")]
-    public async Task Prompt_verb_is_the_saved_grant_and_covers_the_next_call(
-        string command,
-        string shownVerb,
-        string otherCommand)
-    {
-        await using var harness = await CreateHarnessAsync();
-
-        await AssertPromptsForAsync(harness, command, shownVerb);
-        var saved = await AnswerAsync(harness, command, GrantScopeKind.Session);
-
-        Assert.Equal(shownVerb, ShellCommandWordText.FormatPhrase(ApprovalShell.Bash, Assert.Single(saved).Candidate.VerbTokens!));
-        await AssertAllowedByStoredGrantAsync(harness, command);
-        var other = await harness.EvaluateShellAsync(otherCommand, Ct);
-        Assert.Equal(ApprovalOutcome.RequiresApproval, other.Outcome);
-    }
-
     /// <summary>
-    /// For each catalog command, the grant that a prompt answer saves has the
-    /// text of the candidate verb and covers that candidate.
+    /// For each candidate of each catalog command, the entry that the
+    /// production save path creates has the text of the candidate verb.
     /// </summary>
     /// <remarks>
-    /// The test uses the production save path: <see cref="GrantBuilder"/> and
-    /// <see cref="ToolApprovalActor.TryCreateEntries"/>. A candidate with no
-    /// reusable phrase (an exact candidate, unknown command words, or an
-    /// approval-exempt data command) saves no grant, so the rule skips it.
-    /// The chat and the everywhere scope have no folder, so the phrase alone
-    /// decides. <see cref="Saved_grant_covers_the_command_that_saved_it"/>
-    /// proves the folder scope, which also depends on the path of each call.
+    /// What the test proves: the shown text and the saved text are equal for
+    /// one candidate. The save path is <see cref="GrantBuilder"/> and
+    /// <see cref="ToolApprovalActor.TryCreateEntries"/>, for the chat, the
+    /// folder, and the everywhere scope. On the old code the test fails:
+    /// <c>find . -exec rm {} +</c> showed <c>find</c> and saved
+    /// <c>find rm {} +</c>.
+    /// What the test does not prove: that the grant covers the call. A word
+    /// list is a prefix of itself, so that check cannot fail here.
+    /// <see cref="Saved_grant_covers_the_command_that_saved_it"/> proves it for
+    /// one command through the approval actor. The repository scope is not in
+    /// this test, because the catalog directories are not Git worktrees.
+    /// The production code selects the candidates that save no grant: the
+    /// builder drops an approval-exempt command, and the actor refuses a
+    /// candidate with no command words. The test fails when a candidate that
+    /// can prompt for a reusable grant saves no entry.
     /// </remarks>
     [SlopwatchSuppress("SW001", "The catalog resolves POSIX paths with the Bash grammar.")]
     [Fact(SkipUnless = nameof(IsPosix), Skip = "The catalog resolves POSIX paths with the Bash grammar.")]
-    public void Each_catalog_candidate_is_covered_by_the_grant_that_it_saves()
+    public void Each_catalog_candidate_saves_the_text_that_the_prompt_shows()
     {
-        var checkedCandidates = 0;
+        var saved = 0;
         var failures = new List<string>();
         foreach (var invocation in ShellApprovalCases.All
                      .Select(static item => item.Invocation)
                      .DistinctBy(static item => (item.Command, item.Host)))
         {
-            var environment = invocation.CreateEnvironment();
             var cwd = invocation.Host is ShellApprovalHost.Bash or ShellApprovalHost.Bash52
                 ? "/work/project"
                 : @"C:\work\project";
-            var matcher = new ShellApprovalMatcher(environment);
-            var analysis = matcher.AnalyzeInvocation(
+            var analysis = new ShellApprovalMatcher(invocation.CreateEnvironment()).AnalyzeInvocation(
                 Shell,
                 new Dictionary<string, object?>
                 {
@@ -135,36 +104,37 @@ public sealed class GrantIdentityApprovalTests(ShellApprovalMatrixFixture fixtur
                     ["WorkingDirectory"] = cwd,
                 });
 
-            var reusable = analysis.Candidates
-                .Where(static candidate => candidate.VerbTokens is not null
-                                           && candidate.Unresolved == ShellUnresolvedPart.None
-                                           && !ApprovalPatternMatching.IsPureSideEffect(candidate))
-                .ToArray();
-            foreach (var kind in new[] { GrantScopeKind.Session, GrantScopeKind.Everywhere })
+            foreach (var candidate in analysis.Candidates)
             {
-                var grants = GrantBuilder.Build(reusable, kind, cwd, "/session/dir", repositoryCommonDirectory: null);
-                Assert.True(ToolApprovalActor.TryCreateEntries(Shell, grants, out var persistent, out var session));
-                var entries = kind == GrantScopeKind.Session ? session : persistent;
-                for (var index = 0; index < grants.Count; index++)
+                foreach (var kind in new[] { GrantScopeKind.Session, GrantScopeKind.Folder, GrantScopeKind.Everywhere })
                 {
-                    var candidate = grants[index].Candidate;
-                    checkedCandidates++;
-                    if (entries[index].Verb != candidate.Verb)
+                    var grants = GrantBuilder.Build([candidate], kind, cwd, "/session/dir", repositoryCommonDirectory: null);
+                    var created = ToolApprovalActor.TryCreateEntries(Shell, grants, out _, out var entries);
+                    if (grants.Count == 0)
                     {
-                        failures.Add($"[{invocation.Command}] shows '{candidate.Verb}' and saves '{entries[index].Verb}'");
+                        // The builder saves nothing for an approval-exempt command.
+                        continue;
                     }
 
-                    if (!ApprovalPatternMatching.MatchesShellApproval(candidate, cwd, [entries[index]]))
+                    if (!created)
                     {
-                        failures.Add($"[{invocation.Command}] the {kind} grant '{entries[index].Verb}' does not cover its call");
+                        // No command words: the prompt offers no reusable grant.
+                        if (candidate.VerbTokens is not null)
+                            failures.Add($"[{invocation.Command}] '{candidate.Verb}' has command words and saves no {kind} entry");
+                        continue;
                     }
+
+                    saved++;
+                    var entry = Assert.Single(entries);
+                    if (entry.Verb != candidate.Verb)
+                        failures.Add($"[{invocation.Command}] shows '{candidate.Verb}' and saves '{entry.Verb}' ({kind})");
                 }
             }
         }
 
         Assert.True(failures.Count == 0, string.Join(Environment.NewLine, failures));
         // The catalog must supply candidates, or the rule proves nothing.
-        Assert.True(checkedCandidates > 500, $"Only {checkedCandidates} candidates were checked.");
+        Assert.True(saved > 1000, $"Only {saved} entries were checked.");
     }
 
     private Task<ShellApprovalHarness> CreateHarnessAsync()

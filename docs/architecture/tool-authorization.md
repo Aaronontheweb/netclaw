@@ -729,15 +729,27 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
   and the data is call-local. The candidate verb is the phrase text of the
   command words, after the program path rule (R1) below. The prompt shows that
   verb, the answer saves those words, and a grant matches those words.
-  `GrantIdentityApprovalTests` proves for each catalog command that the saved
-  grant has the text of the candidate verb and covers the candidate.
+  `GrantIdentityApprovalTests` proves two facts. For each candidate of each
+  catalog command, the saved entry has the text of the candidate verb (chat,
+  folder, and everywhere scope). For the `pipedrive` command below, the saved
+  grant covers the next call through the approval actor.
+
+  The pseudocode is schematic. It omits hard deny, protected paths, the
+  reviewed-safe policy, and the link checks of a scope.
 
   ```text
   words    = CommandWords(occurrence) minus file words, with the program path
-  verb     = phrase(words)              # prompt, CandidateVerbs, match text
-  grant    = TokenPrefix(words, scope)  # the answer saves the same words
-  covered  = grant.words is a prefix of words
-             and (grant.words.Count >= 2 or words.Count == 1)
+  verb     = phrase(words)              # prompt, CandidateVerbs, "Saved" line
+  grant    = TokenPrefix(shell, words, digest, scope)   # the answer saves it
+  covered  = grant.shell == shell
+             and grant.digest == digest                 # assignment digest
+             and wordsCovered(grant.words, words)
+             and scopeCovers(grant.scope, directory)    # folder or repository
+  wordsCovered(g, w) =
+             g is a prefix of w and (g.Count >= 2 or w.Count == 1)
+             or g.Count == 1 and g[0] == w[0]
+                and policy data gives g[0] a one-token chain (grep, echo, jq)
+  word equality: with case for Bash, without case for PowerShell
   ```
 
   Positive example: `pipedrive dealFields list --custom-only --json` shows
@@ -745,15 +757,21 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
   the grant covers `pipedrive dealFields list --json`. Negative example: that
   grant does not cover `pipedrive organizationFields list` or
   `pipedrive deals delete 42`, and a program-only grant `pipedrive` covers
-  neither. Before this rule, the verb came from the ShellSyntaxTree verb walk
-  (`Clause.Verb`). That walk stops at a word with an uppercase letter, so the
-  prompt showed `pipedrive` for a grant of three words. The verb walk now
-  serves policy only: the data-command rule, the one-token chain data, the
-  directory operand verbs, reviewed-safe phrases, and hard deny. Three
-  candidates keep another verb, because they save no grant from it:
-  an approval-exempt data command keeps its program name (`echo`),
-  a command with `Unknown` words keeps its policy verb, and an exact candidate
-  keeps its source text.
+  neither. In Bash it also does not cover `pipedrive dealfields list`. In
+  PowerShell it does, because PowerShell words compare without case. The
+  prompt removes equal verbs with the same case rule, so a Bash call with
+  both spellings shows two verbs. Before this rule, the verb came from the
+  ShellSyntaxTree verb walk (`Clause.Verb`). That walk stops at a word with an
+  uppercase letter, so the prompt showed `pipedrive` for a grant of three
+  words. The saved grant was already correct. The verb walk now serves policy
+  only: the data-command rule, the one-token chain data, the directory operand
+  verbs, reviewed-safe phrases, and hard deny. The approval exemption of a
+  data command reads the first command word
+  (`ApprovalPatternMatching.PolicyProgram`), not the verb text. Two candidates
+  keep another verb, because they save no grant from it: a command with
+  `Unknown` words keeps its policy verb, and an exact candidate keeps its
+  source text. The match label of a decision (`ToolApprovalMatch.Pattern`)
+  shows the verb of the covered candidate, not the words of the grant.
 - Follows: a program path names a file, not a spelling (R1). When the
   program word has a slash, `ShellApprovalMatcher` replaces it with the
   lexical absolute path: it joins a relative path with the occurrence working
