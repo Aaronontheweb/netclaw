@@ -646,6 +646,7 @@ Use it for each slice that moves authorization code. Zero differences against
 ```bash
 python3 scripts/authorization-corpus/run.py --base upstream/dev                 # HEAD against dev
 python3 scripts/authorization-corpus/run.py --base upstream/dev --quick         # 3 states, a few minutes
+python3 scripts/authorization-corpus/run.py --base upstream/dev --jobs 1        # one decision lane
 python3 scripts/authorization-corpus/run.py --base upstream/dev --head-adapter authorizer
 ```
 
@@ -656,7 +657,7 @@ How it works:
    revision (`--corpus-revision`, default `4244eaed5`), plus
    `extra-commands.txt`. Each literal also runs after four compound prefixes
    (`cd` lists, an external directory, and the temporary root). The default
-   corpus has 54,909 shell inputs.
+   corpus has 55,004 shell inputs.
 2. For each revision, the script makes a disposable `git worktree`, copies the
    probe (`probe/AuthorizationCorpusProbe.cs`) and one adapter into
    `Netclaw.Actors.Tests`, builds, and runs the probe. The `gate` adapter reads
@@ -668,16 +669,44 @@ How it works:
    and 24 tool states (3 audiences, interactive or unattended, 4 consent modes)
    with the 62 tool inputs of the differential test. After a consent request,
    it also evaluates the retry with a "Once" answer. After a tool consent
-   request, it records a chat grant and evaluates the call again.
+   request, it records a chat grant and evaluates the call again. The probe
+   decides the shell inputs in parallel lanes (see "Parallel lanes" below).
 4. The script compares the two outputs and writes a report with the outcome
    transitions and the first differences.
 
 Each line holds the outcome, reason, advice, consent request, matched grants,
 coverage trace, store lookups, and the analysis that the process may execute.
 The probe replaces run-specific paths with placeholders (`{P}`, `{S}`, `{X}`,
-`{R}`, `{T}`, `{REPOSITORY}`, and the GUID of the fake Windows root). The
+`{R}`, `{T}`, `{REPOSITORY}`, and the GUID of the fake Windows root). It also
+replaces the GUID in the `netclaw-approval-matrix-<GUID>` harness folder and
+in the `netclaw-testrun-<GUID>` temporary folder of the test process with
+`{GUID}`. A `..` path or a basename can show these names. The
 compare step also replaces the parent of the private temporary root, which a
 `..` path can reach. Grant timestamps compare by presence only.
+
+Parallel lanes:
+
+- `--jobs N` sets the number of decision lanes in the probe. The default is
+  the CPU count minus 1. `--jobs 1` decides one input at a time, as before.
+- The probe uses Akka.Streams: `Source.From(inputs)`, then an ordered
+  `SelectAsync(N, decide)`, then one `FileIO.ToFile` sink. The ordered stage
+  keeps the input order, and the file sink is the only writer of the output.
+- Each lane owns one harness, with its own grant store, store lookup count,
+  and folders. A lane decides one input at a time. A shell decision reads only
+  its own input and the fixed state of the harness, so the lane count does not
+  change a line.
+- A tool state stays in one lane. Its chat grants stay in the harness for the
+  next inputs, so the input order changes the result.
+- The probe fails when a decision fails, when the sink reports an error, when
+  the element count is not the input count, or when the sink did not write
+  every byte. The script keeps a failed output as `.partial` and never reuses
+  it.
+- The output for one revision is the same, byte for byte, for each lane
+  count. The parallelism is therefore not part of the output name.
+- The script prints the line count and the current state every minute.
+- On an 8-core machine that also ran other jobs, the probe for one revision
+  took 84 minutes with one lane and 25 minutes with 7 lanes. The output was
+  byte-identical.
 
 Caution: the probe runs with a private temporary root (`TMPDIR`, `TMP`, and
 `TEMP` point into the work directory). The corpus replaces the literal `/tmp`

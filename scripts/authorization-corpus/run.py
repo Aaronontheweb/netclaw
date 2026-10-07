@@ -4,12 +4,14 @@
 Runs the same corpus of tool calls through the production authorization path
 of two revisions and compares every decision. Each revision builds in its own
 disposable git worktree. The probe runs with a private temporary directory, so
-no decision reads the shared /tmp.
+no decision reads the shared /tmp. The probe decides the shell inputs in
+parallel lanes (--jobs) and writes the same output for each lane count.
 
 Usage (from the repository root):
 
     python3 scripts/authorization-corpus/run.py --base upstream/dev
     python3 scripts/authorization-corpus/run.py --base upstream/dev --head HEAD --quick
+    python3 scripts/authorization-corpus/run.py --base upstream/dev --jobs 1
 
 The script exits with 0 when the two revisions give the same decision for
 every input, and with 1 when a decision differs. See TOOLING.md, section
@@ -27,6 +29,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import warnings
 from pathlib import Path
 
@@ -120,6 +123,7 @@ def run_revision(
     adapter_request: str,
     corpus_path: Path,
     states: str | None,
+    jobs: int,
     keep: bool,
 ) -> Path:
     sha = resolve(repository, revision)
@@ -161,6 +165,7 @@ def run_revision(
             "NETCLAW_CORPUS_IN": str(corpus_path),
             "NETCLAW_CORPUS_OUT": str(partial),
             "NETCLAW_CORPUS_REPOSITORY": str(worktree),
+            "NETCLAW_CORPUS_PARALLELISM": str(jobs),
             # A private temporary root: the harness directories, the platform
             # temporary root of the policy, and every {T} input live here.
             "TMPDIR": str(temporary),
@@ -169,17 +174,32 @@ def run_revision(
         })
         if states:
             environment["NETCLAW_CORPUS_STATES"] = states
-        print(f"[{revision}] probe (this takes several minutes)")
+        print(f"[{revision}] probe with {jobs} lane(s) (this takes several minutes)")
         log = out / f"{key}.log"
+        started = time.monotonic()
         with log.open("w", encoding="utf-8") as handle:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 ["dotnet", "test", str(TEST_PROJECT), "-c", "Debug", "--no-build", "--filter", f"FullyQualifiedName~{PROBE_CLASS}"],
                 cwd=worktree,
                 env=environment,
                 stdout=handle,
                 stderr=subprocess.STDOUT)
-        if completed.returncode != 0 or "Total:     1" not in log.read_text(encoding="utf-8"):
-            raise SystemExit(f"[{revision}] the probe failed. See {log}.")
+            progress = Progress(partial)
+            try:
+                while True:
+                    try:
+                        process.wait(timeout=PROGRESS_SECONDS)
+                        break
+                    except subprocess.TimeoutExpired:
+                        print(f"[{revision}] probe: {progress.update()} after {int(time.monotonic() - started)} s")
+            except BaseException:
+                # The same cleanup as subprocess.run: an interrupted script stops its probe.
+                process.kill()
+                process.wait()
+                raise
+        if process.returncode != 0 or "Total:     1" not in log.read_text(encoding="utf-8"):
+            raise SystemExit(f"[{revision}] the probe failed (exit status {process.returncode}). See {log}.")
+        print(f"[{revision}] probe: {int(time.monotonic() - started)} s")
         partial.replace(result)
         shutil.rmtree(temporary.parent, ignore_errors=True)
         return result
@@ -187,6 +207,32 @@ def run_revision(
         git(repository, "worktree", "unlock", str(worktree))
         if not keep:
             git(repository, "worktree", "remove", "--force", str(worktree))
+
+
+PROGRESS_SECONDS = 60
+
+
+class Progress:
+    """Counts the complete lines of the probe output while the probe writes it."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.offset = 0
+        self.rows = 0
+        self.state = ""
+
+    def update(self) -> str:
+        if self.path.exists():
+            with self.path.open("rb") as handle:
+                handle.seek(self.offset)
+                chunk = handle.read()
+            end = chunk.rfind(b"\n") + 1
+            if end > 0:
+                self.offset += end
+                self.rows += chunk.count(b"\n", 0, end)
+                last = chunk[:end - 1].rsplit(b"\n", 1)[-1]
+                self.state = last.split(b"\t", 1)[0].decode("utf-8", "replace")
+        return f"{self.rows:,} lines, current state {self.state or '<none>'}"
 
 
 # The private temporary root is <out>/run/<revision>/tmp. A ".." path in the
@@ -278,6 +324,8 @@ def main() -> int:
     parser.add_argument("--corpus-revision", default=DEFAULT_CORPUS_REVISION)
     parser.add_argument("--states", help="comma-separated state ids, for example bash-none-i-approval,tools-Personal-i-default")
     parser.add_argument("--quick", action="store_true", help="run one Bash, one PowerShell, and one tool state")
+    parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) - 1),
+                        help="the number of parallel decision lanes in the probe (default: the CPU count minus 1)")
     parser.add_argument("--out", type=Path, help="the work directory (default: artifacts/authorization-corpus)")
     parser.add_argument("--examples", type=int, default=20, help="the number of differences to print in the report")
     parser.add_argument("--keep-worktrees", action="store_true")
@@ -300,8 +348,10 @@ def main() -> int:
     partial_corpus.replace(corpus_path)
     print(f"corpus: {len(corpus)} shell inputs from {arguments.corpus_revision}")
 
-    base = run_revision(repository, out, arguments.base, arguments.base_adapter, corpus_path, states, arguments.keep_worktrees)
-    head = run_revision(repository, out, arguments.head, arguments.head_adapter, corpus_path, states, arguments.keep_worktrees)
+    if arguments.jobs < 1:
+        parser.error("--jobs must be 1 or more")
+    base = run_revision(repository, out, arguments.base, arguments.base_adapter, corpus_path, states, arguments.jobs, arguments.keep_worktrees)
+    head = run_revision(repository, out, arguments.head, arguments.head_adapter, corpus_path, states, arguments.jobs, arguments.keep_worktrees)
     report = out / f"report-{base.stem}-vs-{head.stem}.txt"
     return compare(base, head, corpus, report, arguments.examples)
 
