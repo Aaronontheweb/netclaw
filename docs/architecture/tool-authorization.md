@@ -356,6 +356,17 @@ Leaks today:
     `--name=value` value comes from the decoded word, else it is `Unknown`. A
     `~` after `=` or `:` in an argument expands only in a proved non-POSIX
     Bash with a launch-proved `HOME`, else it is `Unknown`.
+- Since ShellSyntaxTree 0.4.0-beta.24, an option word with a quoted or an
+  escaped `=` has the facts of the unquoted word. Netclaw needs no change.
+  - `tar --file'='../x` and `awk -F'[= ]' '{print $2}' f` were unparseable,
+    so they got only `Once` and `Deny`. They are now normal candidates.
+  - A fully quoted option word (`tar "--file=../x"`) had no path fact for its
+    value, so a folder `tar` grant covered a path outside the folder. The
+    value now has the path fact of `--file=../x`, and the call prompts.
+  - A `~` after a quoted `=` is text, as in Bash.
+  - An option word with an expansion and no proved value (`-o"$n"`,
+    `--$n=x`, `--$(cmd)=x`) has an `Unknown` value, so it is an unknown
+    operand (decision D1).
 - Owner decision D5 (option A): a glob word gets the decision of each literal
   protected path that its segments can match, or of a directory that contains
   one (`ToolPathPolicy.GlobMayReachDeniedPath`). The match is lexical: Netclaw

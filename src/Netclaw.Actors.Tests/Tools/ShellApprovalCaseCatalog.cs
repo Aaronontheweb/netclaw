@@ -2690,6 +2690,46 @@ public static class ShellApprovalCases
             Bash52("echo a \\\nb"),
             Approvals.None,
             ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        // ShellSyntaxTree 0.4.0-beta.24: a program splits an option word at the
+        // first "=" of the word that it receives, also when the "=" is quoted.
+        // Before beta.24, the parser could not read this source, so the call
+        // got only a one-time approval. It is now a normal candidate.
+        Case(
+            "quoted-equals-option-value-is-normal-candidate",
+            Bash52("awk -F'[= ]' '{print $2}' f"),
+            Approvals.None,
+            ExpectedApproval.Require(["awk"])),
+        // SECURITY: an escaped or quoted "=" keeps the path fact of the value.
+        // Bash passes "--file=../outside/x" in each form, so a folder grant does
+        // not cover a path outside the folder. The unescaped form is the control.
+        // The path is relative: an absolute path below a top-level directory that
+        // does not exist on the host gets no path scope (an API route rule).
+        Case(
+            "unescaped-equals-option-path-outside-folder-prompts",
+            Bash52("tar --file=../outside/x -c x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "tar"),
+            ExpectedApproval.Require(["tar"], approvalMatches: ["persistent:tar"])),
+        Case(
+            "escaped-equals-option-path-outside-folder-prompts",
+            Bash52("tar --file\\=../outside/x -c x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "tar"),
+            ExpectedApproval.Require(["tar"], approvalMatches: ["persistent:tar"])),
+        Case(
+            "quoted-equals-option-path-outside-folder-prompts",
+            Bash52("tar --file'='../outside/x -c x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "tar"),
+            ExpectedApproval.Require(["tar"], approvalMatches: ["persistent:tar"])),
+        Case(
+            "quoted-option-word-path-outside-folder-prompts",
+            Bash52("tar \"--file=../outside/x\" -c x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "tar"),
+            ExpectedApproval.Require(["tar"], approvalMatches: ["persistent:tar"])),
+        // Positive control: the same option inside the folder uses the grant.
+        Case(
+            "escaped-equals-option-path-inside-folder-uses-grant",
+            Bash52("tar --file\\=./x.tar -c x"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "tar"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:tar", "persistent:tar")),
         Case(
             "brace-credential-secrets-denied-as-literal",
             Bash52("cat ~/.netclaw/config/{netclaw,secrets}.json"),

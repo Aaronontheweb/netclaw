@@ -419,6 +419,12 @@
 | bare-cr-before-hash-fails-closed | Bash52 | Personal | Project | Interactive | echo a\r# ; touch x | none | RequiresApproval | approval required | none | Yes |
 | word-start-hash-comment-stays-allowed | Bash52 | Personal | Project | Interactive | echo "a" # ; touch x | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
 | continuation-between-words-stays-allowed | Bash52 | Personal | Project | Interactive | echo a \\nb | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
+| quoted-equals-option-value-is-normal-candidate | Bash52 | Personal | Project | Interactive | awk -F'[= ]' '{print $2}' f | none | RequiresApproval | approval required | awk | No |
+| unescaped-equals-option-path-outside-folder-prompts | Bash52 | Personal | Project | Interactive | tar --file=../outside/x -c x | persistent[project]:tar | RequiresApproval | approval required | tar | No |
+| escaped-equals-option-path-outside-folder-prompts | Bash52 | Personal | Project | Interactive | tar --file\=../outside/x -c x | persistent[project]:tar | RequiresApproval | approval required | tar | No |
+| quoted-equals-option-path-outside-folder-prompts | Bash52 | Personal | Project | Interactive | tar --file'='../outside/x -c x | persistent[project]:tar | RequiresApproval | approval required | tar | No |
+| quoted-option-word-path-outside-folder-prompts | Bash52 | Personal | Project | Interactive | tar "--file=../outside/x" -c x | persistent[project]:tar | RequiresApproval | approval required | tar | No |
+| escaped-equals-option-path-inside-folder-uses-grant | Bash52 | Personal | Project | Interactive | tar --file\=./x.tar -c x | persistent[project]:tar | Allowed | StoredApproval | none | Not applicable |
 | brace-credential-secrets-denied-as-literal | Bash52 | Personal | Project | Interactive | cat ~/.netclaw/config/{netclaw,secrets}.json | persistent[anywhere]:cat | Denied | shell_references_protected_path | none | Not applicable |
 | assigned-credential-path-denied-as-literal | Bash52 | Personal | Project | Interactive | x=~/.netclaw/config/secrets.json; cat "$x" | persistent[anywhere]:cat | Denied | shell_references_protected_path | none | Not applicable |
 | assigned-branch-is-not-covered-by-another-branch-grant | Bash52 | Personal | Project | Interactive | b=main; git push origin "$b" | persistent[anywhere]:git push origin feature-x | RequiresApproval | approval required | git push origin "$b" | No |
