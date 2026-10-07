@@ -714,8 +714,8 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
   scope for the trusted-root and protected-path checks. A word that names a
   link stays a command word. `ToolPathPolicy` checks the target of each plain
   word after the program word that names a link, command word or argument, and
-  denies a protected target. It does not change grant coverage, so a link to
-  an ordinary file keeps the decision of its grant.
+  denies a protected target. The link and its final target are both scopes
+  of the candidate (see the link target item below).
   The program word and
   the verb slot never drop, so a file named `push` does not change `git push`.
   ShellSyntaxTree is lexical, so `ShellApprovalMatcher.ProjectCommandWords`
@@ -772,6 +772,65 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
   `Unknown` words keeps its policy verb, and an exact candidate keeps its
   source text. The match label of a decision (`ToolApprovalMatch.Pattern`)
   shows the verb of the covered candidate, not the words of the grant.
+- Follows: a word that names a link has two path scopes (#2375). This is a
+  general path fact, not a rule for one program.
+  - The scopes are the folder that holds the link and the final target of the
+    link chain. `ShellApprovalMatcher.TryAddLinkScopes` adds the two scopes.
+  - Each spelling of one link gets the same two scopes: a path word
+    (`cat ext.txt`, `mytool read ./extlink`, `node_modules/.bin/tsc`) and a
+    plain word that names a link in the occurrence directory
+    (`mytool read extlink`, `gh api --input ext.txt x`).
+    `ToolPathPolicy.FindLinkWords` is the one loop that finds the plain words,
+    for the protected-path screen and for the scopes.
+  - `FileSystemAuthority.FollowLinkChain` is the one reader of a final link
+    target for grant scopes and glob words. The protected-path screen
+    (`FileSystemAuthority.IsProtected`) keeps the host resolver, because its
+    failures deny (R13), and that includes the Windows drive root. The chain
+    reader reads the chain from the disk at authorization time. A relative
+    link text resolves against the lexical directory of its link, so an alias
+    above a grant root stays in the target.
+  - Each candidate scope needs coverage (TA-8). So a folder or repository
+    grant covers the word only when it covers the link folder and the target.
+    The link walk of the folder grant also checks the target scope, so a
+    directory link in the target path is refused.
+  - A grant without a folder and a chat grant cover the word, because they
+    also cover the target path.
+  - A dangling link gets the decision of the target path that its link text
+    states, because a write through the link creates the file there. A target
+    in the scope is covered. A target outside the scope is not covered.
+  - A link without a known target fails closed. This applies to more than 40
+    links, to a rooted link text that is not a full path, and to a `..` in a
+    link text that leaves a link. The occurrence is then unresolved and gets
+    exact consent only, also with a grant for anywhere. The protected-path
+    screen cannot resolve a loop, so it denies a loop first (R13).
+  - A glob word uses the same reader. `HasOnlyContainedLinkEntries` accepts a
+    link entry only when the final target from `FollowLinkChain` is in the
+    covering directory. So `mytool read dir/*.txt` and `mytool read dir/x.txt`
+    get the same answer for one link. One difference stays: a glob word with
+    a dangling link entry is unresolved, as before.
+  - A platform temporary alias, such as macOS `/tmp`, is an OS alias (R7).
+    The word `/tmp` keeps its one lexical scope.
+  - A word that is not a full host path of the shell's style names no host
+    link. It keeps its lexical scope.
+  - A data command (`echo`) gets no path scope, so the rule does not apply to it.
+  - Known limits. The rule does not reach these forms:
+    - A link that the same command creates or changes before the program runs
+      (`ln -s ../x y && cat y`). This is a run-time effect.
+    - A directory link in the middle of a path word (`current/app.js`,
+      `cd innerdir && ...`). The link rule below the grant root refuses it,
+      also when its target is in the folder.
+    - An option value or a `key=value` word: `--input=ext.txt`, `if=ext.txt`,
+      `@ext.txt`. Such a word has no path scope today, also for a literal path
+      outside the folder. The option-value scope of
+      https://github.com/netclaw-dev/netclaw/pull/2378 must call
+      `TryAddLinkScopes` for each path that it adds.
+    - A redirect to a link (`> inner.txt`). It gets exact consent only, also
+      when the target is in the folder.
+    - A link as the program word (`./tool` that points to `/usr/bin/rm`). The
+      target of a program word is not a scope.
+    - A hard link. No path check can see it.
+    - A change of the target between the decision and the launch. The launch
+      check does not read the target of a plain link word again.
 - Follows: a program path names a file, not a spelling (R1). When the
   program word has a slash, `ShellApprovalMatcher` replaces it with the
   lexical absolute path: it joins a relative path with the occurrence working
@@ -1067,7 +1126,7 @@ and the approval tooling is in
 | Hard deny runs before any grant lookup. | Catalog rows expect 0 approval service calls on deny |
 | Launch re-checks the exact call. | `DispatchingToolExecutorLaunchTests` |
 | A repository A grant never covers repository B. | `RepositoryWorktreeApprovalTests`; the approval directory mutation gate |
-| A folder grant stays inside its folder. | Catalog link rows; the approval directory mutation gate |
+| A folder grant stays inside its folder. | Catalog link rows; `LinkTargetScopeApprovalTests`; the approval directory mutation gate |
 | Audience and MCP allow lists deny before dispatch. | `McpToolAudienceGrantsTests`; the tool authorization mutation gate |
 | Session roots follow the audience. | `PathAccessPolicy` tests; the path access mutation gate |
 | Shell facts stay general. | The shell analysis and shell assignment mutation gates; `ShellPolicyEvidenceFixtureTests` |

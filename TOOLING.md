@@ -51,13 +51,13 @@ coverage. They do not replace positive and negative behavior tests.
 | `ToolAuthorizer` shell rule order (hard deny, trusted root, covering grant) | No rule can move ahead of an earlier rule: hard deny and today's trusted-root check precede a covering grant | 3 killed | `./scripts/run-tool-authorizer-order-mutations.sh` |
 | Shell analysis, denial-only, tree effects, and reviewed-safe gates | Parser-proved regions and authored diagnostic syntax preserve hard denials; only bounded audited non-path values and consistent non-link-following tree facts can use reusable approval; a control-character word gets only the ancestor scope of its clean text; only a word below an absent top-level directory loses its path scope; an unresolved command is one exact candidate, and only decision D1 (an unknown operand with a safe phrase or a grant for anywhere, attended or not) covers it; a glob word gets the decision of each protected path that it can match (D5), and its link walk stays inside the covering directory; a bound value gets the hard-deny decision of its literal twin; a Bash test builtin is data only with proved operand values without `[`; a data command keeps its assignment digest unless each operand is proved data, and only such a data command with no redirect keeps its normal candidate after an unknown directory; a variable word that is not a path word is an unknown operand, so a folder grant cannot cover a loop or an assignment value outside the folder; an option value that the parser splits from its option (`--name=value`, `-p:Name=value`) and that can leave the working directory gets the scope of a path word with the same text, so a folder or repository grant cannot cover it | 306 killed | `./scripts/run-shell-command-analysis-mutations.sh` |
 | Shell assignment identity, wrapper fallback, wrapper child source, hard-deny screen, syntax reconciliation, host mode, prompt rollback, and Bash sanitation | Reusable grants require exact facts, fallback wrappers and wrappers with an assignment prefix must stay one-time, a wrapper child source is the decoded argument value, unresolved Bash source and each list element meet the hard-deny screen, versioned prompts must fail closed, and strong modes require the reviewed launch contract; only an assignment that can reach the program qualifies a grant, a Bash data command keeps every assignment, and the parser names are the names of the one environment snapshot that each process receives (F3) | 81 killed | `./scripts/run-shell-assignment-mutations.sh` |
-| Filesystem authority folder membership, repository identity, repository persistence, and the folder of a new grant | Folder and repository grants require candidate scope, identity, registration, and containment; a folder grant trusts its own root and refuses a link below it; a `..` after a link makes the shell scope unresolved; a new folder grant uses the directory where its occurrence runs | 18 killed | `./scripts/run-approval-directory-mutations.sh` |
+| Filesystem authority folder membership, repository identity, repository persistence, the folder of a new grant, and the link target scope | Folder and repository grants require candidate scope, identity, registration, and containment; a folder grant trusts its own root and refuses a link below it; a `..` after a link makes the shell scope unresolved; a word that names a link also has the scope of its final target, and a target after a `..` that leaves a link is unknown (#2375); a new folder grant uses the directory where its occurrence runs | 24 killed | `./scripts/run-approval-directory-mutations.sh` |
 | `ReminderManagerActor.HandleExecutionOutcomeAsync` | Only the current attempt can settle; the manager replies after settlement | 2 killed | `./scripts/run-reminder-execution-mutations.sh` |
 | `ActiveExecutionTracker.TryRemove` | Only the current owner can remove its guard; cleanup removes that guard | 2 killed | `./scripts/run-reminder-execution-mutations.sh` |
 | `McpArtifactMaterializer.TryAdmit` | Scanner approval and verified MIME both precede MCP artifact storage | 4 killed | `./scripts/run-mcp-artifact-admission-mutations.sh` |
 | `SkillManageTool.GuardMutationTarget` and the filesystem authority link and protection results | A skill mutation cannot follow a link, write a protected path, or skip the atomic-write temp file | 5 killed | `./scripts/run-skill-manage-guard-mutations.sh` |
 | `ToolAccessPolicy.ReadOnlyOccurrences`, the read relaxation in `ToolAccessPolicy.EnforceKnownShellPaths`, `PathAccessPolicy.EvaluateShellReadPath`, `FileSystemAuthority.HoldsReadProtectedPath`, and the read-operand exemption of the `ToolPathPolicy` text screen | Decision D6: a read-only shell program (`cat`, `head`, `tail`, `wc`, `grep`, `jq`, `diff`) with bounded arguments can read one exact config file; only a write-protected path gets read protection; a redirect that writes keeps write protection; a directory operand that holds a read-protected path, a plain word that names an entry, a glob, a brace or `$'...'` word, a `..`, the config directory itself, and program text that names it in any spelling (`//`, `/./`, `name/../`, split quotes) stay denied | 58 killed | `./scripts/run-shell-config-read-mutations.sh` |
-| `ToolApprovalEntryComparer.CoversCommandWords`, `ShellPolicyCoordinator.SelectCommandWordsCorrection`, `ShellApprovalMatcher.TryResolveProgramPath`, `ShellProgramPath.MatchesLegacyRelative`, `ShellApprovalMatcher.ProjectCommandWords`, `ShellGrantFileWords.TryFindEntry`, and `ToolPathPolicy.PlainWordLinkReachesDeniedPath` | A verb grant (two or more words) covers its command words and any later words, and a program-only grant covers its word alone, so a `gh` grant does not cover `gh auth logout`; an empty grant covers nothing; the matcher and the store hygiene use this one rule; Unknown command words get a rewrite correction; a program path names its file (R1), so a `./tool` grant does not cover another file named `tool` or `mytool`; a word after the verb slot that names an existing file or directory leaves the command words and becomes a path scope, while the program word, the verb slot, a link, a word without a file, and a word that is not one entry of the directory stay; a plain word that names a link to a protected path is denied, command word or argument; the store and the doctor use the same rule | 49 detected | `./scripts/run-exact-verb-chain-mutations.sh` |
+| `ToolApprovalEntryComparer.CoversCommandWords`, `ShellPolicyCoordinator.SelectCommandWordsCorrection`, `ShellApprovalMatcher.TryResolveProgramPath`, `ShellProgramPath.MatchesLegacyRelative`, `ShellApprovalMatcher.ProjectCommandWords`, `ShellGrantFileWords.TryFindEntry`, and `ToolPathPolicy.PlainWordLinkReachesDeniedPath` | A verb grant (two or more words) covers its command words and any later words, and a program-only grant covers its word alone, so a `gh` grant does not cover `gh auth logout`; an empty grant covers nothing; the matcher and the store hygiene use this one rule; Unknown command words get a rewrite correction; a program path names its file (R1), so a `./tool` grant does not cover another file named `tool` or `mytool`; a word after the verb slot that names an existing file or directory leaves the command words and becomes a path scope, while the program word, the verb slot, a link, a word without a file, and a word that is not one entry of the directory stay; a plain word that names a link to a protected path is denied, command word or argument; the store and the doctor use the same rule | 53 detected | `./scripts/run-exact-verb-chain-mutations.sh` |
 | `BashLiteralTwinSlices.Apply` and the denial check of `ToolAccessPolicy.ScreenScopedSlices` | Decision F1: the strictest literal twin result decides a call. The candidates of every twin replace the candidates of their source command, an unresolved source keeps its exact answer, twins without their source command fail loudly, and one denied twin denies the call | 9 killed | `./scripts/run-literal-twin-mutations.sh` |
 
 Run the path-access check locally:
@@ -199,7 +199,9 @@ named `tool`. The fourth run selects the `/` boundary of
 `ShellApprovalMatcher.ProjectCommandWords` (six mutants): a file word leaves
 the command words, and a link word stays. The sixth run selects
 `ShellGrantFileWords.TryFindEntry` (16 mutants). The seventh run selects
-`ToolPathPolicy.PlainWordLinkReachesDeniedPath` (8 mutants): a plain
+`ToolPathPolicy.PlainWordLinkReachesDeniedPath` and
+`ToolPathPolicy.FindLinkWords`, the one loop that the screen shares with the
+link scopes of #2375 (12 mutants): a plain
 word that names a link to a protected path is denied, command word or
 argument, and the program word does not count. `ExactVerbChainMutationTests` and
 `ToolAuthorizerOrderMutationTests` must detect all of them. A missing or
@@ -218,7 +220,7 @@ Run the approval directory gate:
 ```
 
 The script reuses the xUnit 2 harness.
-It selects eight security source regions, three approval actor conditions, and the folder rule of the grant builder.
+It selects thirteen security source regions, three approval actor conditions, and the folder rule of the grant builder.
 Folder containment and link checks are in the filesystem authority
 (`src/Netclaw.Security/Authorization/Filesystem`). Bash and PowerShell grants use
 the same containment rule and the same link walker, so one containment target
@@ -232,6 +234,11 @@ replaces the two shell-specific targets.
 | Candidate repository scope and identity | 3 killed: force a result or relax the identity check |
 | Parent segment after a link, matcher gate (`ShellApprovalMatcher`) | 1 killed: negate the condition |
 | Parent segment after a link, link test (`FileSystemAuthority`) | 2 killed: negate the test or include the anchor |
+| Link scopes of a path word (`ShellApprovalMatcher.TryAddLinkScopes`, #2375) | 1 killed: remove the logical negation |
+| Lexical scope of a path word that names no link (`ShellApprovalMatcher`) | 1 killed: remove the logical negation |
+| Link scopes of a plain link word (`ShellApprovalMatcher`) | 1 killed: remove the logical negation |
+| Link folder scope (`ShellApprovalMatcher.TryAddLinkScopes`) | 2 killed: remove the statement or use the link itself as the folder |
+| Unknown target after a `..` that leaves a link (`FileSystemAuthority.FollowLinkChain`) | 1 killed: negate the test |
 | Common identity across candidates (`RepositoryIdentity`) | 1 killed: remove the logical negation |
 | Reciprocal worktree registration (`RepositoryIdentity`) | 1 killed: remove the logical negation |
 | Persistence candidate resolution | 1 killed: remove the logical negation |
@@ -239,15 +246,16 @@ replaces the two shell-specific targets.
 | Persistence worktree root | 1 killed: remove the logical negation |
 | Folder of a new grant (`GrantBuilder`, `candidate.Directory ?? workingDirectory`) | 3 killed: swap the operands or keep only one side |
 
-The script requires these counts at their exact source locations and 18 tested mutants overall (12 Security, 6 Actors).
+The script requires these counts at their exact source locations and 24 tested mutants overall (18 Security, 6 Actors).
 It fails if a target is absent, survives, exceeds its time limit, or cannot compile.
 The source selector rejects an absent or duplicate boundary before Stryker starts.
 This protects the gate when the authorization code and diagnostic code contain similar conditions.
 
-Twenty-two cases exercise the approval matcher and persistence gate with real directories and links.
+Twenty-three cases exercise the approval matcher and persistence gate with real directories and links.
 They cover the grant root, normal descendants, sibling prefixes, traversal, relative paths, and candidate scope that differs from cwd.
 One case proves that a grant root which is itself a link still covers its children (R3).
 One case proves that a `..` after a link voids the grant, and that a `..` after a real directory or below a root alias keeps it.
+One case proves that a folder grant covers a link word only when it covers the link folder and the final target (#2375). It uses a path word, with and without a file extension, on every host and a plain word on POSIX hosts.
 The repository cases cover candidate resolution, mixed identities, reciprocal registration, and a nested registered worktree.
 The link cases prove that the link reaches the sibling directory before they require denial.
 Windows path cases cover case rules, drive boundaries, and traversal on every host.

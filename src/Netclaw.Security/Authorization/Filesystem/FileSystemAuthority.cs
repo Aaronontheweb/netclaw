@@ -104,6 +104,19 @@ internal abstract record PathBoundary
     internal sealed record Unrestricted : PathBoundary;
 }
 
+/// <summary>Where a link chain ends (<see cref="FileSystemAuthority.FollowLinkChain"/>).</summary>
+internal enum LinkChainEnd
+{
+    /// <summary>The path is not a link. A missing path is not a link.</summary>
+    NotALink,
+
+    /// <summary>The chain ends at a known target. The target can be missing.</summary>
+    Target,
+
+    /// <summary>The target is not known. Callers fail closed.</summary>
+    Unknown,
+}
+
 /// <summary>The answer for one path. The first held boundary that contains the path decides.</summary>
 /// <remarks>No case carries data: an allowed path is the path the caller passed.</remarks>
 internal enum PathDecision
@@ -341,10 +354,14 @@ internal sealed class FileSystemAuthority
 
     /// <summary>
     /// Returns true when every link entry directly inside <paramref name="directory"/>
-    /// resolves to an existing target inside it without another link. A glob that
+    /// has an existing final target inside it without another link. A glob that
     /// expands in the directory then stays in the directory.
     /// </summary>
-    /// <remarks>Netclaw does not reproduce shell glob rules, so every link entry must pass.</remarks>
+    /// <remarks>
+    /// Netclaw does not reproduce shell glob rules, so every link entry must pass.
+    /// <see cref="FollowLinkChain"/> is the one reader of a link target, so a glob
+    /// match and a literal word get the same answer for one link (#2375).
+    /// </remarks>
     internal static bool HasOnlyContainedLinkEntries(CanonicalPath directory)
     {
         if (!directory.IsHostStyle || !Directory.Exists(directory.Value))
@@ -359,13 +376,12 @@ internal sealed class FileSystemAuthority
                 if ((attributes & FileAttributes.ReparsePoint) == 0)
                     continue;
 
-                FileSystemInfo link = (attributes & FileAttributes.Directory) != 0
-                    ? new DirectoryInfo(entry)
-                    : new FileInfo(entry);
-                var target = link.ResolveLinkTarget(returnFinalTarget: true);
-                if (target is null
-                    || !target.Exists
-                    || !CanonicalPath.TryCreateHost(target.FullName, null, out var targetPath)
+                // A reparse point that is not a link has no target to judge. A
+                // glob gives no match for a dangling link, so such an entry
+                // keeps the word unresolved.
+                if (FollowLinkChain(entry, out var target) is not LinkChainEnd.Target
+                    || !Path.Exists(target)
+                    || !CanonicalPath.TryCreateHost(target, null, out var targetPath)
                     || EvaluateMembership(targetPath, boundary) is not PathDecision.Allowed)
                 {
                     return false;
@@ -463,6 +479,109 @@ internal sealed class FileSystemAuthority
         {
             return true;
         }
+    }
+
+    /// <summary>
+    /// Follows the link chain that starts at <paramref name="path"/> and gives its
+    /// final target in <paramref name="target"/>.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The target keeps the lexical frame of the path. A relative link text resolves
+    /// against the lexical directory of its link, so a link above a grant root (an OS
+    /// alias) stays in the target, as it is in the path. A directory link in the target
+    /// stays too, so the caller's link walk still sees it.
+    /// </para>
+    /// <para>
+    /// SECURITY: the lexical form names the file that the OS opens only when no
+    /// <c>..</c> in a link text leaves a link. Such a chain gives
+    /// <see cref="LinkChainEnd.Unknown"/>, and so do a loop, more than
+    /// <see cref="MaximumLinkHops"/> links, a rooted text that is not a full path, and
+    /// an inspection failure. Callers fail closed on <see cref="LinkChainEnd.Unknown"/>.
+    /// </para>
+    /// <para>
+    /// A missing final target (a dangling link) is a known target. The link text
+    /// states the path, and a write through the link creates the file there. So the
+    /// caller judges that path: a target in the scope is covered, and a target
+    /// outside the scope is not.
+    /// </para>
+    /// </remarks>
+    internal static LinkChainEnd FollowLinkChain(string path, out string target)
+    {
+        ArgumentNullException.ThrowIfNull(path);
+        target = string.Empty;
+        // The host cannot name a path that is not a full path, so it is not a
+        // link that this check can read. Unknown means a link without a known target.
+        if (!Path.IsPathFullyQualified(path))
+            return LinkChainEnd.NotALink;
+
+        var current = path;
+        try
+        {
+            for (var hops = 0; ; hops++)
+            {
+                var linkText = ReadLinkText(current);
+                if (linkText is null)
+                {
+                    if (hops == 0)
+                        return LinkChainEnd.NotALink;
+
+                    target = current;
+                    return LinkChainEnd.Target;
+                }
+
+                if (hops == MaximumLinkHops)
+                    return LinkChainEnd.Unknown;
+
+                string next;
+                if (Path.IsPathFullyQualified(linkText))
+                    next = linkText;
+                else if (Path.IsPathRooted(linkText))
+                    return LinkChainEnd.Unknown;
+                else
+                    next = Path.Join(Path.GetDirectoryName(current), linkText);
+
+                if (HasParentSegmentAfterLink(next, baseDirectory: null))
+                    return LinkChainEnd.Unknown;
+
+                current = Path.GetFullPath(next);
+            }
+        }
+        catch (Exception ex) when (IsInspectionFailure(ex))
+        {
+            return LinkChainEnd.Unknown;
+        }
+    }
+
+    /// <summary>The most links that <see cref="FollowLinkChain"/> follows. Linux uses 40.</summary>
+    internal const int MaximumLinkHops = 40;
+
+    // Returns the text of a link, or null for a missing entry or an entry that is not
+    // a link. A reparse point that is not a link (no link text) ends the chain.
+    private static string? ReadLinkText(string path)
+    {
+        FileAttributes attributes;
+        try
+        {
+            attributes = File.GetAttributes(path);
+        }
+        catch (Exception ex) when (IsInspectionFailure(ex))
+        {
+            // No entry, or an entry that this user cannot name: a missing file, a
+            // name that is too long (a text word that only looks like a path), a
+            // name that the host does not support (a second drive prefix on
+            // Windows), or a folder without search permission. A program of the same user
+            // cannot open it through this path, so it is not a readable link.
+            // A link that exists gives its attributes, also when it dangles or loops.
+            return null;
+        }
+
+        if ((attributes & FileAttributes.ReparsePoint) == 0)
+            return null;
+
+        return (attributes & FileAttributes.Directory) != 0
+            ? new DirectoryInfo(path).LinkTarget
+            : new FileInfo(path).LinkTarget;
     }
 
     internal static bool IsInspectionFailure(Exception ex)
@@ -605,6 +724,11 @@ internal sealed class FileSystemAuthority
         return false;
     }
 
+    // This screen keeps the host resolver. Its failures are part of the screen:
+    // a path that the host resolver cannot read counts as protected (R13), and
+    // on Windows that includes the drive root. FollowLinkChain reads the final
+    // target for grant scopes, where a path without a readable link keeps its
+    // lexical scope.
     private static bool TryResolveFinalLink(string path, out string target)
     {
         target = string.Empty;

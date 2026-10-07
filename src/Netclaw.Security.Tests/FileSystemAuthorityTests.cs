@@ -155,6 +155,88 @@ public sealed class FileSystemAuthorityTests : IDisposable
         Assert.False(CanonicalPath.TryCreate("~/notes.txt", project.Value, CanonicalPath.HostStyle, out _));
     }
 
+    // Issue #2375: a link word gets the scope of its final target. The target
+    // keeps the lexical frame, so an alias above a grant root stays in it.
+    [Fact]
+    public void Link_chain_ends_at_its_final_target_in_the_lexical_frame()
+    {
+        var real = Directory.CreateDirectory(Path.Combine(_root, "real")).FullName;
+        File.WriteAllText(Path.Combine(real, "a.txt"), "synthetic test data");
+        var alias = Path.Combine(_root, "alias");
+        CreateLinkOrSkip(() => Directory.CreateSymbolicLink(alias, real));
+        CreateLinkOrSkip(() => File.CreateSymbolicLink(Path.Combine(real, "hop.txt"), "a.txt"));
+        CreateLinkOrSkip(() => File.CreateSymbolicLink(Path.Combine(real, "start.txt"), "hop.txt"));
+
+        Assert.Equal(LinkChainEnd.Target, FileSystemAuthority.FollowLinkChain(Path.Combine(alias, "start.txt"), out var target));
+        Assert.Equal(Path.Combine(alias, "a.txt"), target);
+    }
+
+    [Fact]
+    public void Link_chain_ends_at_a_directory_or_a_missing_target()
+    {
+        var project = Directory.CreateDirectory(Path.Combine(_root, "project")).FullName;
+        var other = Directory.CreateDirectory(Path.Combine(_root, "other")).FullName;
+        CreateLinkOrSkip(() => Directory.CreateSymbolicLink(Path.Combine(project, "out"), Path.Combine("..", "other")));
+        CreateLinkOrSkip(() => File.CreateSymbolicLink(Path.Combine(project, "dangling.txt"), Path.Combine(other, "missing.txt")));
+
+        Assert.Equal(LinkChainEnd.Target, FileSystemAuthority.FollowLinkChain(Path.Combine(project, "out"), out var directory));
+        Assert.Equal(other, directory);
+        Assert.Equal(LinkChainEnd.Target, FileSystemAuthority.FollowLinkChain(Path.Combine(project, "dangling.txt"), out var missing));
+        Assert.Equal(Path.Combine(other, "missing.txt"), missing);
+    }
+
+    [Fact]
+    public void Path_that_is_not_a_link_has_no_chain()
+    {
+        var file = Path.Combine(_root, "file.txt");
+        File.WriteAllText(file, "synthetic test data");
+
+        Assert.Equal(LinkChainEnd.NotALink, FileSystemAuthority.FollowLinkChain(file, out _));
+        Assert.Equal(LinkChainEnd.NotALink, FileSystemAuthority.FollowLinkChain(_root, out _));
+        Assert.Equal(LinkChainEnd.NotALink, FileSystemAuthority.FollowLinkChain(Path.Combine(_root, "missing.txt"), out _));
+        // The host cannot name a path that is not a full path. It is not a link
+        // that the check can read, so the word keeps its decision.
+        Assert.Equal(LinkChainEnd.NotALink, FileSystemAuthority.FollowLinkChain("file.txt", out _));
+    }
+
+    // SECURITY: the OS follows a link before it applies "..", so a ".." that
+    // leaves a link has no lexical target. A loop never ends.
+    [Fact]
+    public void Link_chain_with_an_unknown_target_fails_closed()
+    {
+        var project = Directory.CreateDirectory(Path.Combine(_root, "project")).FullName;
+        var deep = Directory.CreateDirectory(Path.Combine(_root, "other", "deep")).FullName;
+        CreateLinkOrSkip(() => Directory.CreateSymbolicLink(Path.Combine(project, "outlnk"), deep));
+        CreateLinkOrSkip(() => File.CreateSymbolicLink(Path.Combine(project, "dotdot.txt"), Path.Combine("outlnk", "..", "notes.txt")));
+        CreateLinkOrSkip(() => File.CreateSymbolicLink(Path.Combine(project, "loop1.txt"), "loop2.txt"));
+        CreateLinkOrSkip(() => File.CreateSymbolicLink(Path.Combine(project, "loop2.txt"), "loop1.txt"));
+
+        Assert.Equal(LinkChainEnd.Unknown, FileSystemAuthority.FollowLinkChain(Path.Combine(project, "dotdot.txt"), out var target));
+        Assert.Equal(string.Empty, target);
+        Assert.Equal(LinkChainEnd.Unknown, FileSystemAuthority.FollowLinkChain(Path.Combine(project, "loop1.txt"), out _));
+    }
+
+    [Fact]
+    public void Link_chain_follows_at_most_the_hop_limit()
+    {
+        var file = Path.Combine(_root, "end.txt");
+        File.WriteAllText(file, "synthetic test data");
+        var previous = "end.txt";
+        for (var link = 1; link <= FileSystemAuthority.MaximumLinkHops + 1; link++)
+        {
+            var name = $"link{link}.txt";
+            var target = previous;
+            CreateLinkOrSkip(() => File.CreateSymbolicLink(Path.Combine(_root, name), target));
+            previous = name;
+        }
+
+        var atLimit = Path.Combine(_root, $"link{FileSystemAuthority.MaximumLinkHops}.txt");
+        var overLimit = Path.Combine(_root, $"link{FileSystemAuthority.MaximumLinkHops + 1}.txt");
+        Assert.Equal(LinkChainEnd.Target, FileSystemAuthority.FollowLinkChain(atLimit, out var end));
+        Assert.Equal(file, end);
+        Assert.Equal(LinkChainEnd.Unknown, FileSystemAuthority.FollowLinkChain(overLimit, out _));
+    }
+
     private static PathDecision Membership(CanonicalPath path, PathBoundary boundary)
         => FileSystemAuthority.EvaluateMembership(path, [boundary]);
 
@@ -168,5 +250,19 @@ public sealed class FileSystemAuthorityTests : IDisposable
     {
         Assert.True(CanonicalPath.TryCreateHost(path, relativeBase: null, out var canonical));
         return canonical;
+    }
+
+    // Windows creates a symbolic link only with developer mode or administrator
+    // rights. A POSIX host always can, so the skip applies to Windows only.
+    private static void CreateLinkOrSkip(Action create)
+    {
+        try
+        {
+            create();
+        }
+        catch (Exception ex) when (OperatingSystem.IsWindows() && ex is UnauthorizedAccessException or IOException)
+        {
+            Assert.Skip($"This Windows host cannot create a symbolic link: {ex.Message}");
+        }
     }
 }

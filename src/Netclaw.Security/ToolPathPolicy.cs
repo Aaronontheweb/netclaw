@@ -417,8 +417,8 @@ public sealed class ToolPathPolicy
     /// path, also when it names a link to a protected directory. A verb grant
     /// covers later words without a name for each one, so this screen checks the
     /// link target of each such word, command word or argument (<c>keys2</c>).
-    /// It only denies a protected target. It never changes grant coverage, so a
-    /// link to a file in the same folder keeps its decision.
+    /// It only denies a protected target. Grant coverage of the link target is
+    /// a scope of the approval candidate (<see cref="ShellApprovalMatcher"/>, #2375).
     /// </remarks>
     private static bool PlainWordLinkReachesDeniedPath(
         ShellCommandAnalysis analysis,
@@ -432,25 +432,34 @@ public sealed class ToolPathPolicy
             // An unproved directory names no entry. Such a command is exact
             // consent only, so no grant covers it.
             var directory = (occurrence.WorkingDirectory as ShellValueDomain.Exact)?.Value;
-            var programWord = true;
-            foreach (var element in occurrence.Clause.Elements)
-            {
-                // The program word is a PATH lookup, not a file of the directory.
-                if (programWord && element.Role == ClauseElementRole.Verb)
-                {
-                    programWord = false;
-                    continue;
-                }
-
-                if (ShellGrantFileWords.NamesLink(element.Value, directory, out var link)
-                    && IsShellDenied(shell, link))
-                {
-                    return true;
-                }
-            }
+            if (FindLinkWords(occurrence, directory).Any(link => IsShellDenied(shell, link)))
+                return true;
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Returns the path of each word after the program word that names a link
+    /// directly in <paramref name="directory"/>. The protected-path screen and
+    /// the approval scopes (<see cref="ShellApprovalMatcher"/>, #2375) read the
+    /// same words through this one loop.
+    /// </summary>
+    internal static IEnumerable<string> FindLinkWords(CommandOccurrence occurrence, string? directory)
+    {
+        var programWord = true;
+        foreach (var element in occurrence.Clause.Elements)
+        {
+            // The program word is a PATH lookup, not a file of the directory.
+            if (programWord && element.Role == ClauseElementRole.Verb)
+            {
+                programWord = false;
+                continue;
+            }
+
+            if (ShellGrantFileWords.NamesLink(element.Value, directory, out var link))
+                yield return link;
+        }
     }
 
     private bool DomainReferencesDeniedPath(ShellValueDomain domain, FileSystemAuthority shell)

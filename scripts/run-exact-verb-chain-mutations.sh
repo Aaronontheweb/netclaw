@@ -118,7 +118,7 @@ run_gate Netclaw.Configuration.csproj "ShellGrantFileWords.cs{$link_start..$link
 # argument. A mutant that skips the screen, checks no directory, or checks the
 # program word changes a decision, so it must die.
 read -r link_word_start link_word_end < <(
-  find_range '// An unproved directory names no entry.' 'IsShellDenied(shell, link))' \
+  find_range '// An unproved directory names no entry.' 'yield return link;' \
   "$repo_root/src/Netclaw.Security/ToolPathPolicy.cs")
 run_gate Netclaw.Security.csproj "ToolPathPolicy.cs{$link_word_start..$link_word_end}" \
-  "$output_path/link-word" 8 "plain word link target"
+  "$output_path/link-word" 12 "plain word link target"
