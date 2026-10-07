@@ -428,17 +428,31 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         ArgumentNullException.ThrowIfNull(twinCandidates);
         ArgumentNullException.ThrowIfNull(source);
         qualified = twinCandidates;
-        if (!ShellAssignmentDigestFactory.TryCreate(ApprovalShell.Bash, source.Assignments, out var digest))
-            return false;
-
-        if (digest is null)
+        if (source.Assignments.Count == 0)
             return true;
 
-        qualified = Array.AsReadOnly(twinCandidates
-            .Select(candidate => ApprovalPatternMatching.IsPureSideEffect(candidate)
-                ? candidate
-                : candidate with { AssignmentDigest = digest })
-            .ToArray());
+        var result = new ApprovalCandidate[twinCandidates.Count];
+        for (var index = 0; index < twinCandidates.Count; index++)
+        {
+            var candidate = twinCandidates[index];
+            if (ApprovalPatternMatching.IsPureSideEffect(candidate))
+            {
+                result[index] = candidate;
+                continue;
+            }
+
+            if (!ShellAssignmentDigestFactory.TryCreate(
+                    ApprovalShell.Bash,
+                    QualifyingAssignments(source.Assignments, ApprovalShell.Bash, candidate.Verb),
+                    out var digest))
+            {
+                return false;
+            }
+
+            result[index] = digest is null ? candidate : candidate with { AssignmentDigest = digest };
+        }
+
+        qualified = Array.AsReadOnly(result);
         return true;
     }
 
@@ -1957,8 +1971,29 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             return true;
         }
 
-        return ShellAssignmentDigestFactory.TryCreate(shell, occurrence.Assignments, out digest);
+        return ShellAssignmentDigestFactory.TryCreate(
+            shell,
+            QualifyingAssignments(occurrence.Assignments, shell, verb),
+            out digest);
     }
+
+    /// <summary>
+    /// Returns the assignments that qualify a grant for a command.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: owner decision F3 skips an assignment that stays in the shell,
+    /// because Bash passes it to no program. A Bash data command keeps every
+    /// assignment: it reads no environment, so its digest guards only operands
+    /// that are not proved data (<c>d=key; echo ../x/"${d}s"/*</c>), and the
+    /// digest keeps such a command from the approval exemption.
+    /// </remarks>
+    private static IReadOnlyList<ShellSyntaxTree.ShellVariableAssignment> QualifyingAssignments(
+        IReadOnlyList<ShellSyntaxTree.ShellVariableAssignment> assignments,
+        ApprovalShell shell,
+        string verb)
+        => ShellVerbPolicyData.IsDataCommand(verb, shell)
+            ? assignments
+            : ShellAssignmentDigestFactory.ReachingProgram(shell, assignments);
 
     /// <summary>
     /// Returns true when a Bash data command has no redirect and each operand

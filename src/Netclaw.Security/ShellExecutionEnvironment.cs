@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Collections;
 using System.Collections.Immutable;
 using System.Diagnostics;
 using Netclaw.Tools;
@@ -49,6 +50,11 @@ public sealed class ShellExecutionEnvironment
     private static readonly string[] TemporaryVariableNames = ["TMPDIR", "TMP", "TEMP"];
     private static readonly string[] BashUnsetLaunchVariables = ["CDPATH"];
 
+    // The launcher sets PWD on each Bash process (ApplyWorkingDirectory).
+    private static readonly string[] BashLauncherVariableNames = ["PWD"];
+
+    private readonly ImmutableDictionary<string, string> _inheritedEnvironment;
+
     private ShellExecutionEnvironment(
         ShellPlatform platform,
         string executablePath,
@@ -56,7 +62,8 @@ public sealed class ShellExecutionEnvironment
         ShellPathStyle pathStyle,
         ImmutableArray<string> commandArguments,
         Version? bashVersion,
-        PwshDialect? powerShellDialect)
+        PwshDialect? powerShellDialect,
+        ImmutableDictionary<string, string> inheritedEnvironment)
     {
         if (string.IsNullOrWhiteSpace(executablePath))
             throw new ArgumentException("The shell executable path is required.", nameof(executablePath));
@@ -75,6 +82,7 @@ public sealed class ShellExecutionEnvironment
         CommandArguments = commandArguments;
         BashVersion = bashVersion;
         PowerShellDialect = powerShellDialect;
+        _inheritedEnvironment = inheritedEnvironment;
     }
 
     /// <summary>
@@ -153,7 +161,8 @@ public sealed class ShellExecutionEnvironment
             ShellPathStyle.Posix,
             BashCommandArguments,
             bashVersion: null,
-            powerShellDialect: null);
+            powerShellDialect: null,
+            CaptureInheritedEnvironment());
     }
 
     /// <summary>
@@ -174,7 +183,33 @@ public sealed class ShellExecutionEnvironment
             ShellPathStyle.Posix,
             BashCommandArguments,
             bashVersion,
-            powerShellDialect: null);
+            powerShellDialect: null,
+            CaptureInheritedEnvironment());
+    }
+
+    /// <summary>
+    /// Creates a Bash identity with an explicit daemon environment snapshot in
+    /// place of the environment of this process.
+    /// </summary>
+    internal static ShellExecutionEnvironment CreateBash(
+        ShellPlatform platform,
+        Version bashVersion,
+        IEnumerable<KeyValuePair<string, string>> inheritedEnvironment)
+    {
+        ArgumentNullException.ThrowIfNull(bashVersion);
+        ArgumentNullException.ThrowIfNull(inheritedEnvironment);
+        if (platform is not (ShellPlatform.Linux or ShellPlatform.MacOS))
+            throw new ArgumentOutOfRangeException(nameof(platform), platform, "Bash is supported only on Linux and macOS.");
+
+        return new ShellExecutionEnvironment(
+            platform,
+            "/bin/bash",
+            ShellGrammar.Bash,
+            ShellPathStyle.Posix,
+            BashCommandArguments,
+            bashVersion,
+            powerShellDialect: null,
+            ImmutableDictionary.CreateRange(EnvironmentNameComparer, inheritedEnvironment));
     }
 
     /// <summary>
@@ -212,7 +247,8 @@ public sealed class ShellExecutionEnvironment
             ShellPathStyle.Windows,
             PowerShellCommandArguments,
             bashVersion: null,
-            dialect);
+            dialect,
+            CaptureInheritedEnvironment());
     }
 
     /// <summary>
@@ -265,12 +301,87 @@ public sealed class ShellExecutionEnvironment
     /// temporary variables in <see cref="ApplyTemporaryVariables"/>. The parser uses
     /// the facts only under a no-startup initial state. A statement that can change a
     /// variable makes its value unknown again. The Bash facts also prove that
-    /// <c>CDPATH</c> is unset, because <see cref="RemoveBashStartupOverrides"/> removes it.
+    /// <c>CDPATH</c> is unset, because <see cref="RemoveBashStartupOverrides"/> removes it,
+    /// and they declare the complete environment names (<see cref="GetCompleteEnvironmentNames"/>).
     /// </remarks>
     internal ShellLaunchEnvironment CreateLaunchEnvironment(ManagedTemporaryLocation? temporary)
-        => new(
+    {
+        var launch = new ShellLaunchEnvironment(
             GetLaunchVariables(temporary),
             Grammar == ShellGrammar.Bash ? BashUnsetLaunchVariables : []);
+        return Grammar == ShellGrammar.Bash
+            ? launch.WithCompleteEnvironmentNames(GetCompleteEnvironmentNames(temporary))
+            : launch;
+    }
+
+    /// <summary>
+    /// Gets the names of every variable that a launched Bash process can receive.
+    /// The names come from <see cref="CreateChildEnvironment"/>, the one snapshot
+    /// that the launcher copies to the process, so the two cannot drift.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Owner decision F3: with the complete names, ShellSyntaxTree can prove that
+    /// a Bash assignment such as <c>b=$(git branch --show-current)</c> stays in
+    /// the shell. Bash passes such a variable to no child process. The names
+    /// never carry a value, and Netclaw never shows them to the model.
+    /// </para>
+    /// <para>
+    /// SECURITY: a name that the child receives must be in the set. A name that
+    /// is in the set and not in the child only keeps an assignment counted. The
+    /// set therefore also holds the temporary variable names, which the launcher
+    /// sets on each process with a managed temporary location, and <c>PWD</c>.
+    /// The removed startup overrides (<see cref="RemoveBashStartupOverrides"/>)
+    /// are not in the set, because the process does not receive them.
+    /// </para>
+    /// </remarks>
+    internal IReadOnlyCollection<string> GetCompleteEnvironmentNames(ManagedTemporaryLocation? temporary)
+        => CreateChildEnvironment(temporary).Keys
+            .Concat(TemporaryVariableNames)
+            .Concat(BashLauncherVariableNames)
+            .ToHashSet(_inheritedEnvironment.KeyComparer);
+
+    /// <summary>
+    /// Creates the environment of one launched shell process: the daemon
+    /// environment snapshot without the Bash startup overrides, plus the launch
+    /// variables (<see cref="GetLaunchVariables"/>).
+    /// </summary>
+    /// <remarks>
+    /// The snapshot is taken once, when the daemon creates this environment, as
+    /// for <see cref="HomeDirectory"/>. A later change to the daemon process
+    /// environment reaches no launched process, so the parser facts and the
+    /// launched process always describe the same names.
+    /// </remarks>
+    internal IReadOnlyDictionary<string, string> CreateChildEnvironment(ManagedTemporaryLocation? temporary)
+    {
+        IDictionary<string, string?> environment = new Dictionary<string, string?>(
+            _inheritedEnvironment.Select(static pair => new KeyValuePair<string, string?>(pair.Key, pair.Value)),
+            _inheritedEnvironment.KeyComparer);
+        if (Grammar == ShellGrammar.Bash)
+            RemoveBashStartupOverrides(environment);
+        foreach (var variable in GetLaunchVariables(temporary))
+            environment[variable.Key] = variable.Value;
+        return environment.ToImmutableDictionary(
+            static pair => pair.Key,
+            static pair => pair.Value!,
+            _inheritedEnvironment.KeyComparer);
+    }
+
+    // Windows compares environment names without case, as Process does.
+    private static StringComparer EnvironmentNameComparer =>
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    private static ImmutableDictionary<string, string> CaptureInheritedEnvironment()
+    {
+        var builder = ImmutableDictionary.CreateBuilder<string, string>(EnvironmentNameComparer);
+        foreach (DictionaryEntry entry in System.Environment.GetEnvironmentVariables())
+        {
+            if (entry is { Key: string name, Value: string value })
+                builder[name] = value;
+        }
+
+        return builder.ToImmutable();
+    }
 
     /// <summary>
     /// Gets the exact variables that a launched shell receives. The temporary variables
@@ -445,9 +556,10 @@ public sealed class ShellExecutionEnvironment
         foreach (var argument in CommandArguments)
             startInfo.ArgumentList.Add(argument);
         startInfo.ArgumentList.Add(command);
-        if (Grammar == ShellGrammar.Bash)
-            RemoveBashStartupOverrides(startInfo.Environment);
-        foreach (var variable in GetLaunchVariables(temporary: null))
+        // The process gets the one snapshot that the parser facts describe
+        // (GetCompleteEnvironmentNames), never the live daemon environment.
+        startInfo.Environment.Clear();
+        foreach (var variable in CreateChildEnvironment(temporary: null))
             startInfo.Environment[variable.Key] = variable.Value;
         return startInfo;
     }

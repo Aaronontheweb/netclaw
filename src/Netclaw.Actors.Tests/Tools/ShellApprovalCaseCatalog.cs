@@ -2708,14 +2708,86 @@ public static class ShellApprovalCases
             Bash52("for v in push fetch; do git $v origin; done"),
             Approvals.Session("git push"),
             ExpectedApproval.Require(["git fetch origin"], approvalMatches: ["session:git push origin"])),
+        // A twin keeps the shell-state assignments of its source command that
+        // can reach the program. "x" stays in the shell (decision F3), so the
+        // chat grant covers each twin.
+        Case(
+            "in-shell-assigned-loop-twins-use-chat-grant",
+            Bash52("x=1; for n in a b; do gh api x/$n; done"),
+            Approvals.Session("gh api"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:gh api", "session:gh api")),
         // SECURITY: a twin keeps the shell-state assignments of its source
         // command, so a grant without the same assignments does not cover it.
-        // The exported assignment reaches each run.
+        // The exported assignment reaches each run. Since F3, "export x" is
+        // covered by its own grant.
         Case(
             "assigned-loop-twins-keep-assignment-qualification",
             Bash52("x=1; export x; for n in a b; do gh api x/$n; done"),
             Approvals.Session("gh api", "export x"),
-            ExpectedApproval.Require(["export x", "gh api"])),
+            ExpectedApproval.Require(["gh api"], approvalMatches: ["session:export x"])),
+        // Owner decision F3: Netclaw declares the names of the daemon
+        // environment (never the values) to the parser. A Bash assignment that
+        // no path exports, to a name that the environment does not hold, stays
+        // in the shell: Bash passes it to no program. Such an assignment does
+        // not qualify a grant. A read of the variable is an argument with its
+        // own value facts.
+        Case(
+            "in-shell-assignment-uses-plain-grant",
+            Bash52("b=1; env"),
+            Approvals.PersistentAnywhere("env"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:env")),
+        // Negative controls: an exported or prefixed assignment reaches the program.
+        Case(
+            "exported-assignment-keeps-assignment-qualification",
+            Bash52("b=1; export b; env"),
+            Approvals.PersistentAnywhere("env", "export b"),
+            ExpectedApproval.Require(["env"], approvalMatches: ["persistent:export b"])),
+        Case(
+            "prefix-assignment-keeps-assignment-qualification",
+            Bash52("b=1 env"),
+            Approvals.PersistentAnywhere("env"),
+            ExpectedApproval.Require(["env"])),
+        // SECURITY: "set -a" exports each later assignment. The source is unresolved.
+        Case(
+            "allexport-assignment-fails-closed",
+            Bash52("set -a; b=1; env"),
+            Approvals.PersistentAnywhere("env"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        // The owner's traffic: the assignment stays in the shell, so only the
+        // commands need coverage.
+        Case(
+            "in-shell-substitution-assignment-output-allows",
+            Bash52("st=$(git status --short); echo \"$st\""),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ReviewedSafePolicy)),
+        // An assignment with a run-time value that the command does not read
+        // no longer makes the command exact.
+        Case(
+            "in-shell-unread-assignment-uses-chat-grant",
+            Bash52("b=$(git branch --show-current); git fetch origin"),
+            Approvals.Session("git fetch"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "session:git fetch origin")),
+        // A read of the unknown value is still an unknown operand (decision
+        // D1), so a chat grant does not cover it.
+        Case(
+            "in-shell-branch-read-prompts-with-chat-grant",
+            Bash52("b=$(git branch --show-current); git push origin \"$b\""),
+            Approvals.Session("git push"),
+            ExpectedApproval.Require(["git push origin \"$b\""])),
+        // The unquoted "$b" in "origin/$b..HEAD" has an unknown value that can
+        // glob, so the command keeps the quote correction.
+        Case(
+            "in-shell-branch-assignment-keeps-quote-correction",
+            Bash52("b=$(git branch --show-current); git log origin/$b..HEAD"),
+            Approvals.PersistentAnywhere("git log"),
+            ExpectedApproval.Correct()),
+        // In quotes, the unknown value is one operand (decision D1), so a
+        // grant for anywhere covers it.
+        Case(
+            "in-shell-branch-assignment-quoted-uses-global-grant",
+            Bash52("b=$(git branch --show-current); git log \"origin/$b..HEAD\""),
+            Approvals.PersistentAnywhere("git log"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:git log \"origin/$b..HEAD\"")),
         // F2: a data command over a listing keeps its exemption.
         Case(
             "cd-loop-over-listing-output-stays-allowed",

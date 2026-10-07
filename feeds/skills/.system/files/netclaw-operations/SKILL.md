@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.100.0"
+  version: "2.101.0"
 ---
 
 # Netclaw Operations
@@ -494,6 +494,15 @@ A changed assignment needs a separate approval.
 An unqualified grant cannot cover an assignment-qualified command.
 The reviewed-safe list does not cover an assignment-qualified command.
 An incomplete assignment gets only `Once` and `Deny`.
+On a Bash 5.2 or 5.3 host, an assignment that stays in the shell does not
+qualify a command (decision F3). Netclaw gives the parser the names of the
+daemon environment, never the values. An assignment stays in the shell when
+the source does not export it and the daemon environment does not hold the
+name: `b=$(git branch --show-current); git fetch origin` needs only a grant
+for `git fetch`. An assignment still qualifies the command after `export b`,
+as a prefix (`b=1 env`), or to a name that the environment holds
+(`GIT_DIR=/x; git status`). `set -a` gets only `Once` and `Deny`. An output
+command (`echo`, `printf`) keeps every assignment.
 A name with a run-time value (`PID=$!`, `x=$(cmd)`, `read x`) is unknown, so a
 command that reads it as a word gets only `Once` and `Deny`.
 A word that reads a bound value (`x=/etc/app.conf; cat "$x"`) gets the

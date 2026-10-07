@@ -423,9 +423,12 @@ public sealed class ToolApprovalGateTests
     [Fact]
     public void Invalid_assignment_digest_input_offers_only_once_and_deny()
     {
+        // The daemon environment holds "mode", so the assignment reaches the
+        // program and qualifies the grant (decision F3).
         var environment = ShellExecutionEnvironment.CreateBash(
             ShellPlatform.Linux,
-            new Version(5, 2));
+            new Version(5, 2),
+            [new("PATH", "/usr/bin"), new("mode", "inherited")]);
         var policy = CreatePolicy(ToolApprovalMode.Approval, environment);
 
         var decision = policy.GetShellPreflightDecision(
@@ -448,9 +451,12 @@ public sealed class ToolApprovalGateTests
     [Fact]
     public void Assignment_prompt_uses_rollback_safe_reusable_option_keys()
     {
+        // The daemon environment holds "mode", so the assignment reaches the
+        // program and qualifies the grant (decision F3).
         var environment = ShellExecutionEnvironment.CreateBash(
             ShellPlatform.Linux,
-            new Version(5, 2));
+            new Version(5, 2),
+            [new("PATH", "/usr/bin"), new("mode", "inherited")]);
         var policy = CreatePolicy(ToolApprovalMode.Approval, environment);
 
         var decision = policy.GetShellPreflightDecision(
