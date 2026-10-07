@@ -729,13 +729,20 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             .Skip(1)
             .Where(static element => element.Role != ShellSyntaxTree.ClauseElementRole.Redirect)
             .ToArray();
-        if (words.Any(static element => element.Kind == ShellSyntaxTree.ArgKind.Glob && !element.Value.Contains('/', StringComparison.Ordinal)))
-            return ShellCommandWordsRewrite.UsePathGlob;
 
         // A PowerShell script block, subexpression, or array argument is normal
         // syntax that a rewrite cannot remove, so it keeps the one-time prompt.
         if (shell != ApprovalShell.Bash)
-            return null;
+            return words.Any(IsBareGlob) ? ShellCommandWordsRewrite.UsePathGlob : null;
+
+        // The first word that Bash can change is the cause that the model must
+        // remove first. A later run-time operand does not make the words
+        // unknown, so it does not decide.
+        var cause = words.FirstOrDefault(static element =>
+            IsBareGlob(element)
+            || element.Kind is ShellSyntaxTree.ArgKind.EnvVar or ShellSyntaxTree.ArgKind.DynamicSkip);
+        if (cause is not null && IsBareGlob(cause))
+            return ShellCommandWordsRewrite.UsePathGlob;
 
         // Without launch facts (a Bash host other than 5.2 or 5.3), ShellSyntaxTree
         // gives no value for a tilde in the program word, so "~/bin/tool" has no
@@ -744,20 +751,43 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (clause.Elements[0].Raw.StartsWith("~/", StringComparison.Ordinal))
             return ShellCommandWordsRewrite.WriteProgramPathInFull;
 
-        // A name that the source assigns a runtime value ($!, $(...), or read)
-        // has no literal spelling, so the model cannot write the word. The
-        // command keeps its one-time prompt.
-        if (occurrence.Assignments.Any(static assignment =>
-                assignment.Scope == ShellSyntaxTree.ShellVariableAssignmentScope.ShellState
-                && assignment.EffectiveValue is ShellSyntaxTree.ShellValueDomain.Unknown))
-        {
-            return null;
-        }
+        if (cause is null)
+            return ShellCommandWordsRewrite.RunCommandsSeparately;
 
-        if (words.Any(static element => element.Kind is ShellSyntaxTree.ArgKind.EnvVar or ShellSyntaxTree.ArgKind.DynamicSkip))
-            return ShellCommandWordsRewrite.WriteWordsLiterally;
+        // Owner decision (2026-10-07): send a correction only when a rewrite
+        // that the model can make removes the cause. A word with a run-time
+        // value has no literal spelling, so the advice would repeat with no
+        // way out. The command keeps its one-time prompt or unattended denial.
+        return HoldsRunTimeValue(occurrence, cause) ? null : ShellCommandWordsRewrite.WriteWordsLiterally;
+    }
 
-        return ShellCommandWordsRewrite.RunCommandsSeparately;
+    private static bool IsBareGlob(ShellSyntaxTree.ClauseElement element)
+        => element.Kind == ShellSyntaxTree.ArgKind.Glob
+           && !element.Value.Contains('/', StringComparison.Ordinal);
+
+    /// <summary>
+    /// Returns true when the word reads a value that Bash knows only at run
+    /// time (an environment value, a <c>$(...)</c> result, a glob match), so
+    /// the model cannot write the word literally.
+    /// </summary>
+    /// <remarks>
+    /// ShellSyntaxTree gives no typed fact for an expansion in a word, so the
+    /// check reads <c>$</c> and the backtick in the raw word. A wrong match
+    /// only keeps the prompt.
+    /// SECURITY: the result selects advice or a prompt. It grants no authority.
+    /// </remarks>
+    private static bool HoldsRunTimeValue(
+        ShellSyntaxTree.CommandOccurrence occurrence,
+        ShellSyntaxTree.ClauseElement element)
+    {
+        var argument = occurrence.Arguments.FirstOrDefault(argument => ReferenceEquals(argument.Element, element));
+        // A proved authored value is text that the source holds, glob
+        // character or not: for f in '*.cs' has the literal form '*.cs'.
+        if (argument?.AuthoredValue is ShellValueDomain.Exact or ShellValueDomain.FiniteSet)
+            return false;
+
+        return element.Raw.Contains('$', StringComparison.Ordinal)
+               || element.Raw.Contains('`', StringComparison.Ordinal);
     }
 
     private static IReadOnlyList<string?>? ResolveCommandDirectories(

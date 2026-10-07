@@ -431,8 +431,9 @@ internal sealed class ShellPolicyCoordinator(
     /// <summary>
     /// Returns a rewrite correction when an uncovered candidate has a cause
     /// that the model can fix. A candidate with Unknown command words gets the
-    /// command-words rewrite (a bare glob, or in Bash an expansion, brace list,
-    /// or word splitting). A candidate with known command words that is exact
+    /// command-words rewrite (a bare glob, or in Bash a brace list or a word
+    /// with a proved value). A word with a run-time value has no literal
+    /// form, so it gets no rewrite. A candidate with known command words that is exact
     /// only because a word can glob with an unknown value gets the quote
     /// correction. Returns null otherwise, so a dynamic program name or a
     /// PowerShell script block keeps the one-time prompt or the denial.

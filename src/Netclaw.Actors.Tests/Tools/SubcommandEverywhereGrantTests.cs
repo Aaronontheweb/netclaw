@@ -22,7 +22,8 @@ namespace Netclaw.Actors.Tests.Tools;
 /// covers <c>gh --help</c>, not <c>gh auth logout</c>. Every option order of
 /// one command has the same words. After the verb slot, option values,
 /// expansions, and globs are arguments. Unknown words (only in the verb slot)
-/// get a rewrite correction: no run and no prompt.
+/// get a rewrite correction (no run and no prompt) when the source holds
+/// their literal form. A word with a run-time value gets a one-time prompt.
 /// </summary>
 [Collection(ShellApprovalMatrixCollection.Name)]
 public sealed class SubcommandEverywhereGrantTests(ShellApprovalMatrixFixture fixture)
@@ -331,6 +332,76 @@ public sealed class SubcommandEverywhereGrantTests(ShellApprovalMatrixFixture fi
         await AssertAllowedByStoredGrantAsync(harness, corrected);
     }
 
+    // The kind is a ShellCommandWordsRewrite name, or QuoteKind for the quote
+    // correction. {home} is the home directory of the test process.
+    private const string QuoteKind = "ShellWordQuote";
+
+    public static TheoryData<string, string, string, string, string> CorrectionRewrites()
+        => new()
+        {
+            { "Bash", nameof(ShellCommandWordsRewrite.UsePathGlob), "rm *.md", "rm ./*.md", "" },
+            { "PowerShell7", nameof(ShellCommandWordsRewrite.UsePathGlob), "rm *.md", "rm ./*.md", "" },
+            { "Bash52", nameof(ShellCommandWordsRewrite.WriteWordsLiterally), "git {push,fetch} origin", "git push origin; git fetch origin", "" },
+            { "Bash", nameof(ShellCommandWordsRewrite.WriteWordsLiterally), "for v in push fetch; do git $v origin; done", "git push origin; git fetch origin", "" },
+            // A proved value with a glob character still has a literal form.
+            { "Bash52", nameof(ShellCommandWordsRewrite.WriteWordsLiterally), "for f in '*.cs'; do cat /work/$f; done", "cat '/work/*.cs'", "" },
+            // The retry is denied: each literal path is a credential path.
+            { "Bash52", nameof(ShellCommandWordsRewrite.WriteWordsLiterally), "cat ~/.netclaw/{keys,config}/key-1.xml", "cat ~/.netclaw/keys/key-1.xml; cat ~/.netclaw/config/key-1.xml", "" },
+            // A run-time operand after the cause does not decide. The brace
+            // list is the cause, and the grants cover the literal rewrite.
+            { "Bash52", nameof(ShellCommandWordsRewrite.WriteWordsLiterally), "git {push,fetch} origin \"$BRANCH\"", "git push origin \"$BRANCH\"; git fetch origin \"$BRANCH\"", "git push,git fetch" },
+            // A run-time assignment that the command does not read does not decide.
+            { "Bash52", nameof(ShellCommandWordsRewrite.WriteWordsLiterally), "x=$(date); git {push,fetch} origin", "x=$(date); git push origin; git fetch origin", "" },
+            { "Bash", nameof(ShellCommandWordsRewrite.RunCommandsSeparately), "git $'pu\\x73h' origin", "git push origin", "" },
+            { "Bash", nameof(ShellCommandWordsRewrite.WriteProgramPathInFull), "~/bin/tool run", "{home}/bin/tool run", "" },
+            { "Bash52", QuoteKind, "git rev-list --count HEAD...origin/$(git branch --show-current)", "git rev-list --count \"HEAD...origin/$(git branch --show-current)\"", "" },
+            { "Bash52", QuoteKind, "f=$(date); git log origin/$f", "f=$(date); git log \"origin/$f\"", "" },
+        };
+
+    // Owner decision (2026-10-07): a correction is sent only when a rewrite
+    // that the model can make removes the cause. Each command-words and quote
+    // correction has a row: the advised rewrite gets no correction on the
+    // retry. The retry can still prompt or be denied. A row with grants also
+    // proves that the grants cover the rewrite.
+    [SlopwatchSuppress("SW001", "The Bash cases require a POSIX host.")]
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "The Bash cases require a POSIX host.")]
+    [MemberData(nameof(CorrectionRewrites))]
+    public async Task Each_correction_has_a_rewrite_that_removes_it(
+        string host,
+        string kind,
+        string command,
+        string rewritten,
+        string grants)
+    {
+        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var approvals = grants.Length == 0 ? Approvals.None : Approvals.PersistentAnywhere(grants.Split(','));
+        await using var harness = await CreateHarnessAsync(approvals, Enum.Parse<ShellApprovalHost>(host));
+
+        var decision = await harness.EvaluateShellDecisionAsync(command, Ct);
+        var retry = await harness.EvaluateShellDecisionAsync(rewritten.Replace("{home}", home, StringComparison.Ordinal), Ct);
+
+        var actualKind = decision.AgentCorrection switch
+        {
+            ToolCorrection.ShellCommandWordsRewriteSuggested words => words.Rewrite.ToString(),
+            ToolCorrection.ShellWordQuoteSuggested => QuoteKind,
+            var other => $"unexpected: {other}"
+        };
+        Assert.Equal(kind, actualKind);
+        Assert.NotEqual(ToolAuthorizationOutcome.RequiresAgentCorrection, retry.Outcome);
+        if (grants.Length > 0)
+            Assert.Equal(ToolAuthorizationOutcome.Allowed, retry.Outcome);
+    }
+
+    // A new rewrite kind without a row in CorrectionRewrites fails here.
+    [Fact]
+    public void Each_rewrite_kind_has_a_rewrite_row()
+    {
+        var kinds = CorrectionRewrites().Select(static row => row.Data.Item2).ToHashSet(StringComparer.Ordinal);
+
+        Assert.All(Enum.GetNames<ShellCommandWordsRewrite>(), name => Assert.Contains(name, kinds));
+        Assert.Contains(QuoteKind, kinds);
+    }
+
     // A bare glob can expand to a subcommand: "git p?sh" with a file named
     // "push" runs "git push". A git grant must never run it.
     [SlopwatchSuppress("SW001", "The Bash cases require a POSIX host.")]
@@ -348,10 +419,12 @@ public sealed class SubcommandEverywhereGrantTests(ShellApprovalMatrixFixture fi
         Assert.Null(run.Output);
     }
 
-    private Task<ShellApprovalHarness> CreateHarnessAsync(ApprovalState approvals)
+    private Task<ShellApprovalHarness> CreateHarnessAsync(
+        ApprovalState approvals,
+        ShellApprovalHost host = ShellApprovalHost.Bash)
         => ShellApprovalHarness.CreateAsync(
             "everywhere-subcommand-grant",
-            new ShellApprovalInvocation("true"),
+            new ShellApprovalInvocation("true", Host: host),
             approvals,
             fixture.ActorSystem,
             Ct);

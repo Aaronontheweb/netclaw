@@ -180,7 +180,7 @@
       "sourceEvidenceFile": "post-265d606f-fresh-session-approval-harvest.json",
       "sourceEvidenceId": "R08",
       "classification": "ExpectedApproval",
-      "targetOutcome": "RequiresAgentCorrection",
+      "targetOutcome": "RequiresApproval",
       "policyCase": {
         "id": "R08", "category": "ExternalControlPlaneRead",
         "command": "for file in /external/cache/reminders/*.history.jsonl; do jq -c -r 'select(.success == false)' \"$file\" 2>/dev/null | tail -1; done | sort",
@@ -189,7 +189,7 @@
         "available": { "oneTimeApprovalKeys": [], "sessionGrants": [], "persistentGrants": [], "safePhrases": [] },
         "useBundledSafeCatalog": true,
         "expected": {
-          "outcome": "RequiresAgentCorrection", "denyReason": null, "agentCorrection": "ShellCommandWordsRewriteSuggested", "approvalCandidates": null, "isMessy": null, "optionKeys": null, "actorCheckCount": 1,
+          "outcome": "RequiresApproval", "denyReason": null, "agentCorrection": null, "approvalCandidates": ["jq -c -r 'select(.success == false)' \"$file\" 2>/dev/null"], "isMessy": false, "optionKeys": ["approve_once", "deny"], "actorCheckCount": 1,
           "candidateCoverage": [{ "candidateId": 0, "coverage": "Uncovered" }, { "candidateId": 1, "coverage": "Uncovered" }, { "candidateId": 2, "coverage": "Uncovered" }, { "candidateId": 1, "coverage": "ReviewedSafePolicy" }, { "candidateId": 2, "coverage": "ReviewedSafePolicy" }],
           "trace": [
             { "stage": "StoredGrantMatch", "candidateId": 0, "executableBasename": "jq", "outcome": "Uncovered", "reason": "NoGrant", "coverage": "Uncovered", "scopeRelation": "None", "grantTimestamp": null },
@@ -197,7 +197,7 @@
             { "stage": "StoredGrantMatch", "candidateId": 2, "executableBasename": "sort", "outcome": "Uncovered", "reason": "NoGrant", "coverage": "Uncovered", "scopeRelation": "None", "grantTimestamp": null },
             { "stage": "ReviewedSafePolicy", "candidateId": 1, "executableBasename": "tail", "outcome": "Covered", "reason": "ReviewedSafePhrase", "coverage": "ReviewedSafePolicy", "scopeRelation": "UnderRealRoot", "grantTimestamp": null },
             { "stage": "ReviewedSafePolicy", "candidateId": 2, "executableBasename": "sort", "outcome": "Covered", "reason": "ReviewedSafePhrase", "coverage": "ReviewedSafePolicy", "scopeRelation": "UnderRealRoot", "grantTimestamp": null },
-            { "stage": "Completion", "candidateId": null, "executableBasename": null, "outcome": "RequiresAgentCorrection", "reason": "AgentCorrection", "coverage": null, "scopeRelation": "None", "grantTimestamp": null }
+            { "stage": "Completion", "candidateId": null, "executableBasename": null, "outcome": "RequiresApproval", "reason": "UncoveredCandidates", "coverage": null, "scopeRelation": "None", "grantTimestamp": null }
           ]
         }
       }

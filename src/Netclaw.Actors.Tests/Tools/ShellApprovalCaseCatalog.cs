@@ -2018,18 +2018,21 @@ public static class ShellApprovalCases
             Bash("git push; echo $?"),
             Approvals.None,
             ExpectedApproval.Require(["git push"])),
-        // The ID keeps its old name. The echo operand is data, and the exact
-        // redirect target gets the managed temporary directory correction.
+        // The ID keeps its old name. "$?" has a run-time value, so the model
+        // cannot write the word literally. The call gets a prompt, not
+        // a rewrite correction (owner, 2026-10-07: satisfiable corrections only).
         Case(
             "unquoted-status-output-redirect-remains-complex",
             Bash($"echo $? > {TemporaryFile("marker")}"),
             Approvals.PersistentAnywhere("echo"),
-            ExpectedApproval.Correct(1)),
+            ExpectedApproval.Require(["echo"])),
+        // A file name from a glob loop is known only at run time, so the call
+        // gets a one-time prompt, not a rewrite correction.
         Case(
             "control-flow-fails-closed",
             Bash("for f in *.txt; do cat \"$f\"; done"),
             Approvals.PersistentAnywhere("cat"),
-            ExpectedApproval.Correct(1)),
+            ExpectedApproval.Require(["cat \"$f\""])),
         Case(
             "printf-variable-target-hidden-execution-fails-closed",
             Bash("printf -v'value[$(printf marker >&2)0]' '%s' data"),
@@ -2501,6 +2504,134 @@ public static class ShellApprovalCases
             Bash52("n=$(basename src/a.cs); [ -v \"$n\" ]"),
             Approvals.PersistentAnywhere("basename"),
             ExpectedApproval.Require(["[ -v \"$n\" ]"], approvalMatches: "persistent:basename")),
+        // Owner decision (2026-10-07): a correction is sent only when a rewrite
+        // that the model can make removes the cause. A test operand with a
+        // run-time value (an environment value, a $(...) result, a glob match)
+        // has no literal spelling, so the call gets a one-time prompt, and an
+        // unattended run denies it. The test builtin stays non-exempt, because a
+        // -v subscript in an unknown value can run a command.
+        Case(
+            "test-builtin-environment-value-prompts",
+            Bash52("[ -n \"$FOO\" ] && echo y"),
+            Approvals.None,
+            ExpectedApproval.Require(["[ -n \"$FOO\" ]"])),
+        Case(
+            "unattended-test-builtin-environment-value-denies",
+            Bash52("[ -n \"$FOO\" ] && echo y", interactive: false),
+            Approvals.None,
+            ExpectedApproval.DenyUnattended()),
+        Case(
+            "test-command-environment-value-prompts",
+            Bash52("test -n \"$FOO\""),
+            Approvals.None,
+            ExpectedApproval.Require(["test -n \"$FOO\""])),
+        Case(
+            "unattended-test-command-environment-value-denies",
+            Bash52("test -n \"$FOO\"", interactive: false),
+            Approvals.None,
+            ExpectedApproval.DenyUnattended()),
+        Case(
+            "conditional-expression-environment-value-prompts",
+            Bash52("[[ -n $FOO ]]"),
+            Approvals.None,
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        Case(
+            "test-builtin-two-environment-values-prompts",
+            Bash52("[ \"$a\" = \"$b\" ]"),
+            Approvals.None,
+            ExpectedApproval.Require(["[ \"$a\" = \"$b\" ]"])),
+        Case(
+            "test-builtin-guard-with-environment-path-prompts",
+            Bash52("if [ -f \"$f\" ]; then cat \"$f\"; fi"),
+            Approvals.None,
+            ExpectedApproval.Require(["[ -f \"$f\" ]"])),
+        Case(
+            "unattended-test-builtin-guard-with-environment-path-denies",
+            Bash52("if [ -f \"$f\" ]; then cat \"$f\"; fi", interactive: false),
+            Approvals.None,
+            ExpectedApproval.DenyUnattended()),
+        Case(
+            "substitution-command-word-prompts",
+            Bash52("git $(echo push) origin"),
+            Approvals.PersistentAnywhere("git push"),
+            ExpectedApproval.Require(["git $(echo push) origin"])),
+        Case(
+            "unattended-substitution-command-word-denies",
+            Bash52("git $(echo push) origin", interactive: false),
+            Approvals.PersistentAnywhere("git push"),
+            ExpectedApproval.DenyUnattended()),
+        Case(
+            "environment-command-word-prompts",
+            Bash52("git \"$FOO\" origin"),
+            Approvals.PersistentAnywhere("git", "git push"),
+            ExpectedApproval.Require(["git \"$FOO\" origin"])),
+        Case(
+            "unquoted-environment-command-word-prompts",
+            Bash52("git $FOO origin"),
+            Approvals.None,
+            ExpectedApproval.Require(["git $FOO origin"])),
+        Case(
+            "substitution-loop-command-word-prompts",
+            Bash52("for f in $(ls); do git $f; done"),
+            Approvals.None,
+            ExpectedApproval.Require(["git $f"])),
+        Case(
+            "test-builtin-glob-loop-value-prompts",
+            Bash52("for f in src/*; do [ -f \"$f\" ]; done"),
+            Approvals.None,
+            ExpectedApproval.Require(["[ -f \"$f\" ]"])),
+        Case(
+            "test-command-unquoted-environment-value-prompts",
+            Bash52("test -n $FOO"),
+            Approvals.None,
+            ExpectedApproval.Require(["test -n $FOO"])),
+        // The first word that Bash can change decides. Here it has a run-time
+        // value, so the bare glob after it gets no advice either.
+        Case(
+            "environment-command-word-before-glob-prompts",
+            Bash52("git \"$FOO\" *.md"),
+            Approvals.None,
+            ExpectedApproval.Require(["git \"$FOO\" *.md"])),
+        // One command that the model cannot fix keeps the prompt for the call.
+        Case(
+            "test-builtin-environment-value-with-brace-command-prompts",
+            Bash52("[ -n \"$FOO\" ] && git {push,fetch} origin"),
+            Approvals.None,
+            ExpectedApproval.Require(["[ -n \"$FOO\" ]", "git {push,fetch} origin"])),
+        // Positive controls: the source holds the literal words, so the model
+        // can follow the advice, and the correction stays.
+        Case(
+            "brace-command-word-gets-rewrite-correction",
+            Bash52("git {push,fetch} origin"),
+            Approvals.PersistentAnywhere("git push", "git fetch"),
+            ExpectedApproval.Correct()),
+        Case(
+            "unattended-brace-command-word-gets-rewrite-correction",
+            Bash52("git {push,fetch} origin", interactive: false),
+            Approvals.PersistentAnywhere("git push", "git fetch"),
+            ExpectedApproval.Correct()),
+        // A run-time operand after the brace list is not the cause, and an
+        // assignment that the command does not read is not the cause.
+        Case(
+            "brace-command-word-with-environment-operand-gets-rewrite-correction",
+            Bash52("git {push,fetch} origin \"$BRANCH\""),
+            Approvals.PersistentAnywhere("git push", "git fetch"),
+            ExpectedApproval.Correct()),
+        Case(
+            "unattended-brace-command-word-with-environment-operand-gets-rewrite-correction",
+            Bash52("git {push,fetch} origin \"$BRANCH\"", interactive: false),
+            Approvals.PersistentAnywhere("git push", "git fetch"),
+            ExpectedApproval.Correct()),
+        Case(
+            "brace-command-word-after-substitution-assignment-gets-rewrite-correction",
+            Bash52("x=$(date); git {push,fetch} origin"),
+            Approvals.PersistentAnywhere("git push", "git fetch", "date"),
+            ExpectedApproval.Correct(1, "persistent:date")),
+        Case(
+            "literal-loop-command-word-gets-rewrite-correction",
+            Bash("for v in push fetch; do git $v origin; done"),
+            Approvals.PersistentAnywhere("git push", "git fetch"),
+            ExpectedApproval.Correct()),
         // An unquoted word with a bound value can expand to the names in a
         // protected folder. The parser gives no path for it, so the command keeps
         // its assignment digest and needs consent. The literal twin is denied.
