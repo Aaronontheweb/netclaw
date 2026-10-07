@@ -665,9 +665,9 @@ How it works:
    `EvaluateAuthorizationResultAsync` (revisions up to authorization PR 6c).
    The `authorizer` adapter reads `ToolAuthorizer`. `auto` picks the
    production path of the revision.
-3. The probe evaluates 16 shell states (Bash: 3 grant states, interactive or
-   unattended, Approval or Auto; PowerShell 7: 2 grant states, Approval or Auto)
-   and 24 tool states (3 audiences, interactive or unattended, 4 consent modes)
+3. The probe evaluates 21 shell states (Bash: 3 grant states, interactive or
+   unattended, Approval or Auto; Bash 5.2: 5 Approval states, see below;
+   PowerShell 7: 2 grant states, Approval or Auto) and 24 tool states (3 audiences, interactive or unattended, 4 consent modes)
    with the 62 tool inputs of the differential test. After a consent request,
    it also evaluates the retry with a "Once" answer. After a tool consent
    request, it records a chat grant and evaluates the call again. The probe
@@ -684,6 +684,22 @@ in the `netclaw-testrun-<GUID>` temporary folder of the test process with
 `{GUID}`. A `..` path or a basename can show these names. The
 compare step also replaces the parent of the private temporary root, which a
 `..` path can reach. Grant timestamps compare by presence only.
+
+Bash 5.2 states:
+
+- The `bash` states use a Bash host with no proved version, so the parser
+  state is `Unknown`. A production daemon on Bash 5.2 or 5.3 has the fresh
+  no-startup state. Only that state gives literal twins (F1) and the complete
+  launch environment (F3).
+- The `bash52` states use the Bash 5.2 host: no grant, a grant for anywhere, a
+  folder grant in the project, and a chat grant, each interactive, plus an
+  unattended folder grant. Use them for a change to twins, assignments, or
+  launch facts:
+
+```bash
+python3 scripts/authorization-corpus/run.py --base upstream/dev \
+  --states bash52-none-i-approval,bash52-anywhere-i-approval,bash52-project-i-approval,bash52-chat-i-approval,bash52-project-u-approval
+```
 
 Parallel lanes:
 
