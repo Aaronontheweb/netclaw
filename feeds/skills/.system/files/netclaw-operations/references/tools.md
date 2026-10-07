@@ -131,7 +131,7 @@ Personal can reach (`McpServersMode = All`) but has no
 
 To resolve: run `netclaw mcp permissions`, pick the server, switch to the
 Personal audience, press `M` to set a server default (`Approval` is the
-safe choice), `S` to save, then restart the daemon. Repeat for each
+safe choice), `S` to save (a running daemon applies the change automatically). Repeat for each
 audience you want to tighten. `doctor` stops warning once the default is
 set.
 

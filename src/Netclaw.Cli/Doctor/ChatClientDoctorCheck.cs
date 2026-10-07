@@ -144,7 +144,8 @@ public sealed class ChatClientDoctorCheck : IDoctorCheck
                 return DoctorCheckResult.Error(
                     CheckName,
                     $"Invalid inference configuration: {missingCredential} Daemon startup will fail until this is resolved.",
-                    $"Run `netclaw provider` and fix the credentials for '{model.Provider}', or update `secrets.json`, then rerun `netclaw doctor`.");
+                    $"Run `netclaw provider` to fix the credentials for '{model.Provider}', or `netclaw provider add {model.Provider} {provider.Type} --api-key <key>` to overwrite them in place. "
+                    + "Editing `secrets.json` by hand does not reload a running daemon: run `netclaw daemon stop` then `netclaw daemon start`. Then rerun `netclaw doctor`.");
             }
         }
 

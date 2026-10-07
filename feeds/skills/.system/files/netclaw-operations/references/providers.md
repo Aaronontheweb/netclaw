@@ -54,8 +54,8 @@ report the exact role and missing definition. Repair the role manually or use
 `netclaw model set`; `netclaw doctor --fix` does not guess a replacement.
 
 If the operator reports seeing that banner, do not troubleshoot model behavior;
-the daemon has no working provider. Direct them through the recovery steps and
-restart the daemon after the provider/model config is fixed. `netclaw doctor`
+the daemon has no working provider. Direct them through the recovery steps. A
+running daemon applies the fixed provider/model config automatically. `netclaw doctor`
 reports the state as a warn-level "Chat Client" item.
 
 Malformed provider configuration, such as a declared provider missing required

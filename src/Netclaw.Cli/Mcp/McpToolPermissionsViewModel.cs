@@ -583,7 +583,7 @@ public sealed class McpToolPermissionsViewModel : ReactiveViewModel
             _pendingServerDefaults.Clear();
             _pendingToolOverrides.Clear();
 
-            StatusMessage.Value = "✓ Saved to netclaw.json. The daemon is applying the change.";
+            StatusMessage.Value = $"✓ Saved to netclaw.json. {ConfigFileHelper.DaemonAppliesChange}";
             CurrentState.Value = ToolPermissionsState.ToolGrid;
             NotifyStateChanged();
             return true;

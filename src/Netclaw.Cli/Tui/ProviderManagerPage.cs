@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Cli.Config;
 using Netclaw.Configuration;
 using Netclaw.Providers;
 using Netclaw.Providers.OAuth;
@@ -861,7 +862,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
         children.WithChild(new TextNode("").Height(1));
         children.WithChild(new TextNode("  Renames the provider and cascades the change to any model")
             .WithForeground(Color.Gray));
-        children.WithChild(new TextNode("  role(s) that reference it. The daemon applies the change automatically.")
+        children.WithChild(new TextNode($"  role(s) that reference it. {ConfigFileHelper.DaemonAppliesChange}")
             .WithForeground(Color.Gray));
 
         return children;

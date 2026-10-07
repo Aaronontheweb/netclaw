@@ -12,44 +12,42 @@ public sealed class CliCommandReferenceTests
 {
     // Messages that tell the user to run `netclaw run` or `netclaw provider fix` shipped
     // because nothing checked them against the commands the CLI really has. This scans the
-    // string literals of every shipped project for a `netclaw <command> [<subcommand>]`
-    // reference (in backticks or quotes, in parentheses, or after "Run: " / "Usage: ").
-    // The top-level command must be in CliArgsParser.KnownCommands. The subcommand must
-    // appear as a quoted literal somewhere in the CLI source, which is where each command
-    // dispatches on it.
-    private static readonly Regex StringLiteral = new("\"(?:\\\\.|[^\"\\\\\\r\\n])*\"", RegexOptions.Compiled);
-
+    // shipped C# source and the system-skill markdown for a `netclaw <command> [<subcommand>]`
+    // reference after a backtick, single quote, parenthesis, an indented string start or a verb such as "Run".
+    // The top-level command must be in CliArgsParser.KnownCommands. The subcommand must appear
+    // as a quoted literal in that command's own source file (<Command>Command*.cs; the daemon
+    // verbs dispatch from Program.cs). Commands with no such file take no subcommand to check.
     private static readonly Regex CommandReference = new(
-        @"(?:[`'(]|Run: |Usage: )netclaw (?<command>[a-z][a-z0-9-]*)(?: (?<sub>[a-z][a-z0-9-]*))?",
+        @"(?:[`'(]\s*|""\s+|\b(?:[Rr]un|[Uu]se|[Tt]ry|[Ee]xecute|[Tt]ype|[Vv]ia|[Ww]ith|[Uu]sage):? )netclaw (?<command>[A-Za-z][A-Za-z0-9-]*)(?: (?<sub>[a-z][a-z0-9-]*))?",
         RegexOptions.Compiled);
+
+    private static readonly Regex StringLiteral = new("\"(?:\\\\.|[^\"\\\\\\r\\n])*\"", RegexOptions.Compiled);
 
     [Fact]
     public void User_facing_messages_only_name_commands_the_cli_has()
     {
-        var srcDir = Path.Combine(FindRepoRoot(), "src");
-        var cliSource = string.Concat(SourceFiles(Path.Combine(srcDir, "Netclaw.Cli")).Select(File.ReadAllText));
-        var subcommands = StringLiteral.Matches(cliSource)
-            .Select(static m => m.Value.Trim('"'))
-            .ToHashSet(StringComparer.Ordinal);
+        var root = FindRepoRoot();
+        var srcDir = Path.Combine(root, "src");
+        var cliDir = Path.Combine(srcDir, "Netclaw.Cli");
+        var cliFiles = SourceFiles(srcDir).Where(f => f.StartsWith(cliDir, StringComparison.Ordinal)).ToList();
 
         var offenders = new List<string>();
-        foreach (var file in SourceFiles(srcDir))
+        foreach (var file in SourceFiles(srcDir).Concat(
+                     Directory.EnumerateFiles(Path.Combine(root, "feeds"), "*.md", SearchOption.AllDirectories)))
         {
             var lineNumber = 0;
             foreach (var line in File.ReadLines(file))
             {
                 lineNumber++;
-                foreach (Match literal in StringLiteral.Matches(line))
+                if (line.TrimStart().StartsWith("//", StringComparison.Ordinal))
+                    continue;
+
+                foreach (Match reference in CommandReference.Matches(line))
                 {
-                    foreach (Match reference in CommandReference.Matches(literal.Value))
-                    {
-                        var command = reference.Groups["command"].Value;
-                        var sub = reference.Groups["sub"].Value;
-                        var known = CliArgsParser.KnownCommands.Contains(command)
-                            && (sub.Length == 0 || subcommands.Contains(sub));
-                        if (!known)
-                            offenders.Add($"{Path.GetRelativePath(srcDir, file)}:{lineNumber} netclaw {command} {sub}".TrimEnd());
-                    }
+                    var command = reference.Groups["command"].Value;
+                    var sub = reference.Groups["sub"].Value;
+                    if (!IsKnown(command, sub, cliFiles))
+                        offenders.Add($"{Path.GetRelativePath(root, file)}:{lineNumber} netclaw {command} {sub}".TrimEnd());
                 }
             }
         }
@@ -59,15 +57,35 @@ public sealed class CliCommandReferenceTests
             + string.Join(Environment.NewLine, offenders));
     }
 
-    private static IEnumerable<string> SourceFiles(string root)
+    private static bool IsKnown(string command, string sub, IReadOnlyList<string> cliFiles)
     {
-        var separator = Path.DirectorySeparatorChar;
-        return Directory.EnumerateFiles(root, "*.cs", SearchOption.AllDirectories)
-            .Where(path => !path.Contains($"{separator}obj{separator}", StringComparison.Ordinal)
-                && !path.Contains($"{separator}bin{separator}", StringComparison.Ordinal)
-                && !path.Contains("Tests", StringComparison.Ordinal)
-                && !path.Contains("SmokeLlmServer", StringComparison.Ordinal));
+        if (!CliArgsParser.KnownCommands.Contains(command))
+            return false;
+
+        if (sub.Length == 0)
+            return true;
+
+        var pascal = char.ToUpperInvariant(command[0]) + command[1..];
+        var dispatchers = cliFiles
+            .Where(f => Path.GetFileName(f).StartsWith($"{pascal}Command", StringComparison.Ordinal)
+                || (command == "daemon" && Path.GetFileName(f) == "Program.cs"))
+            .ToList();
+        if (dispatchers.Count == 0)
+            return true;
+
+        return dispatchers.Any(f => StringLiteral.Matches(File.ReadAllText(f))
+            .Any(m => m.Value.Trim('"') == sub));
     }
+
+    private static IEnumerable<string> SourceFiles(string srcDir)
+        => Directory.EnumerateFiles(srcDir, "*.cs", SearchOption.AllDirectories)
+            .Where(path =>
+            {
+                var segments = Path.GetRelativePath(srcDir, path).Split(Path.DirectorySeparatorChar);
+                return !segments.Contains("obj") && !segments.Contains("bin")
+                    && !segments[0].EndsWith("Tests", StringComparison.Ordinal)
+                    && segments[0] != "Netclaw.SmokeLlmServer";
+            });
 
     private static string FindRepoRoot()
     {
