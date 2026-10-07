@@ -132,6 +132,26 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
         Assert.DoesNotContain("Cannot find netclawd", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public async Task StopAsync_DoesNotKill_AndExplains_WhenSupervised_AndDaemonRunning()
+    {
+        // The supervisor restarts a stopped daemon within seconds, so a "stop" here would be
+        // undone. Report that the supervisor owns it (the same pattern as Start) and leave it alone.
+        using var holder = new FileStream(
+            _paths.LockFilePath,
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None);
+
+        var supervised = new DaemonManager(_paths, TimeProvider.System, new FakeSupervisor(true));
+
+        var result = await supervised.StopAsync("cli-stop", CancellationToken.None);
+
+        Assert.False(result.Success);
+        Assert.Contains("managed by container supervisor", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Stop the container", result.Message, StringComparison.Ordinal);
+    }
+
     private sealed class FakeSupervisor(bool supervised) : IContainerSupervisor
     {
         public bool IsExternallySupervised => supervised;

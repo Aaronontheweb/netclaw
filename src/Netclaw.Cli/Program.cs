@@ -515,13 +515,18 @@ static async Task RunAsync(string[] args)
         switch (subcommand)
         {
             case "start":
-                var startResult = manager.Start();
+                var startResult = await UpdateCommand.StartDaemonAsync(
+                    new UpdateCommand.DaemonProcessLifecycle(manager),
+                    new SystemdUserService());
                 WriteDaemonResult(startResult);
                 return;
 
             case "stop":
-                var stopResult = await manager.StopAsync("cli-stop", CancellationToken.None);
-                WriteDaemonResult(stopResult);
+                var stopResult = await UpdateCommand.StopDaemonAsync(
+                    new UpdateCommand.DaemonProcessLifecycle(manager),
+                    new SystemdUserService(),
+                    "cli-stop");
+                WriteDaemonResult(new DaemonResult(stopResult.Success, stopResult.Message));
                 return;
 
             case "status":

@@ -39,7 +39,7 @@ public sealed class SystemdUserServiceTests : IDisposable
         var ownership = await service.GetOwnershipAsync();
 
         Assert.Equal(SystemdUserServiceOwnershipKind.Managed, ownership.Kind);
-        Assert.Equal([("systemctl", "--user is-active --quiet netclaw.service")], runner.Commands);
+        Assert.Equal([("systemctl", "--user is-active netclaw.service")], runner.Commands);
     }
 
     [Fact]
@@ -56,10 +56,24 @@ public sealed class SystemdUserServiceTests : IDisposable
         Assert.Equal(SystemdUserServiceOwnershipKind.Managed, ownership.Kind);
         Assert.Equal(
             [
-                ("systemctl", "--user is-active --quiet netclaw.service"),
+                ("systemctl", "--user is-active netclaw.service"),
                 ("systemctl", "--user is-enabled --quiet netclaw.service")
             ],
             runner.Commands);
+    }
+
+    [Fact]
+    public async Task GetOwnershipAsync_ReturnsUnmanaged_WhenUnitIsAlreadyStopping()
+    {
+        var unitPath = WriteUnit();
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(new SystemCommandResult(3, string.Empty, StandardOutput: "deactivating\n"));
+        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true);
+
+        var ownership = await service.GetOwnershipAsync();
+
+        Assert.Equal(SystemdUserServiceOwnershipKind.Unmanaged, ownership.Kind);
+        Assert.Equal([("systemctl", "--user is-active netclaw.service")], runner.Commands);
     }
 
     [Fact]

@@ -47,9 +47,14 @@ internal sealed class SystemdUserService(
         if (!File.Exists(_unitFilePath))
             return SystemdUserServiceOwnership.Unmanaged("No netclaw systemd user service is installed.");
 
-        var active = await _commandRunner.RunAsync("systemctl", $"--user is-active --quiet {ServiceName}");
+        var active = await _commandRunner.RunAsync("systemctl", $"--user is-active {ServiceName}");
         if (active.Success)
             return SystemdUserServiceOwnership.Managed("netclaw.service is active.");
+
+        // The unit's ExecStop= runs `netclaw daemon stop`, so that process is part of a stop job
+        // that systemd already started. Asking systemd to stop the unit again would wait on itself.
+        if (active.StandardOutput.Trim() == "deactivating")
+            return SystemdUserServiceOwnership.Unmanaged("netclaw.service is already stopping.");
 
         var enabled = await _commandRunner.RunAsync("systemctl", $"--user is-enabled --quiet {ServiceName}");
         if (enabled.Success)
@@ -97,7 +102,8 @@ internal interface ISystemCommandRunner
 internal sealed record SystemCommandResult(
     int ExitCode,
     string StandardError,
-    string? ExecutionError = null)
+    string? ExecutionError = null,
+    string StandardOutput = "")
 {
     public bool Success => ExecutionError is null && ExitCode == 0;
 
@@ -129,10 +135,12 @@ internal sealed class ProcessSystemCommandRunner : ISystemCommandRunner
             if (proc is null)
                 return new SystemCommandResult(-1, string.Empty, $"Failed to start command '{command}'.");
 
+            var stdoutTask = proc.StandardOutput.ReadToEndAsync();
             var stderr = await proc.StandardError.ReadToEndAsync();
+            var stdout = await stdoutTask;
             await proc.WaitForExitAsync();
 
-            return new SystemCommandResult(proc.ExitCode, stderr);
+            return new SystemCommandResult(proc.ExitCode, stderr, StandardOutput: stdout);
         }
         catch (Exception ex)
         {

@@ -361,6 +361,19 @@ internal static class UpdateCommand
                 daemonStatus.Message);
         }
 
+        return await StopDaemonAsync(manager, systemdService, "update");
+    }
+
+    /// <summary>
+    /// Stops the daemon through whatever owns it: the installed systemd user unit when it
+    /// manages the daemon, otherwise the detached process. Going around an installed unit
+    /// is undone by its <c>Restart=always</c> a few seconds later.
+    /// </summary>
+    internal static async Task<UpdateDaemonStopResult> StopDaemonAsync(
+        IDaemonProcessLifecycle manager,
+        SystemdUserService systemdService,
+        string reason)
+    {
         var systemdOwnership = await systemdService.GetOwnershipAsync();
         switch (systemdOwnership.Kind)
         {
@@ -382,7 +395,7 @@ internal static class UpdateCommand
                 var remainingStatus = manager.GetStatus();
                 if (remainingStatus.IsRunning)
                 {
-                    var detachedStop = await manager.StopAsync("update", CancellationToken.None);
+                    var detachedStop = await manager.StopAsync(reason, CancellationToken.None);
                     if (!detachedStop.Success)
                     {
                         return UpdateDaemonStopResult.Failed(
@@ -400,12 +413,30 @@ internal static class UpdateCommand
             case SystemdUserServiceOwnershipKind.Unmanaged:
             default:
             {
-                var detachedStop = await manager.StopAsync("update", CancellationToken.None);
+                var detachedStop = await manager.StopAsync(reason, CancellationToken.None);
                 return detachedStop.Success
                     ? UpdateDaemonStopResult.Succeeded(UpdateDaemonOwner.DetachedProcess, detachedStop.Message)
                     : UpdateDaemonStopResult.Failed(UpdateDaemonOwner.DetachedProcess, detachedStop.Message);
             }
         }
+    }
+
+    /// <summary>
+    /// Starts the daemon through whatever owns it. An installed systemd user unit starts the
+    /// daemon itself, so the CLI never spawns a second, detached copy beside it.
+    /// </summary>
+    internal static async Task<DaemonResult> StartDaemonAsync(
+        IDaemonProcessLifecycle manager,
+        SystemdUserService systemdService)
+    {
+        var systemdOwnership = await systemdService.GetOwnershipAsync();
+        return systemdOwnership.Kind switch
+        {
+            SystemdUserServiceOwnershipKind.Unknown => new DaemonResult(false,
+                $"Could not determine whether systemd owns the daemon lifecycle: {systemdOwnership.Message}"),
+            SystemdUserServiceOwnershipKind.Managed => await systemdService.StartAsync(),
+            _ => manager.Start()
+        };
     }
 
     internal static async Task<DaemonResult> StartDaemonAfterUpdateAsync(
@@ -434,7 +465,7 @@ internal static class UpdateCommand
             ?? new SystemdUserService();
     }
 
-    private sealed class DaemonProcessLifecycle(DaemonManager manager) : IDaemonProcessLifecycle
+    internal sealed class DaemonProcessLifecycle(DaemonManager manager) : IDaemonProcessLifecycle
     {
         public DaemonStatus GetStatus() => manager.GetStatus();
 
