@@ -2710,11 +2710,12 @@ public static class ShellApprovalCases
             ExpectedApproval.Require(["git fetch origin"], approvalMatches: ["session:git push origin"])),
         // SECURITY: a twin keeps the shell-state assignments of its source
         // command, so a grant without the same assignments does not cover it.
+        // The exported assignment reaches each run.
         Case(
             "assigned-loop-twins-keep-assignment-qualification",
-            Bash52("x=1; for n in a b; do gh api x/$n; done"),
-            Approvals.Session("gh api"),
-            ExpectedApproval.Require(["gh api"])),
+            Bash52("x=1; export x; for n in a b; do gh api x/$n; done"),
+            Approvals.Session("gh api", "export x"),
+            ExpectedApproval.Require(["export x", "gh api"])),
         // F2: a data command over a listing keeps its exemption.
         Case(
             "cd-loop-over-listing-output-stays-allowed",

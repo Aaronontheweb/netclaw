@@ -422,7 +422,7 @@
 | loop-program-word-gets-no-twin | Bash52 | Personal | Project | Interactive | for p in /bin/rm; do $p x; done | persistent[anywhere]:rm, persistent[anywhere]:/bin/rm | RequiresApproval | approval required | none | Yes |
 | loop-verb-twins-use-reviewed-safe-policy | Bash52 | Personal | Project | Interactive | for v in status log; do git $v; done | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | loop-verb-twins-prompt-for-uncovered-twin | Bash52 | Personal | Project | Interactive | for v in push fetch; do git $v origin; done | session[this-chat]:git push | RequiresApproval | approval required | git fetch origin | No |
-| assigned-loop-twins-keep-assignment-qualification | Bash52 | Personal | Project | Interactive | x=1; for n in a b; do gh api x/$n; done | session[this-chat]:gh api | RequiresApproval | approval required | gh api | No |
+| assigned-loop-twins-keep-assignment-qualification | Bash52 | Personal | Project | Interactive | x=1; export x; for n in a b; do gh api x/$n; done | session[this-chat]:gh api, session[this-chat]:export x | RequiresApproval | approval required | export x, gh api | No |
 | cd-loop-over-listing-output-stays-allowed | Bash52 | Personal | Project | Interactive | cd sub && for f in $(ls); do echo "$f"; done | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | continuation-inside-substitution-shows-command | Bash52 | Personal | Project | Interactive | echo "$\\n(touch x)" | none | RequiresApproval | approval required | touch | No |
 | hash-after-double-quote-shows-command | Bash52 | Personal | Project | Interactive | echo "a"# ; touch x | none | RequiresApproval | approval required | touch | No |
