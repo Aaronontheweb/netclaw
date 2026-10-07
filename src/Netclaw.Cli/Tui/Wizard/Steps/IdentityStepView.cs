@@ -132,6 +132,8 @@ public sealed class IdentityStepView : IWizardStepView
                 var error = IdentityStepViewModel.ValidateTimezone(timezone);
                 if (error is not null)
                 {
+                    // Submit clears the field; keep the rejected text so a second Enter is rejected again.
+                    _timezoneInput.Text = timezone;
                     callbacks.ShowValidationError(error);
                     return;
                 }

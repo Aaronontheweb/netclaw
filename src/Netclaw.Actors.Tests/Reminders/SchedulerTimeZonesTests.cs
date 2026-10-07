@@ -17,10 +17,7 @@ public sealed class SchedulerTimeZonesTests
         id => zoneIds.Contains(id, StringComparer.Ordinal)
             ? TimeZoneInfo.CreateCustomTimeZone(id, TimeSpan.Zero, id, id)
             : throw new TimeZoneNotFoundException(id),
-        () => zoneIds.Length > 0,
         _ => null);
-
-    private static readonly SystemTimeZones HostWithoutTzdata = HostWith();
 
     [Fact]
     public void Known_zone_resolves()
@@ -35,28 +32,18 @@ public sealed class SchedulerTimeZonesTests
     {
         Assert.False(SchedulerTimeZones.TryResolve("Mars/Olympus", out _, out var error, HostWith("America/Chicago")));
         Assert.Equal(
-            "Unknown time zone 'Mars/Olympus' on this system. Use an IANA time zone id without spaces (e.g. 'Europe/Brussels').",
-            error);
-    }
-
-    [Fact]
-    public void Valid_zone_on_a_host_without_tzdata_says_the_database_is_missing()
-    {
-        Assert.False(SchedulerTimeZones.TryResolve("America/Chicago", out _, out var error, HostWithoutTzdata));
-        Assert.Equal(
-            "Unknown time zone 'America/Chicago': this system has no time zone database (tzdata appears to be missing). " +
-            "Install it, for example 'apt-get install tzdata' on Debian or Ubuntu, then try again.",
+            "Unknown time zone 'Mars/Olympus'. Use an IANA id such as America/Chicago.",
             error);
     }
 
     [Fact]
     public void Invalid_zone_data_is_reported_as_invalid()
     {
-        var host = new SystemTimeZones(_ => throw new InvalidTimeZoneException("corrupt"), () => true, _ => null);
+        var host = new SystemTimeZones(_ => throw new InvalidTimeZoneException("corrupt"), _ => null);
 
         Assert.False(SchedulerTimeZones.TryResolve("Europe/Brussels", out _, out var error, host));
         Assert.Equal(
-            "Invalid time zone 'Europe/Brussels' on this system. Use an IANA time zone id without spaces (e.g. 'Europe/Brussels').",
+            "Invalid time zone 'Europe/Brussels'. Use an IANA id such as America/Chicago.",
             error);
     }
 
@@ -66,10 +53,10 @@ public sealed class SchedulerTimeZonesTests
     [InlineData(" ")]
     public void Ids_the_scheduler_cannot_carry_are_rejected_even_when_the_host_knows_them(string zoneId)
     {
-        var host = new SystemTimeZones(id => Chicago, () => true, _ => null);
+        var host = new SystemTimeZones(id => Chicago, _ => null);
 
         Assert.False(SchedulerTimeZones.TryResolve(zoneId, out _, out var error, host));
-        Assert.Contains("empty or contains spaces", error, StringComparison.Ordinal);
+        Assert.Contains("empty or has spaces", error, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -107,7 +94,7 @@ public sealed class SchedulerTimeZonesTests
 
         Assert.False(parsed);
         Assert.Equal(
-            "Invalid CRON_TZ prefix. Unknown time zone 'Mars/Olympus' on this system. Use an IANA time zone id without spaces (e.g. 'Europe/Brussels').",
+            "Invalid CRON_TZ prefix. Unknown time zone 'Mars/Olympus'. Use an IANA id such as America/Chicago.",
             prefixError);
     }
 

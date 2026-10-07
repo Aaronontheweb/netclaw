@@ -11,12 +11,10 @@ namespace Netclaw.Actors.Reminders;
 /// </summary>
 public sealed record SystemTimeZones(
     Func<string, TimeZoneInfo> Find,
-    Func<bool> AnyZones,
     Func<string, string?> WindowsIdToIanaId)
 {
     public static SystemTimeZones Current { get; } = new(
         TimeZoneInfo.FindSystemTimeZoneById,
-        () => TimeZoneInfo.GetSystemTimeZones().Count > 0,
         windowsId => TimeZoneInfo.TryConvertWindowsIdToIanaId(windowsId, out var ianaId) ? ianaId : null);
 }
 
@@ -27,11 +25,11 @@ public sealed record SystemTimeZones(
 /// </summary>
 public static class SchedulerTimeZones
 {
-    private const string ExampleHint = "Use an IANA time zone id without spaces (e.g. 'Europe/Brussels').";
+    private const string ExampleHint = "Use an IANA id such as America/Chicago.";
 
     /// <summary>
     /// Resolves <paramref name="zoneId"/>. On failure, <paramref name="error"/> says why: the id has spaces,
-    /// the zone is unknown, or the host has no time zone database at all.
+    /// the zone is unknown, or its data is invalid.
     /// </summary>
     public static bool TryResolve(
         string zoneId,
@@ -47,7 +45,7 @@ public static class SchedulerTimeZones
         // (a Windows name such as "Eastern Standard Time") can never be used.
         if (string.IsNullOrWhiteSpace(zoneId) || zoneId.Any(char.IsWhiteSpace))
         {
-            error = $"Time zone '{zoneId}' is not usable: it is empty or contains spaces. {ExampleHint}";
+            error = $"Time zone '{zoneId}' is empty or has spaces. {ExampleHint}";
             return false;
         }
 
@@ -58,14 +56,11 @@ public static class SchedulerTimeZones
         }
         catch (TimeZoneNotFoundException)
         {
-            error = zones.AnyZones()
-                ? $"Unknown time zone '{zoneId}' on this system. {ExampleHint}"
-                : $"Unknown time zone '{zoneId}': this system has no time zone database (tzdata appears to be missing). " +
-                  "Install it, for example 'apt-get install tzdata' on Debian or Ubuntu, then try again.";
+            error = $"Unknown time zone '{zoneId}'. {ExampleHint}";
         }
         catch (InvalidTimeZoneException)
         {
-            error = $"Invalid time zone '{zoneId}' on this system. {ExampleHint}";
+            error = $"Invalid time zone '{zoneId}'. {ExampleHint}";
         }
 
         return false;

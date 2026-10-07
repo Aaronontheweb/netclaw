@@ -197,7 +197,7 @@ public class SetReminderToolTests : TestKit
         }, TestToolExecutionContext.CreateUnbound(), TestContext.Current.CancellationToken);
 
         Assert.Contains("Error:", result);
-        Assert.Contains("Unknown time zone 'Not/AZone' on this system", result);
+        Assert.Contains("Unknown time zone 'Not/AZone'.", result);
         Assert.DoesNotContain("Invalid cron expression", result);
         await probe.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(100), TestContext.Current.CancellationToken);
     }
