@@ -451,8 +451,8 @@ internal static class ReminderCommand
                 return "Interval reminders require schedule.intervalTicks.";
             case ReminderScheduleType.Cron when string.IsNullOrWhiteSpace(definition.Schedule.CronExpression):
                 return "Cron reminders require schedule.cronExpression.";
-            case ReminderScheduleType.Cron when !CronScheduleHelper.TryParse(definition.Schedule.CronExpression!):
-                return "Cron expression is invalid.";
+            case ReminderScheduleType.Cron when !CronScheduleHelper.TryParse(definition.Schedule.CronExpression!, out _, out var prefixError):
+                return prefixError ?? "Cron expression is invalid.";
             default:
                 return null;
         }
