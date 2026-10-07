@@ -101,9 +101,10 @@ public sealed class IdentityRedoPageTests : IDisposable
         var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await RedoIdentityAsync(app, terminal, input, cts.Token, () => input.EnqueueKey(ConsoleKey.Q, control: true));
+        await RedoIdentityAsync(app, terminal, input, cts.Token, () => Keys(() => input.EnqueueKey(ConsoleKey.Q, control: true)));
 
         Assert.True(terminal.Contains("Identity updated."), $"Screen:\n{terminal}");
+        Assert.Equal(1, CountOccurrences(terminal.ToString(), "Identity updated."));
         Assert.True(terminal.Contains("Press Enter to start the guided identity chat, or Esc to skip it."),
             $"Screen:\n{terminal}");
         Assert.True(terminal.Contains("[Enter] Start guided identity chat"), $"Screen:\n{terminal}");
@@ -119,7 +120,7 @@ public sealed class IdentityRedoPageTests : IDisposable
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         // Default completion action: start guided chat.
-        await RedoIdentityAsync(app, terminal, input, cts.Token, () => input.EnqueueKey(ConsoleKey.Enter));
+        await RedoIdentityAsync(app, terminal, input, cts.Token, () => Keys(() => input.EnqueueKey(ConsoleKey.Enter)));
 
         Assert.True(landing.Entered, "Enter on the saved screen must navigate to chat.");
         Assert.False(string.IsNullOrWhiteSpace(landing.InitialMessage));
@@ -144,7 +145,7 @@ public sealed class IdentityRedoPageTests : IDisposable
         var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await RedoIdentityAsync(app, terminal, input, cts.Token, () => input.EnqueueKey(ConsoleKey.Escape));
+        await RedoIdentityAsync(app, terminal, input, cts.Token, () => Keys(() => input.EnqueueKey(ConsoleKey.Escape)));
 
         Assert.True(File.Exists(_paths.SoulPath), "Skip must not undo the saved identity.");
         Assert.False(landing.Entered, "Skip must not launch chat.");
@@ -162,15 +163,16 @@ public sealed class IdentityRedoPageTests : IDisposable
         var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await RedoIdentityAsync(app, terminal, input, cts.Token, () =>
+        await RedoIdentityAsync(app, terminal, input, cts.Token, () => Keys(() =>
         {
             input.EnqueueKey(ConsoleKey.Enter); // would start chat if the save had succeeded
             input.EnqueueKey(ConsoleKey.Q, control: true);
-        });
+        }));
 
         Assert.False(landing.Entered, "A failed save must not launch chat.");
         Assert.Null(landing.NavigationState.InitialMessage);
-        Assert.True(terminal.Contains("Identity not saved"), $"Screen:\n{terminal}");
+        Assert.True(terminal.Contains("Couldn't write SOUL.md: permission denied. Fix it and press Enter to retry."),
+            $"Screen:\n{terminal}");
         Assert.False(terminal.Contains("Start guided identity chat"), $"Screen:\n{terminal}");
     }
 
@@ -187,11 +189,70 @@ public sealed class IdentityRedoPageTests : IDisposable
         var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await RedoIdentityAsync(app, terminal, input, cts.Token, () => input.EnqueueKey(ConsoleKey.Enter));
+        await RedoIdentityAsync(app, terminal, input, cts.Token, () => Keys(() => input.EnqueueKey(ConsoleKey.Enter)));
 
         Assert.True(landing.Entered);
         Assert.Equal(config, File.ReadAllText(_paths.NetclawConfigPath));
         Assert.Equal(secrets, File.ReadAllText(_paths.SecretsPath));
+    }
+
+    [Fact]
+    public async Task PartialWrite_NamesTheFailedFile_AndRetrySavesAndStartsChat()
+    {
+        // SOUL.md is written first; a directory where TOOLING.md belongs fails the second write.
+        Directory.CreateDirectory(_paths.ToolingPath);
+
+        var landing = new ChatLanding();
+        var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await RedoIdentityAsync(app, terminal, input, cts.Token, async () =>
+        {
+            await WaitForTextAsync(terminal, "Couldn't write TOOLING.md", cts.Token);
+
+            Assert.True(File.Exists(_paths.SoulPath), "The first file was written before the failure.");
+            Assert.False(landing.Entered);
+            Assert.False(terminal.Contains("Start guided identity chat"), $"Screen:\n{terminal}");
+
+            Directory.Delete(_paths.ToolingPath);
+            input.EnqueueKey(ConsoleKey.Enter); // retry the save
+            await WaitForTextAsync(terminal, "Start guided identity chat", cts.Token);
+            Assert.False(terminal.Contains("Couldn't write"), $"Screen:\n{terminal}");
+
+            input.EnqueueKey(ConsoleKey.Enter); // start the guided chat
+        });
+
+        Assert.True(landing.Entered);
+        Assert.False(string.IsNullOrWhiteSpace(landing.InitialMessage));
+        Assert.True(File.Exists(_paths.ToolingPath));
+    }
+
+    [Fact]
+    public void ChatRoute_IsTheRouteTheHostsRegister()
+        => Assert.Equal("/chat", ChatViewModel.Route);
+
+    private static Task Keys(Action enqueue)
+    {
+        enqueue();
+        return Task.CompletedTask;
+    }
+
+    private static async Task WaitForTextAsync(VirtualTerminal terminal, string text, CancellationToken ct)
+    {
+        while (!terminal.Contains(text))
+        {
+            ct.ThrowIfCancellationRequested();
+            await Task.Yield();
+        }
+    }
+
+    private static int CountOccurrences(string haystack, string needle)
+    {
+        var count = 0;
+        for (var i = haystack.IndexOf(needle, StringComparison.Ordinal); i >= 0;
+             i = haystack.IndexOf(needle, i + needle.Length, StringComparison.Ordinal))
+            count++;
+        return count;
     }
 
     // Menu (first item: Redo identity setup) -> agent name -> communication style
@@ -203,7 +264,7 @@ public sealed class IdentityRedoPageTests : IDisposable
         VirtualTerminal terminal,
         VirtualInputSource input,
         CancellationToken ct,
-        Action completionKeys)
+        Func<Task> completion)
     {
         var run = app.RunAsync(ct);
 
@@ -221,7 +282,7 @@ public sealed class IdentityRedoPageTests : IDisposable
         input.EnqueueString("Pat");
         input.EnqueueKey(ConsoleKey.Enter);
         input.EnqueueKey(ConsoleKey.Enter); // timezone default -> save
-        completionKeys();
+        await completion();
 
         await run;
     }
@@ -256,7 +317,7 @@ public sealed class IdentityRedoPageTests : IDisposable
                 _ => new IdentityRedoPage(),
                 _ => new IdentityRedoViewModel(_paths, landing.NavigationState));
             builder.RegisterRoute<StubChatPage, StubChatViewModel>(
-                IdentityRedoViewModel.ChatRoute,
+                ChatViewModel.Route,
                 _ => new StubChatPage(),
                 _ => new StubChatViewModel(landing));
         });

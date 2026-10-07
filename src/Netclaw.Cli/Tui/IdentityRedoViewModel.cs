@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.RegularExpressions;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Tui.Wizard;
 using Netclaw.Cli.Tui.Wizard.Steps;
@@ -45,8 +46,6 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         _orchestrator = new WizardOrchestrator([_step], _context, singleStepMode: true);
     }
 
-    public const string ChatRoute = "/chat";
-
     public WizardContext Context => _context;
     public IdentityStepViewModel Step => _step;
     public IdentityStepView StepView { get; } = new();
@@ -76,16 +75,27 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
-            // Stay on the form without offering chat: nothing was saved, so there is no
-            // updated identity for the guided interview to build on.
-            _context.StatusMessage.Value = $"Identity not saved: {ex.Message}";
+            // Stay on the form without offering chat: the identity files may be only
+            // partly written, so the guided interview has no complete identity to build
+            // on. Enter retries the write.
+            _context.StatusMessage.Value = DescribeWriteFailure(ex);
             NotifyContentChanged();
             return;
         }
 
         IsSaved.Value = true;
-        _context.StatusMessage.Value = "Identity updated.";
+        _context.StatusMessage.Value = "";
         NotifyContentChanged();
+    }
+
+    // The framework message quotes the full path and is clipped on one status line, so
+    // lead with the file name and a short reason.
+    private static string DescribeWriteFailure(Exception ex)
+    {
+        var reason = ex is UnauthorizedAccessException ? "permission denied" : "write failed";
+        var quoted = Regex.Match(ex.Message, "'([^']+)'");
+        var target = quoted.Success ? Path.GetFileName(quoted.Groups[1].Value) : "the identity files";
+        return $"Couldn't write {target}: {reason}. Fix it and press Enter to retry.";
     }
 
     /// <summary>
@@ -95,7 +105,7 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
     private void StartGuidedChat()
     {
         _chatNavigationState.InitialMessage = _step.BuildOnboardingTrigger(_paths);
-        Navigate?.Invoke(ChatRoute);
+        Navigate?.Invoke(ChatViewModel.Route);
     }
 
     public void GoBack()

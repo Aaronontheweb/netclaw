@@ -25,6 +25,16 @@ else
   echo "  ok  SOUL.md has the updated user name"
 fi
 
+echo "init-redo-chat: checking the redo chat sent a turn to the model (daemon log count)..."
+before="$(tr -d '[:space:]' < "${NETCLAW_HOME}/llm.before")"
+after="$(tr -d '[:space:]' < "${NETCLAW_HOME}/llm.after")"
+if (( after > before )); then
+  echo "  ok  daemon LLM calls grew (${before} -> ${after})"
+else
+  echo "FAIL: no new daemon LLM call after the redo chat started (${before} -> ${after})." >&2
+  assert_fail=1
+fi
+
 echo "init-redo-chat: checking the provider survived the redo..."
 config_json="$(read_config_json)"
 assert_field '.Providers["openai-compatible"].Type' 'openai-compatible' "$config_json" || :
