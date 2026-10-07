@@ -51,6 +51,7 @@ public sealed class DaemonManagerInstallTests : IDisposable
         _dir.Dispose();
     }
 
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
     public async Task Install_WithoutUserSystemd_ExplainsAndWritesNothing()
     {
@@ -71,6 +72,7 @@ public sealed class DaemonManagerInstallTests : IDisposable
         Assert.False(File.Exists(_paths.DaemonEnvironmentFilePath));
     }
 
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
     public async Task Install_WithMissingSystemctl_ExplainsAndWritesNothing()
     {
@@ -86,6 +88,7 @@ public sealed class DaemonManagerInstallTests : IDisposable
         Assert.False(File.Exists(_paths.DaemonEnvironmentFilePath));
     }
 
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
     public async Task Install_WithUserSystemd_WritesUnitAndEnablesIt()
     {
@@ -107,6 +110,7 @@ public sealed class DaemonManagerInstallTests : IDisposable
             runner.Commands.Select(c => $"{c.Command} {c.Arguments}").ToArray());
     }
 
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
     public async Task Uninstall_RemovesUnitLeftByAFailedInstall_WhenSystemdIsMissing()
     {
