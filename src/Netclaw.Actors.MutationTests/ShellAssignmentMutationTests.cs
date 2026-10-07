@@ -58,9 +58,12 @@ public sealed class ShellAssignmentMutationTests
     [Fact]
     public void Reviewed_safe_policy_rejects_an_assignment_constraint()
     {
+        // The daemon environment holds "mode", so the assignment reaches the
+        // program and qualifies the candidate (decision F3).
         var environment = ShellExecutionEnvironment.CreateBash(
             ShellPlatform.Linux,
-            new Version(5, 2));
+            new Version(5, 2),
+            [new("PATH", "/usr/bin"), new("mode", "inherited")]);
         var matcher = new ShellApprovalMatcher(environment);
         var qualified = Assert.Single(matcher.ExtractCandidates(
             new ToolName("shell_execute"),
@@ -451,6 +454,7 @@ public sealed class ShellAssignmentMutationTests
             arguments,
             version,
             null,
+            ImmutableDictionary<string, string>.Empty,
         ]));
     }
 }
