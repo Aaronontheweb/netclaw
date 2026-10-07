@@ -26,10 +26,13 @@ public sealed class LiteralTwinMutationTests : IDisposable
     private static readonly ShellExecutionEnvironment Bash52 =
         ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux, new Version(5, 2));
 
+    // The Bash environment reads POSIX paths on every host. A Windows temporary
+    // path is not a POSIX path, so the parser gives it no twins.
+    private const string WorkingDirectory = "/work/project";
+
     private readonly NetclawPaths _paths = new(Path.Combine(
         Path.GetTempPath(), "netclaw-literal-twin-mutations", Guid.NewGuid().ToString("N")));
     private readonly SessionStoragePaths _storage;
-    private readonly string _workingDirectory;
 
     public LiteralTwinMutationTests()
     {
@@ -37,7 +40,6 @@ public sealed class LiteralTwinMutationTests : IDisposable
         _storage = SessionStoragePaths.CreateVersion2(
             new SessionStorageEnvelopeRoot(Path.Combine(_paths.SessionsDirectory, "current")));
         Directory.CreateDirectory(_storage.SessionDirectory.Value);
-        _workingDirectory = _storage.SessionDirectory.Value;
     }
 
     [Fact]
@@ -45,7 +47,7 @@ public sealed class LiteralTwinMutationTests : IDisposable
     {
         var policy = new ShellCommandPolicy(Bash52);
         var matcher = new ShellApprovalMatcher(Bash52);
-        var analysis = policy.Analyze(OwnerLoop, _workingDirectory);
+        var analysis = policy.Analyze(OwnerLoop, WorkingDirectory);
         Assert.True(BashLiteralTwinSlices.TryCreate(analysis, policy, matcher, out var twins));
 
         var applied = twins.Apply(CommandCandidates(matcher, analysis));
@@ -66,7 +68,7 @@ public sealed class LiteralTwinMutationTests : IDisposable
     {
         var policy = new ShellCommandPolicy(Bash52);
         var matcher = new ShellApprovalMatcher(Bash52);
-        var analysis = policy.Analyze(OwnerLoop, _workingDirectory);
+        var analysis = policy.Analyze(OwnerLoop, WorkingDirectory);
         Assert.True(BashLiteralTwinSlices.TryCreate(analysis, policy, matcher, out var twins));
         var unresolved = matcher.AnalyzeInvocation(ShellToolName, Arguments(OwnerLoop), analysis);
         Assert.True(unresolved.IsMessy);
@@ -80,25 +82,24 @@ public sealed class LiteralTwinMutationTests : IDisposable
     {
         var policy = new ShellCommandPolicy(Bash52);
         var matcher = new ShellApprovalMatcher(Bash52);
-        var analysis = policy.Analyze(OwnerLoop, _workingDirectory);
+        var analysis = policy.Analyze(OwnerLoop, WorkingDirectory);
         Assert.True(BashLiteralTwinSlices.TryCreate(analysis, policy, matcher, out var twins));
-        var foreign = CommandCandidates(matcher, policy.Analyze(OwnerLoop, _workingDirectory));
+        var foreign = CommandCandidates(matcher, policy.Analyze(OwnerLoop, WorkingDirectory));
 
         var failure = Assert.Throws<InvalidOperationException>(() => twins.Apply(foreign));
         Assert.Equal("A command with literal twins has no candidate in the approval.", failure.Message);
     }
 
-    // The denied twin is the last twin, so the screen must check each twin.
+    // The hard denial of the first twin decides before any host path check of
+    // a later twin, so the result is the same on every host. A screen that
+    // returned the result of an allowed twin would allow the call.
     [Fact]
     public void One_denied_twin_denies_the_call()
     {
         var access = CreatePolicy(new ShellCommandPolicy(Bash52, ["git fetch"]));
-        var context = CreateContext();
 
-        var allowed = Screen(access, "for v in status log; do git $v; done", context);
-        var denied = Screen(access, "for v in status fetch; do git $v; done", context);
+        var denied = Screen(access, "for v in fetch status; do git $v; done", CreateContext());
 
-        Assert.Null(allowed);
         Assert.Equal("hard_deny_custom_deny", denied?.DenyReason);
     }
 
@@ -112,7 +113,7 @@ public sealed class LiteralTwinMutationTests : IDisposable
 
     private ToolAuthorizationDecision? Screen(ToolAccessPolicy access, string command, ToolExecutionContext context)
     {
-        var analysis = access.ShellCommandPolicy.Analyze(command, _workingDirectory);
+        var analysis = access.ShellCommandPolicy.Analyze(command, WorkingDirectory);
         Assert.True(access.TryProjectLiteralTwins(analysis, out var twins));
         Assert.Equal(2, twins.Slices.Count());
         return access.ScreenLiteralTwins(twins, context);
@@ -125,7 +126,7 @@ public sealed class LiteralTwinMutationTests : IDisposable
     private Dictionary<string, object?> Arguments(string command) => new()
     {
         ["Command"] = command,
-        ["WorkingDirectory"] = _workingDirectory
+        ["WorkingDirectory"] = WorkingDirectory
     };
 
     private ToolAccessPolicy CreatePolicy(ShellCommandPolicy commandPolicy)
