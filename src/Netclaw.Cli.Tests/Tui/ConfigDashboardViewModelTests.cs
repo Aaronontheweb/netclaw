@@ -257,6 +257,20 @@ public sealed class ConfigDashboardViewModelTests
         Assert.Equal("– config error", Summary(vm, "Models"));
     }
 
+    [Theory]
+    [InlineData("""{ "Enabled": false }""")]
+    [InlineData("""{ "Enabled": false, "Backend": "brave" }""")]
+    public void Search_row_reports_disabled_when_search_is_turned_off(string searchJson)
+    {
+        using var dir = new DisposableTempDir();
+        var paths = new NetclawPaths(dir.Path);
+        paths.EnsureDirectoriesExist();
+        File.WriteAllText(paths.NetclawConfigPath, $$"""{ "configVersion": 1, "Search": {{searchJson}} }""");
+        using var vm = new ConfigDashboardViewModel(new ConfigDashboardNavigationState(), paths);
+
+        Assert.Equal("– disabled", Summary(vm, "Search"));
+    }
+
     [Fact]
     public void Status_summaries_are_recomputed_on_each_read_for_autosave_reentrancy()
     {

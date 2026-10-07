@@ -636,7 +636,7 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
     // An unresolvable Models section prefills nothing; the wizard rewrites it.
     private static ModelReference? ReadExistingMain(WizardContext context)
         => context.ExistingConfig is not null
-           && ModelCommand.TryLoadModelSelection(context.Paths, out var models, out _)
+           && ModelCommand.TryLoadModelSelection(context.ExistingConfig, out var models, out _)
             ? models?.Main
             : null;
 

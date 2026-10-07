@@ -936,6 +936,10 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
 
         DetailProvider = item;
         StartRemove();
+
+        // A refused removal leaves the list showing; do not keep a detail provider the user never opened.
+        if (CurrentState.Value != ProviderManagerState.RemoveConfirm)
+            DetailProvider = null;
     }
 
     /// <summary>
@@ -950,16 +954,15 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         RemoveBlockingRoles.Clear();
         ErrorMessage.Value = "";
 
-        try
-        {
-            RemoveBlockingRoles.AddRange(Provider.ProviderCommand.GetReferencingModelRoles(RemoveProviderName, _paths));
-        }
-        catch (ModelConfigurationException ex)
+        if (!Provider.ProviderCommand.TryGetReferencingModelRoleEntries(RemoveProviderName, _paths, out var entries, out _))
         {
             RemoveProviderName = null;
-            ErrorMessage.Value = $"Cannot check which model roles use this provider: {ex.Message}";
+            ErrorMessage.Value = Model.ModelCommand.InvalidConfigurationMessage;
+            RequestRedraw();
             return;
         }
+
+        RemoveBlockingRoles.AddRange(entries.Select(e => e.Role));
 
         CurrentState.Value = ProviderManagerState.RemoveConfirm;
         NotifyStateChanged();

@@ -189,7 +189,7 @@ internal sealed class ConfigDashboardStatusReader
         return label switch
         {
             "Inference Providers" => ProvidersSummary(config),
-            "Models" => ModelsSummary(),
+            "Models" => ModelsSummary(config),
             "Channels" => ChannelsSummary(config),
             "Inbound Webhooks" => OnOff(BoolAt(config, "Webhooks.Enabled")),
             "Skill Sources" => SkillSourcesSummary(config),
@@ -208,10 +208,10 @@ internal sealed class ConfigDashboardStatusReader
         return $"{count} configured";
     }
 
-    private string ModelsSummary()
+    private static string ModelsSummary(Dictionary<string, object> config)
     {
         // Same resolver as `netclaw model list`: understands both the Definitions/Roles and legacy inline shapes.
-        if (!ModelCommand.TryLoadModelSelection(_paths, out var models, out _))
+        if (!ModelCommand.TryLoadModelSelection(config, out var models, out _))
             return "– config error";
 
         return string.IsNullOrWhiteSpace(models?.Main.ModelId) ? "– not set" : models.Main.ModelId;
@@ -262,6 +262,10 @@ internal sealed class ConfigDashboardStatusReader
 
     private static string SearchSummary(Dictionary<string, object> config)
     {
+        // SearchConfig.Enabled defaults to true, so only an explicit false turns the subsystem off.
+        if (ConfigFileHelper.TryGetPathValue(config, "Search.Enabled", out var enabled) && enabled is false)
+            return OnOff(false);
+
         // An absent Search.Backend means the SearchConfig default is in effect.
         var backend = ConfigFileHelper.TryGetPathValue(config, "Search.Backend", out var raw)
                       && raw is string configured && !string.IsNullOrWhiteSpace(configured)

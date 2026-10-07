@@ -3,7 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using Netclaw.Cli.Config;
+using System.Text.Json;
 using Netclaw.Cli.Provider;
 using Netclaw.Cli.Tui.Sections;
 using Netclaw.Cli.Tui.Wizard;
@@ -42,16 +42,14 @@ public sealed class ProviderSectionEditorTests : SectionEditorTestBase<ProviderS
         File.WriteAllText(Context.Paths.SecretsPath, """
             { "Providers": { "openai": { "ApiKey": "ENC:stored" } } }
             """);
-        // ExistingConfig is the parsed netclaw.json; the model resolver reads the same file from disk.
-        File.WriteAllText(Context.Paths.NetclawConfigPath, $$"""
-            { "Models": {{modelsJson}}, "Providers": { "openai": { "Type": "openai", "AuthMethod": "ApiKey" } } }
-            """);
         using var context = new WizardContext
         {
             Paths = Context.Paths,
             Registry = ProviderCommand.CreateDefaultRegistry(),
             RequestRedraw = () => { },
-            ExistingConfig = ConfigFileHelper.LoadJsonDictOrNull(Context.Paths.NetclawConfigPath)
+            ExistingConfig = JsonSerializer.Deserialize<Dictionary<string, object>>($$"""
+                { "Models": {{modelsJson}}, "Providers": { "openai": { "Type": "openai", "AuthMethod": "ApiKey" } } }
+                """)
         };
 
         using var editor = CreateEditor();

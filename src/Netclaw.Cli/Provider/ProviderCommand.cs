@@ -449,50 +449,39 @@ internal static class ProviderCommand
 
         var name = args[2];
 
-        // Check if any model roles reference this provider
-        List<string> referencingRoles;
-        try
+        var (config, secrets) = ConfigFileHelper.LoadConfigFiles(paths);
+        var providers = ConfigFileHelper.GetSectionOrNull(config, "Providers");
+        var secretProviders = ConfigFileHelper.GetSectionOrNull(secrets, "Providers");
+        if (providers?.ContainsKey(name) != true && secretProviders?.ContainsKey(name) != true)
         {
-            referencingRoles = GetReferencingModelRoles(name, paths);
-        }
-        catch (ModelConfigurationException ex)
-        {
-            writer.WriteLine($"Error: Cannot check which model roles use provider '{name}': {ex.Message}");
+            writer.WriteLine($"Provider '{name}' not found.");
             return 1;
         }
 
-        if (referencingRoles.Count > 0)
+        // Check if any model roles reference this provider
+        if (!TryGetReferencingModelRoleEntries(name, paths, out var referencing, out var modelsError))
         {
-            writer.WriteLine($"Error: Cannot remove provider '{name}' — referenced by model role(s): {string.Join(", ", referencingRoles)}");
+            writer.WriteLine($"Error: Cannot remove provider '{name}': the Models section in netclaw.json cannot be resolved ({modelsError})");
+            writer.WriteLine("Fix the Models section first. If the Main role is the problem (missing, or pointing at an unknown definition),");
+            writer.WriteLine("`netclaw model set main <provider> <model-id>` repairs it. Otherwise edit the Models section in netclaw.json by hand.");
+            return 1;
+        }
+
+        if (referencing.Count > 0)
+        {
+            writer.WriteLine($"Error: Cannot remove provider '{name}' — referenced by model role(s): {string.Join(", ", referencing.Select(e => e.Role))}");
             writer.WriteLine("Run `netclaw model set` to reassign these roles first, or `netclaw model clear` for optional roles.");
             return 1;
         }
 
-        var (config, secrets) = ConfigFileHelper.LoadConfigFiles(paths);
-
-        var removed = false;
-        var providers = ConfigFileHelper.GetSectionOrNull(config, "Providers");
         if (providers?.Remove(name) == true)
-        {
             ConfigFileHelper.WriteConfigFile(paths.NetclawConfigPath, config);
-            removed = true;
-        }
 
-        var secretProviders = ConfigFileHelper.GetSectionOrNull(secrets, "Providers");
         if (secretProviders?.Remove(name) == true)
-        {
             ConfigFileHelper.WriteSecretsFile(paths, secrets);
-            removed = true;
-        }
 
-        if (removed)
-        {
-            writer.WriteLine($"Removed provider '{name}'");
-            return 0;
-        }
-
-        writer.WriteLine($"Provider '{name}' not found.");
-        return 1;
+        writer.WriteLine($"Removed provider '{name}'");
+        return 0;
     }
 
     /// <summary>
@@ -577,27 +566,21 @@ internal static class ProviderCommand
     }
 
     /// <summary>
-    /// Check which model roles reference the given provider name.
+    /// Finds the model roles that reference the given provider, with each role's current
+    /// <c>ModelId</c> so callers can build a fully copy-pasteable <c>netclaw model set</c> command
+    /// in their guidance output. Returns false with the resolver's <paramref name="error"/> when the
+    /// Models section cannot be resolved: the guard must not guess that a provider is unused.
     /// </summary>
-    internal static List<string> GetReferencingModelRoles(string providerName, NetclawPaths paths)
-        => GetReferencingModelRoleEntries(providerName, paths).Select(e => e.Role).ToList();
-
-    /// <summary>
-    /// Like <see cref="GetReferencingModelRoles"/> but also returns each role's current
-    /// <c>ModelId</c> so callers can build a fully copy-pasteable
-    /// <c>netclaw model set</c> command in their guidance output.
-    /// </summary>
-    internal static List<(string Role, string ModelId)> GetReferencingModelRoleEntries(
-        string providerName, NetclawPaths paths)
+    internal static bool TryGetReferencingModelRoleEntries(
+        string providerName, NetclawPaths paths,
+        out List<(string Role, string ModelId)> entries, out string? error)
     {
-        // The resolver understands both the Definitions/Roles and legacy inline shapes. An
-        // unresolvable Models section throws: the guard must not guess that a provider is unused.
-        if (!ModelCommand.TryLoadModelSelection(paths, out var models, out var error))
-            throw new ModelConfigurationException(error!);
+        entries = [];
+        if (!ModelCommand.TryLoadModelSelection(paths, out var models, out error))
+            return false;
 
-        var entries = new List<(string, string)>();
         if (models is null)
-            return entries;
+            return true;
 
         foreach (var (roleName, role) in new[] { ("Main", models.Main), ("Fallback", models.Fallback), ("Compaction", models.Compaction) })
         {
@@ -605,7 +588,7 @@ internal static class ProviderCommand
                 entries.Add((roleName, string.IsNullOrEmpty(role.ModelId) ? "<model-id>" : role.ModelId));
         }
 
-        return entries;
+        return true;
     }
 
     private static void WriteProviderGuidance(IProviderDescriptor descriptor, TextWriter writer)
