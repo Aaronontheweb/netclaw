@@ -42,6 +42,14 @@ internal static class ApprovalsCommand
         var clock = timeProvider ?? TimeProvider.System;
         var subcommand = args.Length > 1 ? args[1] : "help";
 
+        // A help token after list or revoke is otherwise rejected as an unknown flag. The
+        // trust-verb phrase is free text, so only its first operand can ask for help.
+        var helpRequested = subcommand is "trust-verb"
+            ? args.Length > 2 && CliArgsParser.IsHelpToken(args[2])
+            : CliArgsParser.HasTrailingHelpToken(args, startIndex: 2);
+        if (helpRequested)
+            return Task.FromResult(WriteHelp(paths, writer, clock));
+
         return subcommand switch
         {
             "list" => Task.FromResult(RunList(args, paths, writer, diagnosticWriter, clock)),
@@ -600,7 +608,7 @@ internal static class ApprovalsCommand
         return view;
     }
 
-    private static ToolApprovalStore CreateStore(NetclawPaths paths, TimeProvider clock) =>
+    internal static ToolApprovalStore CreateStore(NetclawPaths paths, TimeProvider clock) =>
         new(
             paths.ToolApprovalsPath,
             clock,

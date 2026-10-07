@@ -10,6 +10,7 @@ using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
 using ModelContextProtocol.Client;
+using Netclaw.Cli.Approvals;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Json;
@@ -45,6 +46,13 @@ internal static class McpCommand
     {
         var writer = output ?? Console.Out;
         var subcommand = args.Length > 1 ? args[1] : "help";
+
+        // `tools` and `permissions` print their own help. Every other subcommand takes a server
+        // name, and `add` also takes free-form arguments after "--", so a help token before
+        // "--" would otherwise be read as the server name.
+        if (subcommand is not ("tools" or "permissions")
+            && CliArgsParser.HasTrailingHelpToken([.. args.TakeWhile(arg => arg != "--")], startIndex: 2))
+            return WriteHelp(writer);
 
         return subcommand switch
         {
@@ -173,7 +181,9 @@ internal static class McpCommand
             return 1;
         }
 
-        var serverName = new McpServerName(positional[0]);
+        if (!TryReadServerName(positional[0], writer, out var serverName))
+            return 1;
+
         transport ??= "stdio";
 
         if (transport is "stdio")
@@ -234,9 +244,22 @@ internal static class McpCommand
         var (config, _) = LoadConfigFiles(paths);
 
         var mcpServers = GetOrCreateSection(config, "McpServers");
+
+        // Re-running add on an existing name replaces the connection definition only. The
+        // audience grants, approval modes and allow-lists belong to the operator, so only a
+        // new server gets the secure defaults.
+        var isNewServer = !mcpServers.TryGetValue(serverName.Value, out var existingEntry);
+        if (!isNewServer)
+        {
+            // A disabled server stays disabled when its URL or secret is rotated.
+            entry.Enabled = JsonSerializer.Deserialize<McpServerEntry>(
+                JsonSerializer.Serialize(existingEntry))?.Enabled ?? true;
+        }
+
         mcpServers[serverName.Value] = SerializeEntry(entry);
 
-        ApplySecureDefaultsForNewServer(config, serverName, grantAll);
+        if (isNewServer)
+            ApplySecureDefaultsForNewServer(config, serverName, grantAll);
 
         var configBefore = File.Exists(paths.NetclawConfigPath)
             ? File.ReadAllText(paths.NetclawConfigPath)
@@ -291,19 +314,30 @@ internal static class McpCommand
                 secretError);
         }
 
-        writer.WriteLine($"Added MCP server '{serverName.Value}' ({transport})");
-        writer.WriteLine();
-        if (grantAll)
+        if (!isNewServer)
         {
-            writer.WriteLine("Security: all tools are reachable for any audience that allows this server");
-            writer.WriteLine("          (legacy null-grants behavior — you passed --grant-all).");
+            writer.WriteLine($"Updated MCP server '{serverName.Value}' ({transport})");
+            writer.WriteLine();
+            writer.WriteLine("Audience grants, approval modes and allow-lists are unchanged.");
+            if (grantAll)
+                writer.WriteLine("--grant-all ignored: it applies only when a server is first added.");
         }
         else
         {
-            writer.WriteLine("Security: Personal grants all tools (auto-approved). Team/Public grant 0 tools");
-            writer.WriteLine("          until you opt in via `netclaw mcp permissions`.");
+            writer.WriteLine($"Added MCP server '{serverName.Value}' ({transport})");
+            writer.WriteLine();
+            if (grantAll)
+            {
+                writer.WriteLine("Security: all tools are reachable for any audience that allows this server");
+                writer.WriteLine("          (legacy null-grants behavior — you passed --grant-all).");
+            }
+            else
+            {
+                writer.WriteLine("Security: Personal grants all tools (auto-approved). Team/Public grant 0 tools");
+                writer.WriteLine("          until you opt in via `netclaw mcp permissions`.");
+            }
+            writer.WriteLine("Approval defaults: Personal=Auto, Team=Approval, Public=Deny");
         }
-        writer.WriteLine("Approval defaults: Personal=Auto, Team=Approval, Public=Deny");
 
         // The daemon owns OAuth discovery (RFC 9728/8414, via McpOAuthClientRegistrar).
         // The CLI does not probe the endpoint, so it cannot know in advance whether a
@@ -397,13 +431,15 @@ internal static class McpCommand
             return 1;
         }
 
+        if (!TryReadServerName(args[2], writer, out var serverName))
+            return 1;
+
         if (daemonApi is null)
         {
             writer.WriteLine("Error: DaemonApi not available. Is the daemon configured?");
             return 1;
         }
 
-        var serverName = new McpServerName(args[2]);
         var servers = LoadMcpServers(paths);
 
         if (!servers.TryGetValue(serverName.Value, out var entry))
@@ -787,7 +823,9 @@ internal static class McpCommand
             return 1;
         }
 
-        var serverName = new McpServerName(args[2]);
+        if (!TryReadServerName(args[2], writer, out var serverName))
+            return 1;
+
         var servers = LoadMcpServers(paths);
 
         if (!servers.TryGetValue(serverName.Value, out var entry))
@@ -844,24 +882,31 @@ internal static class McpCommand
             return 1;
         }
 
-        var serverName = new McpServerName(args[2]);
+        if (!TryReadServerName(args[2], writer, out var serverName))
+            return 1;
+
         var (config, _) = LoadConfigFiles(paths);
 
-        var removed = false;
-        var mcpServers = GetSectionOrNull(config, "McpServers");
-        if (mcpServers?.Remove(serverName.Value) == true)
-        {
+        // Everything keyed by the server name goes with it. A name that survives in an
+        // audience profile, the token store or the approval store would be inherited by
+        // the next server added under that name.
+        var removed = GetSectionOrNull(config, "McpServers")?.Remove(serverName.Value) == true;
+        removed |= RemoveServerFromAudienceProfiles(config, serverName);
+        if (removed)
             WriteConfigFile(paths.NetclawConfigPath, config);
-            removed = true;
-        }
 
-        var removedSecrets = ConfigFileHelper.UpdateSecretsFile(paths, (secrets, _) =>
+        removed |= ConfigFileHelper.UpdateSecretsFile(paths, (secrets, _) =>
         {
-            var secretMcp = GetSectionOrNull(secrets, "McpServers");
-            var removedSecret = secretMcp?.Remove(serverName.Value) == true;
+            var removedSecret = GetSectionOrNull(secrets, "McpServers")?.Remove(serverName.Value) == true;
+            removedSecret |= GetSectionOrNull(secrets, McpOAuthTokenSet.SecretsSectionKey)?.Remove(serverName.Value) == true;
             return (removedSecret, removedSecret);
         });
-        removed |= removedSecrets;
+
+        var approvals = RemoveSavedApprovals(paths, serverName, writer);
+        if (approvals < 0)
+            return 1;
+
+        removed |= approvals > 0;
 
         if (removed)
         {
@@ -873,6 +918,114 @@ internal static class McpCommand
         return 1;
     }
 
+    /// <summary>
+    /// Removes the server's entries from every audience profile: the allow-list, the tool
+    /// grants, the approval default, and the per-tool approval overrides
+    /// (<c>server/tool</c> and the <c>server__tool</c> alias). Returns <c>true</c> when
+    /// anything was removed.
+    /// </summary>
+    private static bool RemoveServerFromAudienceProfiles(Dictionary<string, object> config, McpServerName serverName)
+    {
+        var profiles = GetSectionOrNull(config, "Tools") is { } tools
+            ? GetSectionOrNull(tools, "AudienceProfiles")
+            : null;
+        if (profiles is null)
+            return false;
+
+        var removed = false;
+        foreach (var audience in TrustAudiences.All)
+        {
+            if (GetSectionOrNull(profiles, audience.ToString()) is not { } profile)
+                continue;
+
+            // The runtime compares AllowedMcpServers ignoring case, so removal does too.
+            if (profile.TryGetValue("AllowedMcpServers", out var rawAllowed)
+                && ConfigFileHelper.DeserializeSection<List<string>>(rawAllowed) is { } allowed
+                && allowed.RemoveAll(name => name.Equals(serverName.Value, StringComparison.OrdinalIgnoreCase)) > 0)
+            {
+                profile["AllowedMcpServers"] = allowed;
+                removed = true;
+            }
+
+            removed |= GetSectionOrNull(profile, "McpServerToolGrants")?.Remove(serverName.Value) == true;
+
+            if (GetSectionOrNull(profile, "ApprovalPolicy") is not { } approvalPolicy)
+                continue;
+
+            removed |= GetSectionOrNull(approvalPolicy, "McpServerDefaults")?.Remove(serverName.Value) == true;
+
+            if (GetSectionOrNull(approvalPolicy, "ToolOverrides") is { } toolOverrides)
+            {
+                var staleKeys = toolOverrides.Keys
+                    .Where(key => key.StartsWith(serverName.Value + "/", StringComparison.Ordinal)
+                                  || key.StartsWith(serverName.Value + "__", StringComparison.Ordinal))
+                    .ToList();
+                foreach (var key in staleKeys)
+                    toolOverrides.Remove(key);
+
+                removed |= staleKeys.Count > 0;
+            }
+        }
+
+        return removed;
+    }
+
+    /// <summary>
+    /// Revokes the persistent approvals saved for the server's tools (<c>server/tool</c>) in
+    /// every audience, through <see cref="ToolApprovalStore"/>. An approval is keyed by tool
+    /// name alone, so it would otherwise authorize whichever server is later added under the
+    /// same name. Returns the number revoked, or -1 when the approval store is unavailable.
+    /// </summary>
+    private static int RemoveSavedApprovals(NetclawPaths paths, McpServerName serverName, TextWriter writer)
+    {
+        if (!File.Exists(paths.ToolApprovalsPath))
+            return 0;
+
+        var store = ApprovalsCommand.CreateStore(paths, TimeProvider.System);
+        if (store.TryLoad() is not ApprovalStoreLoadResult.Ready ready)
+        {
+            writer.WriteLine("Error: The approval store is unavailable, so the saved approvals for "
+                + $"'{serverName.Value}' were not revoked. Fix the store, then run `netclaw approvals revoke --tool <name> --all`.");
+            return -1;
+        }
+
+        var prefix = serverName.Value + "/";
+        var revoked = 0;
+        foreach (var audience in TrustAudiences.All)
+        {
+            if (!ready.Data.Audiences.TryGetValue(audience.ToWireValue(), out var tools))
+                continue;
+
+            foreach (var tool in tools.Keys.Where(name => name.StartsWith(prefix, StringComparison.Ordinal)))
+            {
+                if (store.TryRemoveAllForTool(audience, tool) is ApprovalStoreChangeResult.Completed completed)
+                {
+                    revoked += completed.ChangeCount;
+                    continue;
+                }
+
+                writer.WriteLine($"Error: Could not revoke the saved approvals for '{tool}'.");
+                return -1;
+            }
+        }
+
+        return revoked;
+    }
+
+    private static bool TryReadServerName(string raw, TextWriter writer, out McpServerName serverName)
+    {
+        serverName = default;
+        if (raw.StartsWith('-'))
+        {
+            writer.WriteLine($"Error: '{raw}' is not a valid server name. A name must not start with '-'. "
+                + "Run `netclaw mcp --help` for usage.");
+            return false;
+        }
+
+        serverName = new McpServerName(raw);
+        return true;
+    }
+
     private static int RunToggle(string[] args, NetclawPaths paths, bool enabled, TextWriter writer)
     {
         if (args.Length < 3)
@@ -881,7 +1034,9 @@ internal static class McpCommand
             return 1;
         }
 
-        var serverName = new McpServerName(args[2]);
+        if (!TryReadServerName(args[2], writer, out var serverName))
+            return 1;
+
         var (config, _) = LoadConfigFiles(paths);
 
         var mcpServers = GetSectionOrNull(config, "McpServers");

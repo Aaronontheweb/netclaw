@@ -84,6 +84,19 @@ TUI.
 The `--grant-all` option skips the closed grants for Team and Public.
 The option does not change the approval defaults.
 
+`netclaw mcp add` on a name that already exists replaces only the connection
+definition (URL, command, headers, environment, client ID and secret). The
+command does not touch the audience entries. The grants, approval modes, and
+allow-list entries stay as they are, and a disabled server stays disabled.
+Pass every connection flag again, because the secrets of the profile are
+replaced. Use this to change a URL or rotate a secret.
+
+`netclaw mcp remove <name>` deletes everything keyed by the name: the profile,
+its secrets, its stored OAuth tokens, its entries in every audience profile
+(`AllowedMcpServers`, `McpServerToolGrants`, `McpServerDefaults`, and the
+`ToolOverrides` for its tools), and its saved approvals. A server added again
+under the same name starts clean and needs a new `netclaw mcp auth <name>`.
+
 Inside the TUI (`netclaw mcp permissions`):
 
 - `Enter` toggles the highlighted tool. In the `All` MCP server mode, the toggle sets
