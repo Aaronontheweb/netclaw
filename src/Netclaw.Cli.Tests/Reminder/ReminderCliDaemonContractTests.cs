@@ -86,6 +86,22 @@ public sealed class ReminderCliDaemonContractTests : IAsyncDisposable
         Assert.DoesNotContain("unable to reach daemon", duplicate.Stderr, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("import")]
+    [InlineData("validate")]
+    public async Task Cron_with_an_unknown_zone_prefix_reports_the_zone_not_a_bad_expression(string subcommand)
+    {
+        await using var app = await StartDaemonAsync();
+        var file = WriteFile("definition.json", NamedEnumDefinition.Replace(
+            "\"cronExpression\": \"0 8 * * *\"", "\"cronExpression\": \"CRON_TZ=Not/AZone 0 8 * * *\"", StringComparison.Ordinal));
+
+        var result = await RunAsync(app, "reminder", subcommand, file);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("Unknown time zone 'Not/AZone'.", result.Stderr, StringComparison.Ordinal);
+        Assert.DoesNotContain("Cron expression is invalid.", result.Stderr, StringComparison.Ordinal);
+    }
+
     [Fact]
     public async Task Daemon_reply_with_an_empty_body_is_not_reported_as_an_unreachable_daemon()
     {

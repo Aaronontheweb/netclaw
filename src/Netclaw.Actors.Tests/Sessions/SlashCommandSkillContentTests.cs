@@ -68,14 +68,16 @@ public sealed class SlashCommandSkillContentTests : LlmSessionTestBase
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task First_model_call_after_an_inline_slash_command_carries_the_skill_body(bool delaySnapshot)
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    public async Task First_model_call_after_an_inline_slash_command_carries_the_skill_body(bool delaySnapshot, bool failSnapshot)
     {
+        _snapshots.Fail = failSnapshot;
         if (!delaySnapshot)
             _snapshots.Release();
 
-        var sessionId = new SessionId($"test-channel/slash-body-{delaySnapshot}");
+        var sessionId = new SessionId($"test-channel/slash-body-{delaySnapshot}-{failSnapshot}");
         var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
         var subscriber = CreateTestProbe("slash-body-sub");
         await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
@@ -109,6 +111,8 @@ public sealed class SlashCommandSkillContentTests : LlmSessionTestBase
 
         public TaskCompletionSource Requested { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        public bool Fail { get; set; }
+
         public void Release() => _gate.TrySetResult();
 
         public async Task<WorkingContextSnapshot> CreateAsync(
@@ -118,6 +122,8 @@ public sealed class SlashCommandSkillContentTests : LlmSessionTestBase
         {
             Requested.TrySetResult();
             await _gate.Task.WaitAsync(cancellationToken);
+            if (Fail)
+                throw new InvalidOperationException("snapshot failed");
             return new WorkingContextSnapshot
             {
                 WorkingContext = context,
