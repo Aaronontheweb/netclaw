@@ -41,7 +41,10 @@ public sealed class CompleteLaunchEnvironmentMutationTests
         Assert.Equal(
             process.Keys.Append("PWD").Append("TMPDIR").Append("TMP").Append("TEMP").Order(StringComparer.Ordinal),
             names.Order(StringComparer.Ordinal));
-        Assert.Contains("HOME", names);
+        Assert.Contains("PATH", names);
+        // The launcher sets HOME only when the daemon home is a POSIX path, so
+        // the value is null on a Windows host and the home folder elsewhere.
+        Assert.Equal(Bash52.HomeDirectory, process.TryGetValue("HOME", out var home) ? home : null);
         Assert.Contains("GIT_DIR", names);
         Assert.DoesNotContain("BASH_ENV", names);
         Assert.False(process.ContainsKey("BASH_ENV"));

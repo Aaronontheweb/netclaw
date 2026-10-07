@@ -34,7 +34,7 @@ public sealed class ShellLaunchEnvironmentSnapshotTests
         Assert.NotNull(names);
         Assert.Subset(names.ToHashSet(StringComparer.Ordinal), process.Keys.ToHashSet(StringComparer.Ordinal));
         Assert.Contains("GIT_DIR", names);
-        Assert.Contains("HOME", process.Keys);
+        Assert.Contains("PATH", process.Keys);
         // The launcher sets these names on each process after the start data.
         Assert.Contains("PWD", names);
         Assert.Contains("TMPDIR", names);
