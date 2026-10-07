@@ -3053,6 +3053,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     workingContextGeneration,
                     forceNoTools,
                     _turnRestartNotice,
+                    _slashCommandSkillContent,
                     _state.WorkingContext,
                     CurrentTurnAudience(),
                     _activeLlmCts.Token)
@@ -3192,6 +3193,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         long generation,
         bool forceNoTools,
         string? turnRestartNotice,
+        string? slashCommandSkillContent,
         WorkingContext workingContext,
         TrustAudience audience,
         CancellationToken cancellationToken)
@@ -3202,7 +3204,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 workingContext,
                 audience,
                 cancellationToken).ConfigureAwait(false);
-            return new WorkingContextSnapshotReady(generation, forceNoTools, turnRestartNotice, snapshot);
+            return new WorkingContextSnapshotReady(generation, forceNoTools, turnRestartNotice, slashCommandSkillContent, snapshot);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -3214,6 +3216,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 generation,
                 forceNoTools,
                 turnRestartNotice,
+                slashCommandSkillContent,
                 workingContext,
                 ex);
         }
@@ -3239,6 +3242,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             message.Generation,
             message.ForceNoTools,
             message.TurnRestartNotice,
+            message.SlashCommandSkillContent,
             new WorkingContextSnapshot
             {
                 WorkingContext = message.WorkingContext,
@@ -3267,7 +3271,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             State: _state,
             ContextLayers: _contextLayers,
             StartupContextInjected: _startupContextInjected,
-            SlashCommandSkillContent: _slashCommandSkillContent,
+            SlashCommandSkillContent: message.SlashCommandSkillContent,
             SessionPromptOverlay: _sessionPromptOverlay,
             TurnRestartNotice: message.TurnRestartNotice,
             SessionId: _sessionId,
