@@ -88,9 +88,11 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
     {
         0 => "  Select your LLM provider. Ollama runs locally (no auth required).",
         1 => "  Choose how to authenticate with this provider.",
-        2 => SelectedProviderTakesEndpoint
-            ? $"  Enter the URL of your server, for example {SelectedProviderDefaultEndpoint}. Press Enter to use it."
-            : "  Enter your API key. It will be stored in secrets.json.",
+        2 => !SelectedProviderTakesEndpoint
+            ? "  Enter your API key. It will be stored in secrets.json."
+            : SelectedProviderType == "ollama"
+                ? $"  Enter the URL of your Ollama server, for example {SelectedProviderDefaultEndpoint}. Press Enter to accept."
+                : "  Enter the base URL of your server, with or without /v1. Press Enter to accept.",
         3 => "  Validating connection and discovering available models...",
         4 => "  Select the model to use for conversations.",
         5 => "  Complete the authorization in your browser.",

@@ -39,6 +39,9 @@ internal static class NetclawTuiChrome
             input.HandleInput(new ConsoleKeyInfo('\0', ConsoleKey.End, shift: false, alt: false, control: false));
     }
 
+    /// <summary>Longest a Provider column grows before it truncates, so Endpoint and Model ID keep their room.</summary>
+    internal const int MaxProviderColumnWidth = 40;
+
     /// <summary>
     /// Width for a table column sized to its longest value (never narrower than the
     /// header), shrunk only when the terminal leaves no room for it.

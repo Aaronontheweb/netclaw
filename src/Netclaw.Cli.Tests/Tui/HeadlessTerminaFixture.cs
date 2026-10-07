@@ -23,22 +23,7 @@ internal static class HeadlessTerminaFixture
 {
     public static (VirtualTerminal Terminal, TerminaApplication App, TVm Vm) Create<TPage, TVm>(
         string route,
-        Func<TPage> createPage,
-        Func<TVm> createViewModel,
-        out VirtualInputSource input,
-        int width = 120,
-        int height = 40)
-        where TPage : ReactivePage<TVm>
-        where TVm : ReactiveViewModel
-        => Create<TPage, TVm>(route, _ => createPage(), createViewModel, out input, width, height);
-
-    /// <summary>
-    /// Overload for pages that take the terminal as a constructor dependency (to size
-    /// their columns to the terminal width).
-    /// </summary>
-    public static (VirtualTerminal Terminal, TerminaApplication App, TVm Vm) Create<TPage, TVm>(
-        string route,
-        Func<VirtualTerminal, TPage> createPage,
+        Func<IServiceProvider, TPage> createPage,
         Func<TVm> createViewModel,
         out VirtualInputSource input,
         int width = 120,
@@ -59,7 +44,7 @@ internal static class HeadlessTerminaFixture
         {
             builder.RegisterRoute<TPage, TVm>(
                 route,
-                _ => createPage(terminal),
+                createPage,
                 _ =>
                 {
                     capturedVm = createViewModel();

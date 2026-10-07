@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Cli.Provider;
 using Netclaw.Cli.Tui;
 using Netclaw.Configuration;
@@ -177,7 +178,7 @@ public sealed class ProviderManagerPageTests : IDisposable
     }
 
     [Fact]
-    public async Task ProviderList_LongTypeLabel_KeepsAuthAndEndpointColumnsAligned()
+    public async Task ProviderList_LongTypeLabel_IsCappedAndEndpointKeepsItsRoom()
     {
         WriteConfig(new Dictionary<string, object>
         {
@@ -190,7 +191,7 @@ public sealed class ProviderManagerPageTests : IDisposable
                     ["Endpoint"] = "http://localhost:11434",
                     ["AuthMethod"] = "None"
                 },
-                ["gateway"] = new Dictionary<string, object>
+                ["openai-compatible"] = new Dictionary<string, object>
                 {
                     ["Type"] = "openai-compatible",
                     ["Endpoint"] = "http://gateway.example.test:8080/v1",
@@ -199,31 +200,37 @@ public sealed class ProviderManagerPageTests : IDisposable
             }
         });
 
-        var (terminal, app, _) = CreateHeadlessApp(out var input, width: 140);
+        var lines = await RenderListAsync(120);
+        var header = lines.Single(l => l.Contains("Provider") && l.Contains("Endpoint"));
+        var ollamaRow = lines.Single(l => l.Contains("local (Ollama)"));
+        var compatRow = lines.Single(l => l.Contains("openai-compatible (OpenAI-compatible"));
+
+        // The 72-character label is cut at the cap, with an ellipsis, not at the leftover width.
+        var labelStart = compatRow.IndexOf("openai-compatible (", StringComparison.Ordinal);
+        Assert.Equal('\u2026', compatRow[labelStart + NetclawTuiChrome.MaxProviderColumnWidth - 1]);
+
+        // The endpoint, including its /v1 suffix, is whole and aligned under the header.
+        var endpointColumn = header.IndexOf("Endpoint", StringComparison.Ordinal);
+        Assert.Equal(endpointColumn, ollamaRow.IndexOf("http://localhost:11434", StringComparison.Ordinal));
+        Assert.Equal(endpointColumn, compatRow.IndexOf("http://gateway.example.test:8080/v1", StringComparison.Ordinal));
+        Assert.Equal(header.IndexOf("Auth", StringComparison.Ordinal), compatRow.IndexOf('\u2014'));
+    }
+
+    private async Task<IReadOnlyList<string>> RenderListAsync(int width)
+    {
+        var (terminal, app, _) = CreateHeadlessApp(out var input, width);
         input.EnqueueKey(ConsoleKey.Q, control: true);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await app.RunAsync(cts.Token);
-
-        var lines = terminal.GetAllLines();
-        var header = lines.Single(l => l.Contains("Provider") && l.Contains("Endpoint"));
-        var ollamaRow = lines.Single(l => l.Contains("local (Ollama)"));
-        var compatRow = lines.Single(l => l.Contains("gateway (OpenAI-compatible (llama.cpp / vLLM / DwarfStar ds4))"));
-
-        var endpointColumn = header.IndexOf("Endpoint", StringComparison.Ordinal);
-        Assert.Equal(endpointColumn, ollamaRow.IndexOf("http://localhost", StringComparison.Ordinal));
-        Assert.Equal(endpointColumn, compatRow.IndexOf("http://gateway", StringComparison.Ordinal));
-
-        var authColumn = header.IndexOf("Auth", StringComparison.Ordinal);
-        Assert.Equal(authColumn, ollamaRow.IndexOf('\u2014'));
-        Assert.Equal(authColumn, compatRow.IndexOf('\u2014'));
+        return terminal.GetAllLines();
     }
 
     private (VirtualTerminal Terminal, TerminaApplication App, ProviderManagerViewModel Vm)
         CreateHeadlessApp(out VirtualInputSource input, int width)
         => HeadlessTerminaFixture.Create<ProviderManagerPage, ProviderManagerViewModel>(
             "/provider",
-            terminal => new ProviderManagerPage(terminal),
+            sp => new ProviderManagerPage(sp.GetRequiredService<IAnsiTerminal>()),
             () => new ProviderManagerViewModel(_paths, _registry, _fakeProbe),
             out input,
             width: width);
@@ -232,7 +239,7 @@ public sealed class ProviderManagerPageTests : IDisposable
         CreateHeadlessApp(out VirtualInputSource input)
         => HeadlessTerminaFixture.Create<ProviderManagerPage, ProviderManagerViewModel>(
             "/provider",
-            terminal => new ProviderManagerPage(terminal),
+            sp => new ProviderManagerPage(sp.GetRequiredService<IAnsiTerminal>()),
             () => new ProviderManagerViewModel(_paths, _registry, _fakeProbe),
             out input);
 

@@ -161,12 +161,13 @@ public sealed class ModelManagerPage : ReactivePage<ModelManagerViewModel>
                 _ => null
             });
 
-        // Size the Provider and Model ID columns to their longest values so Status
-        // stays aligned, leaving room for the Role (12) and Status (12) columns and
-        // the list prefix and panel border.
+        // Size the Provider (capped) and Model ID columns to their longest values so
+        // Status stays aligned, leaving room for the Role (12) and Status (12) columns
+        // and the list prefix and panel border.
         var available = _terminal.Width - 12 - 12 - 12;
         var providerLabels = models.Values.Select(ProviderLabel).ToList();
-        var providerWidth = NetclawTuiChrome.FitColumnWidth(providerLabels, "Provider", available - 20);
+        var providerWidth = NetclawTuiChrome.FitColumnWidth(providerLabels, "Provider",
+            Math.Min(NetclawTuiChrome.MaxProviderColumnWidth, available - 20));
         var modelWidth = NetclawTuiChrome.FitColumnWidth(
             models.Values.Select(static m => m?.ModelId ?? "\u2014"), "Model ID", available - providerWidth);
 
@@ -189,7 +190,7 @@ public sealed class ModelManagerPage : ReactivePage<ModelManagerViewModel>
 
         return Layouts.Vertical()
             .WithChild(new TextNode("  Model Role Assignments").WithForeground(Color.White).Bold())
-            .WithChild(new TextNode($"  {"Role",-12} {NetclawTuiChrome.FitColumn("Provider", providerWidth)} {NetclawTuiChrome.FitColumn("Model ID", modelWidth)} Status")
+            .WithChild(new TextNode($"   {"Role",-12} {NetclawTuiChrome.FitColumn("Provider", providerWidth)} {NetclawTuiChrome.FitColumn("Model ID", modelWidth)} Status")
                 .WithForeground(Color.Gray))
             .WithChild(_roleList)
             .WithChild(new TextNode("").Height(1))

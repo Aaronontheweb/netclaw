@@ -54,6 +54,7 @@ public sealed class OpenAiCompatibleHttpTests
     [InlineData("http://host:8080/", "http://host:8080/v1/models")]
     [InlineData("http://host:8080/v1", "http://host:8080/v1/models")]
     [InlineData("http://host:8080/v1/", "http://host:8080/v1/models")]
+    [InlineData("http://host:8080/V1", "http://host:8080/V1/models")]
     [InlineData("http://host:8080/openai/v1", "http://host:8080/openai/v1/models")]
     [InlineData("http://host:8080/openai", "http://host:8080/openai/v1/models")]
     [InlineData("http://host:8080/api/v1", "http://host:8080/api/v1/models")]
@@ -99,6 +100,24 @@ public sealed class OpenAiCompatibleHttpTests
 
         Assert.False(result.Success);
         Assert.Contains("http://host:8080/v1/models", result.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task DescriptorProbe_NotFound_DoesNotEchoUserinfoOrQuery()
+    {
+        using var handler = new FakeHttpMessageHandler(_ => new HttpResponseMessage(System.Net.HttpStatusCode.NotFound));
+        using var httpClient = new HttpClient(handler);
+        var descriptor = new OpenAiCompatibleDescriptor(httpClient);
+
+        var result = await descriptor.ProbeAsync(
+            new ProviderEntry { Type = "openai-compatible", Endpoint = "http://user:secret@host:8080/v1?token=abc" },
+            TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("http://host:8080/v1/models", result.ErrorMessage);
+        Assert.DoesNotContain("secret", result.ErrorMessage);
+        Assert.DoesNotContain("user", result.ErrorMessage);
+        Assert.DoesNotContain("token", result.ErrorMessage);
     }
 
     [Fact]

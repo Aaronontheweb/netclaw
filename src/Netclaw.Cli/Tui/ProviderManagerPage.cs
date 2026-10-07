@@ -248,17 +248,17 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
         // matched by reference.
         var items = ViewModel.DisplayProviders.ToList();
 
-        // Size the Provider column to the longest label so Auth and Endpoint stay
-        // aligned; the type label of some providers (OpenAI-compatible) is long.
+        // Size the Provider column to the longest label (capped, so a long type label
+        // like OpenAI-compatible cannot crowd out Endpoint) and give Endpoint the rest.
         // Auth (12) and a 24-column Endpoint floor are reserved out of the terminal
-        // width, and the list's selection prefix and panel border take the rest.
+        // width, and the list's selection prefix and panel border take the remainder.
         const int AuthWidth = 12;
         const int MinEndpointWidth = 24;
         const int ChromeWidth = 12;
         var providerWidth = NetclawTuiChrome.FitColumnWidth(
             items.Select(static p => p.IsConfigured ? ProviderLabel(p) : p.DisplayName),
             "Provider",
-            _terminal.Width - ChromeWidth - AuthWidth - MinEndpointWidth);
+            Math.Min(NetclawTuiChrome.MaxProviderColumnWidth, _terminal.Width - ChromeWidth - AuthWidth - MinEndpointWidth));
 
         _providerList = Layouts.SelectionList(
                 items.Concat(new[] { AddNewProviderItem }),

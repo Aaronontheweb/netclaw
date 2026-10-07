@@ -60,8 +60,7 @@ public sealed class ConfigDashboardPageTests : IDisposable
     [Theory]
     [InlineData(40)]
     [InlineData(24)]
-    [InlineData(16)]
-    public async Task Dashboard_RendersEveryRow_AtNormalAndSmallTerminalHeights(int height)
+    public async Task Dashboard_RendersEveryRow_AtNormalAndShortTerminalHeights(int height)
     {
         var (terminal, app, vm) = HeadlessTerminaFixture.Create<ConfigDashboardPage, ConfigDashboardViewModel>(
             "/config",
@@ -75,13 +74,8 @@ public sealed class ConfigDashboardPageTests : IDisposable
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
         await app.RunAsync(cts.Token);
 
-        // A short terminal may legitimately scroll, so only the rows that fit are
-        // required on screen; at 24 rows and up all twelve must be visible.
-        if (height >= 24)
-        {
-            foreach (var item in vm.Items)
-                Assert.True(terminal.Contains(item.Label), $"Row '{item.Label}' is not on screen at height {height}");
-        }
+        foreach (var item in vm.Items)
+            Assert.True(terminal.Contains(item.Label), $"Row '{item.Label}' is not on screen at height {height}");
     }
 
     [Fact]
