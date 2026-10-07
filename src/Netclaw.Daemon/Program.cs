@@ -730,7 +730,6 @@ static IReadOnlyList<string> ConfigureDaemonServices(
         toolRegistry.Register(new SqliteFindMemoriesTool(memoryStore));
         toolRegistry.Register(new SqliteGetMemoriesTool(memoryStore));
         toolRegistry.Register(new SqliteStoreMemoryTool(new SQLiteMemoryCheckpointSink(memoryStore, TimeProvider.System)));
-        toolRegistry.Register(new SqliteUpdateMemoryTool(memoryStore));
 
         // Embedding foundation (memory-core-redesign Slice 2). The holder always exists —
         // starts pointed at an Unavailable stub so any consumer resolving it before warmup
@@ -750,10 +749,14 @@ static IReadOnlyList<string> ConfigureDaemonServices(
         // missing-manifest-entry condition elsewhere — the daemon still starts, and
         // EmbeddingWarmupHostedService's own load attempt is what surfaces the loud failure.
         EmbeddingModelProvisioner.Allowlist.TryGetValue(memoryConfig.Embeddings.ModelId, out var initialEmbeddingEntry);
-        services.AddSingleton(_ => new MemoryEmbedderHolder(
+        var embedderHolder = new MemoryEmbedderHolder(
             new UnavailableMemoryEmbedder(memoryConfig.Embeddings.ModelId, "embedding warmup has not completed yet"),
             initialQueryPrefix: initialEmbeddingEntry?.QueryPrefix ?? string.Empty,
-            initialCalibratedMinCosineSimilarity: initialEmbeddingEntry?.CalibratedMinCosineSimilarity));
+            initialCalibratedMinCosineSimilarity: initialEmbeddingEntry?.CalibratedMinCosineSimilarity);
+        // Factory registration keeps the container responsible for disposing the holder; the
+        // update_memory tool shares the same instance so its edits re-embed like curation writes do.
+        services.AddSingleton(_ => embedderHolder);
+        toolRegistry.Register(new SqliteUpdateMemoryTool(memoryStore, embedderHolder));
 
         // Vector index for the curation evaluator's embedding kNN nominator (memory-core-
         // redesign Slice 3 Stage B, task 3.1). Registered alongside MemoryEmbedderHolder above:

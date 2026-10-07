@@ -99,7 +99,7 @@ public sealed class SQLiteMemoryStoreEmbeddingTests : IAsyncLifetime
         var updated = await _store.ReplaceDocumentTextAsync(
             "doc-1", "Second body", TestContext.Current.CancellationToken);
 
-        Assert.True(updated);
+        Assert.NotNull(updated);
         Assert.Empty(await _store.GetEmbeddingsForModelAsync("model-a", TestContext.Current.CancellationToken));
         Assert.True(_store.EmbeddingDataVersion > versionBeforeUpdate);
     }
