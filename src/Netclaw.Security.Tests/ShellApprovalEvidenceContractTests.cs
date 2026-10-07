@@ -47,7 +47,7 @@ public sealed partial class ShellApprovalEvidenceContractTests
     private const string FreshSessionHarvestSha256 =
         "4a6acc38746dd23df75e6a95fa4fa84d43ae74a35ea3ca6dd17a8dfd3bc3b511";
     private const string FreshSessionPolicyFixturesSha256 =
-        "0ef0f6314d33bbf66cd45443993917596774eacf3867d77bc2affae9ad5086c9";
+        "2fa6ab870f715ca60ccb4c075e4f2062f4ad816ec7e02af6df42d469f056d029";
     private const string FreshSessionEvalBaselineSha256 =
         "be1c2fe0fc646f4692da75b0d5398fb4f8c3c5ea2707625266915b8d2e6cd31e";
     private const string FreshSessionEvalResultsSha256 =
@@ -770,12 +770,13 @@ public sealed partial class ShellApprovalEvidenceContractTests
         Assert.Equal(
             2,
             fixtures.LiveRegressionCases.Count(item => item.TargetOutcome == "Allow"));
-        // R08 (loop variable) has Unknown command words, so it gets a rewrite
-        // correction instead of a prompt (#2306).
+        // R08 (a glob loop value) has Unknown command words. The file name is
+        // known only at run time, so the agent cannot write it literally, and
+        // the call gets a prompt, not a rewrite correction (owner, 2026-10-07).
         Assert.Equal(
-            6,
+            7,
             fixtures.LiveRegressionCases.Count(item => item.TargetOutcome == "RequiresApproval"));
-        Assert.Single(
+        Assert.DoesNotContain(
             fixtures.LiveRegressionCases,
             item => item.TargetOutcome == "RequiresAgentCorrection");
         Assert.Single(fixtures.LiveRegressionCases, item => item.TargetOutcome == "Deny");

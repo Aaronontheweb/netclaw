@@ -806,6 +806,35 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
   both shells; the other causes are correctable in Bash only. A dynamic program
   name or a PowerShell script block keeps the one-time prompt (an unattended
   run denies it).
+- Follows (owner, 2026-10-07): Netclaw sends a correction only when a rewrite
+  that the model can make removes the cause. The source holds the literal
+  words when the parser proves each authored value (`for v in push fetch`), or
+  when the word has no `$` and no backtick (a brace list `{push,fetch}`, a
+  glob). A word with a run-time value has no literal spelling: an environment
+  value (`[ -n "$FOO" ]`, `git "$FOO" origin`), a `$(...)` result
+  (`git $(cmd) origin`), `$?`, or a file name from a glob loop
+  (`for f in src/*; do [ -f "$f" ]; done`). Such a command gets a one-time
+  prompt with `Once` and `Deny`. No grant covers it, and an unattended run
+  denies it. The first word that Bash can change decides: in
+  `git {push,fetch} origin "$BRANCH"` the brace list is the cause, so the
+  correction stays, and in `git "$FOO" *.md` the run-time word is the cause,
+  so the call prompts.
+  `ShellApprovalMatcher.ClassifyUnknownCommandWords` owns this call-local
+  check. ShellSyntaxTree gives no typed fact for an expansion in a word, so
+  the check reads `$` and the backtick in the raw word. That is shell syntax,
+  not the grammar of a program. Each command-words and quote correction has a
+  test row that applies the rewrite and gets no correction on the retry
+  (`SubcommandEverywhereGrantTests.CorrectionRewrites`).
+- Follows: a test builtin with a run-time operand stays a prompt, not
+  approval-exempt data as `echo "$FOO"` is. Both rules ask one question: can
+  an operand value run code or reach a path? An `echo` operand only prints.
+  A `test` or `[` operand can be a `-v` name whose subscript runs a command,
+  and Netclaw does not parse the test operators to see which operand is the
+  operator.
+- Breaks: "a test builtin with a run-time operand is data". On Bash 5.2,
+  `x='a[$(cmd)]'; [ -v "$x" ]` runs `cmd`. Do not simplify the rule that way.
+- Breaks: `[ -n "$FOO" ]` gets `WriteWordsLiterally`. The model cannot write
+  the value of `FOO`, so it repeats the call or stops.
 - Breaks: `ResolveAuthorizationScope` treats the first operand of `find` and
   `cd` as a directory. That is private grammar of two executables.
 

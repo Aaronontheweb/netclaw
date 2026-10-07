@@ -576,8 +576,8 @@ Unquoted, `n=$(cmd); echo $n` needs consent. `echo $((1 + 2))` and
 `echo $(cmd)` are data (only `cmd` needs approval). In Bash, `test` and `[` need no approval when each operand is a
 literal or a proved value without `[`: `[ 3 -gt 2 ]`, `x=3; [ "$x" -gt 2 ]`,
 and a guard on a loop over literal words. A test on a value from `$(...)` or
-`read` gets a one-time prompt. A test on a file name from a glob loop gets a
-"write the command words literally" correction, and the call does not run.
+`read`, an environment value (`[ -n "$FOO" ]`), or a file name from a glob
+loop gets a one-time prompt.
 `continue`, `break`, `exit`, and `return` need no approval. These rules also
 apply after `cd dir && action;`, where the directory is not known: `echo "---"`
 there needs no approval, but a redirect or an unquoted `echo $n` still needs
@@ -586,7 +586,11 @@ can open files, such as `cat`, a word that the shell can glob and whose value
 Netclaw cannot prove (`$f`, `/work/$f`, `~/notes/{a,b}.txt`) makes its command
 exact; no grant covers it. When a rewrite can remove the word (a brace list or
 a loop over literal words), you get a "write the command words literally"
-correction, and the call does not run. When the command words are known and
+correction, and the call does not run. Netclaw sends that correction only
+when you can make the rewrite. A word with a run-time value (`"$FOO"`,
+`$(cmd)`, `$?`, a glob loop value) in a command-word position gets a one-time
+prompt with `Once` and `Deny` instead. No grant covers it, and an unattended
+run denies it. When the command words are known and
 the unquoted word comes after them, as in
 `git rev-list --count HEAD...origin/$(git branch --show-current)`, you get a
 quote correction that names the word, and the call does not run. Put the word

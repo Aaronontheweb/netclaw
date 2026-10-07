@@ -228,7 +228,11 @@ covered:
   expand to file names, so it needs consent. For a program that can open
   files, such as `cat /work/$f`, such a word gets one exact prompt that no
   grant covers. A brace word or a loop over literal words in that place gets
-  a rewrite correction instead, and the call does not run. When the command
+  a rewrite correction instead, and the call does not run. Netclaw sends a
+  correction only when the agent can make the rewrite: a word with a
+  run-time value (`$FOO`, `$(cmd)`, `$?`, a glob loop value) in a command-word
+  position gets a one-time prompt with `Once` and `Deny`. No grant covers it,
+  and an unattended run denies it. When the command
   words are known and such a word after them is the only cause, as in
   `git rev-list HEAD...origin/$(git branch --show-current)`, the agent gets a
   quote correction: no prompt and no run. The quoted retry
@@ -243,9 +247,11 @@ covered:
   operand is not a scope, but a protected path is still denied. An operand with
   `[` or a value from `$(...)` or `read` gets a one-time prompt, because a
   `-v` subscript can run a command. A file name from a glob loop
-  (`for f in src/*; do [ -f "$f" ]; done`) gets the `WriteWordsLiterally`
-  correction. The agent cannot follow that advice for a glob loop, so the
-  call does not run.
+  (`for f in src/*; do [ -f "$f" ]; done`) and an environment value
+  (`[ -n "$FOO" ]`) also get a one-time prompt with `Once` and `Deny`. No
+  grant covers it. The agent cannot write a run-time value literally, so
+  Netclaw sends no rewrite correction for it. An unattended run denies the
+  call.
 - In an interactive session, the reviewed diagnostic catalog covers the
   phrase, and the audience profile lets a file tool read every path
   (`ReadFiles`). With the default Personal profile, that is every path except a
