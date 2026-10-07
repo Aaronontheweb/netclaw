@@ -19,12 +19,23 @@ public sealed partial class DaemonManager
     private readonly NetclawPaths _paths;
     private readonly TimeProvider _timeProvider;
     private readonly IContainerSupervisor _supervisor;
+    private readonly ISystemCommandRunner _commandRunner;
 
     public DaemonManager(NetclawPaths paths, TimeProvider timeProvider, IContainerSupervisor? supervisor = null)
+        : this(paths, timeProvider, supervisor ?? new ContainerSupervisor(), ProcessSystemCommandRunner.Instance)
+    {
+    }
+
+    internal DaemonManager(
+        NetclawPaths paths,
+        TimeProvider timeProvider,
+        IContainerSupervisor supervisor,
+        ISystemCommandRunner commandRunner)
     {
         _paths = paths;
         _timeProvider = timeProvider;
-        _supervisor = supervisor ?? new ContainerSupervisor();
+        _supervisor = supervisor;
+        _commandRunner = commandRunner;
     }
 
     /// <summary>
@@ -312,6 +323,16 @@ public sealed partial class DaemonManager
             return new DaemonResult(false,
                 "Cannot find netclawd binary. Set NETCLAW_DAEMON_PATH or ensure it is " +
                 "in the same directory as the CLI.");
+
+        // Probe before writing anything: a host without a reachable user systemd (a plain
+        // container, WSL1, a minimal VM) would otherwise fail at daemon-reload and leave
+        // the generated unit and env file behind.
+        var userManager = await RunCommandAsync("systemctl", "--user show-environment");
+        if (!userManager.Success)
+            return new DaemonResult(false,
+                "Cannot install the service: systemd user services are not available on this host " +
+                $"({userManager.Message}). Run the daemon under a container supervisor, or start it " +
+                "with `netclaw daemon start` (it will not restart after a crash or reboot).");
 
         Directory.CreateDirectory(SystemdUserUnitDirectory);
 
@@ -661,9 +682,9 @@ public sealed partial class DaemonManager
         return $"{uptime.Minutes}m {uptime.Seconds}s";
     }
 
-    private static async Task<DaemonResult> RunCommandAsync(string command, string arguments)
+    private async Task<DaemonResult> RunCommandAsync(string command, string arguments)
     {
-        var result = await ProcessSystemCommandRunner.Instance.RunAsync(command, arguments);
+        var result = await _commandRunner.RunAsync(command, arguments);
         return result.Success
             ? new DaemonResult(true, "OK")
             : new DaemonResult(false, result.Message);
