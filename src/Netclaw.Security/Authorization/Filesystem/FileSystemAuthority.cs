@@ -243,6 +243,18 @@ internal sealed class FileSystemAuthority
             if (TryResolveFinalLink(path, out var target) && IsInProtectedSet(target, protectedSet))
                 return true;
 
+            // SECURITY: the host resolver removes a ".." in a link text lexically,
+            // but the OS follows a link before it applies "..". For such a link the
+            // screen reads the path that the OS opens. A path that this walk
+            // cannot resolve counts as protected (R13).
+            var fullPath = Path.GetFullPath(path);
+            if (FollowLinkChain(fullPath, out _) is LinkChainEnd.Unknown
+                && (!TryResolvePhysicalPath(fullPath, out var physical)
+                    || IsInProtectedSet(physical, protectedSet)))
+            {
+                return true;
+            }
+
             return TryResolveLinks(path, out var resolved) && IsInProtectedSet(resolved, protectedSet);
         }
         catch
@@ -551,6 +563,67 @@ internal sealed class FileSystemAuthority
         {
             return LinkChainEnd.Unknown;
         }
+    }
+
+    /// <summary>
+    /// Resolves a full path as the OS does: one segment at a time, a link before
+    /// the next segment, and <c>..</c> against the resolved parent. Returns false
+    /// for a loop, for more than <see cref="MaximumLinkHops"/> links, and for a
+    /// rooted link text that is not a full path.
+    /// </summary>
+    /// <remarks>
+    /// Only the protected-path screen uses it, and only for a link that
+    /// <see cref="FollowLinkChain"/> cannot name in the lexical frame. The result
+    /// has no alias of a grant root, so it is not a grant scope.
+    /// </remarks>
+    private static bool TryResolvePhysicalPath(string path, out string physical)
+    {
+        physical = string.Empty;
+        char[] separators = OperatingSystem.IsWindows() ? ['/', '\\'] : ['/'];
+        var current = Path.GetPathRoot(path);
+        if (string.IsNullOrEmpty(current))
+            return false;
+
+        var pending = new Stack<string>(path[current.Length..].Split(separators).Reverse());
+        var hops = 0;
+        while (pending.TryPop(out var segment))
+        {
+            if (segment is "" or ".")
+                continue;
+
+            if (segment == "..")
+            {
+                current = Path.GetDirectoryName(current) ?? current;
+                continue;
+            }
+
+            var entry = Path.Combine(current, segment);
+            var linkText = ReadLinkText(entry);
+            if (linkText is null)
+            {
+                current = entry;
+                continue;
+            }
+
+            if (++hops > MaximumLinkHops)
+                return false;
+
+            if (Path.IsPathFullyQualified(linkText))
+            {
+                current = Path.GetPathRoot(linkText)!;
+                linkText = linkText[current.Length..];
+            }
+            else if (Path.IsPathRooted(linkText))
+            {
+                return false;
+            }
+
+            foreach (var linkSegment in linkText.Split(separators).Reverse())
+                pending.Push(linkSegment);
+        }
+
+        physical = PathUtility.Normalize(current);
+        return true;
     }
 
     /// <summary>The most links that <see cref="FollowLinkChain"/> follows. Linux uses 40.</summary>

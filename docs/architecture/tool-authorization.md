@@ -783,12 +783,18 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
     `ToolPathPolicy.FindLinkWords` is the one loop that finds the plain words,
     for the protected-path screen and for the scopes.
   - `FileSystemAuthority.FollowLinkChain` is the one reader of a final link
-    target for grant scopes and glob words. The protected-path screen
-    (`FileSystemAuthority.IsProtected`) keeps the host resolver, because its
-    failures deny (R13), and that includes the Windows drive root. The chain
-    reader reads the chain from the disk at authorization time. A relative
-    link text resolves against the lexical directory of its link, so an alias
-    above a grant root stays in the target.
+    target for grant scopes and glob words. It reads the chain from the disk
+    at authorization time. A relative link text resolves against the lexical
+    directory of its link, so an alias above a grant root stays in the target.
+  - The protected-path screen (`FileSystemAuthority.IsProtected`) keeps the
+    host resolver, because its failures deny (R13), and that includes the
+    Windows drive root. The host resolver removes a `..` in a link text
+    lexically. So for a link that `FollowLinkChain` cannot name, the screen
+    also resolves the path as the OS does (`TryResolvePhysicalPath`) and
+    denies a protected result. Positive example: `keydd.txt` with the text
+    `ncdir/../keys/a.pem`, where `ncdir` is a link to the Netclaw `logs`
+    folder, is denied. Negative example: `dotdot.txt` with the same shape and
+    an ordinary target is not denied; it gets exact consent only.
   - Each candidate scope needs coverage (TA-8). So a folder or repository
     grant covers the word only when it covers the link folder and the target.
     The link walk of the folder grant also checks the target scope, so a
@@ -798,16 +804,18 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
   - A dangling link gets the decision of the target path that its link text
     states, because a write through the link creates the file there. A target
     in the scope is covered. A target outside the scope is not covered.
-  - A link without a known target fails closed. This applies to more than 40
-    links, to a rooted link text that is not a full path, and to a `..` in a
-    link text that leaves a link. The occurrence is then unresolved and gets
-    exact consent only, also with a grant for anywhere. The protected-path
-    screen cannot resolve a loop, so it denies a loop first (R13).
-  - A glob word uses the same reader. `HasOnlyContainedLinkEntries` accepts a
-    link entry only when the final target from `FollowLinkChain` is in the
-    covering directory. So `mytool read dir/*.txt` and `mytool read dir/x.txt`
-    get the same answer for one link. One difference stays: a glob word with
-    a dangling link entry is unresolved, as before.
+  - A link without a known target fails closed. A `..` in a link text that
+    leaves a link, or a rooted link text that is not a full path, makes the
+    occurrence unresolved. It gets exact consent only, also with a grant for
+    anywhere, unless the protected-path screen denies it first. The screen
+    cannot resolve a loop or a chain of more than 40 links, so it denies
+    those (R13).
+  - A glob word uses the same reader and is stricter. Each link entry of a
+    walked directory must have an existing final target in that same
+    directory (`HasOnlyContainedLinkEntries`). If not, the word is unresolved
+    and gets exact consent only. So a link to a sibling folder in the grant, a
+    link out of the folder, and a dangling entry each keep a literal word
+    covered or give it a folder prompt, but leave a glob word unresolved.
   - A platform temporary alias, such as macOS `/tmp`, is an OS alias (R7).
     The word `/tmp` keeps its one lexical scope.
   - A word that is not a full host path of the shell's style names no host
@@ -819,8 +827,8 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
     - A directory link in the middle of a path word (`current/app.js`,
       `cd innerdir && ...`). The link rule below the grant root refuses it,
       also when its target is in the folder.
-    - An option value or a `key=value` word: `--input=ext.txt`, `if=ext.txt`,
-      `@ext.txt`. Such a word has no path scope today, also for a literal path
+    - An option value or a `key=value` word: `--input=ext.txt`, `-iextlink`,
+      `if=ext.txt`, `@ext.txt`. Such a word has no path scope today, also for a literal path
       outside the folder. The option-value scope of
       https://github.com/netclaw-dev/netclaw/pull/2378 must call
       `TryAddLinkScopes` for each path that it adds.
@@ -829,6 +837,14 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
     - A link as the program word (`./tool` that points to `/usr/bin/rm`). The
       target of a program word is not a scope.
     - A hard link. No path check can see it.
+    - A Windows junction or volume mount point. No test covers them, and the
+      grant tests with real links run on POSIX hosts only. The chain ends at a
+      reparse point that has no link text.
+    - A link text with a trailing separator before a second link
+      (`tsl -> innerdir/`). The chain stops there, so the word prompts also
+      when the target is in the folder.
+    - A link with an unknown target and an ordinary real target. The operator
+      sees only the word in the exact prompt, not the path that the OS opens.
     - A change of the target between the decision and the launch. The launch
       check does not read the target of a plain link word again.
 - Follows: a program path names a file, not a spelling (R1). When the

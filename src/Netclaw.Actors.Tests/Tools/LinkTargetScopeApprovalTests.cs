@@ -154,6 +154,55 @@ public sealed class LinkTargetScopeApprovalTests(ShellApprovalMatrixFixture fixt
         Assert.Equal([ObservedOptionKeys.ApproveOnce, ObservedOptionKeys.Deny], prompt.OptionKeys);
     }
 
+    // SECURITY: the OS follows "ncdir" before it applies "..", so these links
+    // open a protected file below the Netclaw root. The lexical target is a
+    // file in the project. The protected-path screen reads the path that the
+    // OS opens and denies the call, attended or not, with or without a grant.
+    // The control "dotdot.txt" has the same shape and an ordinary target, so
+    // it keeps exact consent (see the test above).
+    [SlopwatchSuppress("SW001", "The case uses POSIX symbolic links and Bash authorization behavior.")]
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "The case uses POSIX symbolic links and Bash authorization behavior.")]
+    [InlineData("mytool read keydd.txt", true, true)]
+    [InlineData("mytool read keydd.txt", true, false)]
+    [InlineData("mytool read keyddlink", true, true)]
+    [InlineData("mytool read secretsdd.txt", true, true)]
+    [InlineData("mytool read secretsdd.txt", true, false)]
+    [InlineData("mytool read grantsdd.txt", true, true)]
+    [InlineData("mytool read hopdd.txt", true, true)]
+    [InlineData("cat keydd.txt", false, true)]
+    [InlineData("cat keydd.txt", false, false)]
+    public async Task Link_text_with_a_parent_segment_after_a_link_to_a_protected_path_is_denied(
+        string command,
+        bool grant,
+        bool interactive)
+    {
+        await using var harness = await CreateHarnessAsync(
+            grant ? Approvals.PersistentAnywhere("mytool read") : Approvals.None,
+            interactive);
+        var paths = harness.Paths;
+        var project = harness.ProjectDirectory;
+        Directory.CreateDirectory(paths.LogsDirectory);
+        Directory.CreateDirectory(paths.KeysDirectory);
+        Directory.CreateDirectory(paths.ConfigDirectory);
+        await File.WriteAllTextAsync(Path.Join(paths.KeysDirectory, "a.pem"), "synthetic test data", Ct);
+        if (!File.Exists(paths.SecretsPath))
+            await File.WriteAllTextAsync(paths.SecretsPath, "{}", Ct);
+        // ncdir is not protected. Each link text leaves it with "..".
+        Directory.CreateSymbolicLink(Path.Join(project, "ncdir"), paths.LogsDirectory);
+        File.CreateSymbolicLink(Path.Join(project, "keydd.txt"), "ncdir/../keys/a.pem");
+        File.CreateSymbolicLink(Path.Join(project, "keyddlink"), "ncdir/../keys/a.pem");
+        File.CreateSymbolicLink(Path.Join(project, "secretsdd.txt"), "ncdir/../config/secrets.json");
+        File.CreateSymbolicLink(Path.Join(project, "grantsdd.txt"), "ncdir/../config/tool-approvals.json");
+        // A second link in the chain does not hide the first one.
+        File.CreateSymbolicLink(Path.Join(project, "hopdd.txt"), "keydd.txt");
+
+        var decision = await harness.EvaluateShellDecisionAsync(command, Ct);
+
+        // The text screen or the path screen denies, by the kind of the protected file.
+        Assert.Equal(ToolAuthorizationOutcome.Denied, decision.Outcome);
+        Assert.Contains(decision.DenyReason, new[] { "shell_references_protected_path", "shell_path_protected" });
+    }
+
     // A loop never ends. The protected-path screen cannot resolve it, so it
     // denies the word before the grant check (R13).
     [SlopwatchSuppress("SW001", "The case uses POSIX symbolic links and Bash authorization behavior.")]
