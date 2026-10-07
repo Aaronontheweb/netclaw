@@ -457,7 +457,7 @@ public sealed class OpenAiCodexTests
 
             Assert.False(result.Success);
             Assert.Contains("expired", result.ErrorMessage);
-            Assert.Contains("netclaw provider fix", result.ErrorMessage);
+            Assert.Contains("netclaw provider", result.ErrorMessage);
             Assert.Empty(result.Models);
         }
 

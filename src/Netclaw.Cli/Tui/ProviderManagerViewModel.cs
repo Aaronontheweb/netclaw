@@ -919,7 +919,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         if (!_newProviderPersisted)
             WriteProviderConfig();
 
-        StatusMessage.Value = $"Added provider '{NewProviderName}'. Restart daemon for changes to take effect.";
+        StatusMessage.Value = $"Added provider '{NewProviderName}'. The daemon is applying the change.";
         ClearAddState();
         RefreshAndProbeAll();
     }
@@ -978,7 +978,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         if (secretProviders?.Remove(RemoveProviderName) == true)
             ConfigFileHelper.WriteSecretsFile(_paths, secrets);
 
-        StatusMessage.Value = $"Removed provider '{RemoveProviderName}'. Restart daemon for changes to take effect.";
+        StatusMessage.Value = $"Removed provider '{RemoveProviderName}'. The daemon is applying the change.";
         RemoveProviderName = null;
         DetailProvider = null;
         RefreshAndProbeAll();
@@ -1036,8 +1036,8 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         }
 
         StatusMessage.Value = result.ReassignedModelRoles.Count > 0
-            ? $"Renamed '{oldName}' to '{trimmed}'. Reassigned model role(s): {string.Join(", ", result.ReassignedModelRoles)}. Restart daemon for changes to take effect."
-            : $"Renamed '{oldName}' to '{trimmed}'. Restart daemon for changes to take effect.";
+            ? $"Renamed '{oldName}' to '{trimmed}'. Reassigned model role(s): {string.Join(", ", result.ReassignedModelRoles)}. The daemon is applying the change."
+            : $"Renamed '{oldName}' to '{trimmed}'. The daemon is applying the change.";
 
         RenameNewName = null;
         DetailProvider = null;
@@ -1392,14 +1392,14 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
 
                 // Fix flow: re-probe all providers so list shows fresh health
                 IsFixFlow = false;
-                StatusMessage.Value = "Credentials updated successfully. Restart daemon for changes to take effect.";
+                StatusMessage.Value = "Credentials updated successfully. The daemon is applying the change.";
                 RefreshAndProbeAll();
             }
             else
             {
                 WriteProviderConfig();
                 _newProviderPersisted = true;
-                StatusMessage.Value = $"Added provider '{NewProviderName}'. Restart daemon for changes to take effect.";
+                StatusMessage.Value = $"Added provider '{NewProviderName}'. The daemon is applying the change.";
                 CurrentState.Value = ProviderManagerState.AddComplete;
             }
         }

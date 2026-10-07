@@ -861,7 +861,7 @@ public sealed class ProviderManagerPage : ReactivePage<ProviderManagerViewModel>
         children.WithChild(new TextNode("").Height(1));
         children.WithChild(new TextNode("  Renames the provider and cascades the change to any model")
             .WithForeground(Color.Gray));
-        children.WithChild(new TextNode("  role(s) that reference it. Restart the daemon for changes to take effect.")
+        children.WithChild(new TextNode("  role(s) that reference it. The daemon applies the change automatically.")
             .WithForeground(Color.Gray));
 
         return children;

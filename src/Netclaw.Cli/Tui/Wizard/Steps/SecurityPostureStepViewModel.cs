@@ -33,7 +33,7 @@ public sealed class SecurityPostureStepViewModel : IWizardStepViewModel, ISectio
     public int SubStepCount => 1;
 
     public string GetHelpText() =>
-        "  This sets the default trust level. You can override per-channel in the Channels step.\n" +
+        "  This sets the default trust level. You can override per-channel under Channels in `netclaw config`.\n" +
         "  Personal mode enables shell with approval gates — commands require user sign-off on first use.";
 
     public bool TryAdvance()

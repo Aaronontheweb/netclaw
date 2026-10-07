@@ -67,7 +67,7 @@ For OpenAI ChatGPT subscription auth, Netclaw persists the OAuth access token,
 refresh token, and ChatGPT account ID returned by the OpenAI ID token. The
 account ID is required by the Codex backend. If OpenAI OAuth validation reports
 that the account ID is missing, re-authenticate the provider with `netclaw
-provider fix <name>` or remove and add it again. API-key OpenAI auth does not
+provider` or remove and add it again. API-key OpenAI auth does not
 use the Codex backend or this account-ID metadata.
 
 For `openai` OAuth providers, `netclaw model discover <provider>` queries the

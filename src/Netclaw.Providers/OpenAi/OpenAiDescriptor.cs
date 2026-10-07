@@ -96,12 +96,12 @@ public sealed class OpenAiDescriptor : IProviderDescriptor
 
         if (entry.OAuthTokenExpiry is { } expiry && expiry < _timeProvider.GetUtcNow())
             return new ProviderProbeResult(false,
-                $"OAuth token expired {expiry:g}. Re-authenticate with 'netclaw provider fix <name>'.", []);
+                $"OAuth token expired {expiry:g}. Re-authenticate with 'netclaw provider'.", []);
 
         var accountId = JwtAccountIdExtractor.ResolveAccountId(entry);
         if (accountId is null)
             return new ProviderProbeResult(false,
-                "OpenAI OAuth login did not return a ChatGPT account ID. Re-authenticate with 'netclaw provider fix <name>'.", []);
+                "OpenAI OAuth login did not return a ChatGPT account ID. Re-authenticate with 'netclaw provider'.", []);
 
         return await ProbeCodexModelsAsync(token, accountId, ct);
     }

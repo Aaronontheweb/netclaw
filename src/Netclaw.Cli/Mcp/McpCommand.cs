@@ -428,7 +428,7 @@ internal static class McpCommand
         }
         catch (HttpRequestException)
         {
-            writer.WriteLine("Error: Could not reach the daemon. Is it running? (netclaw run)");
+            writer.WriteLine("Error: Could not reach the daemon. Is it running? (netclaw daemon start)");
             return 1;
         }
 
@@ -734,7 +734,7 @@ internal static class McpCommand
         if (daemonError is not null)
         {
             writer.WriteLine($"Live MCP status unavailable: {daemonError}");
-            writer.WriteLine("Start the daemon with `netclaw daemon start` or `netclaw run`.");
+            writer.WriteLine("Start the daemon with `netclaw daemon start`.");
             writer.WriteLine();
         }
 
@@ -1541,7 +1541,7 @@ internal static class McpCommand
         writer.WriteLine("  enable       Enable a disabled MCP server");
         writer.WriteLine("  disable      Disable an MCP server without removing it");
         writer.WriteLine("  permissions  Interactively edit per-audience tool grants and approval modes (recommended)");
-        writer.WriteLine("  tools        Read-only view of per-audience tool grants from the CLI");
+        writer.WriteLine("  tools        Show or edit per-audience tool grants from the CLI (--snapshot, --grant, --revoke)");
         writer.WriteLine();
         writer.WriteLine("Flags for 'add':");
         writer.WriteLine("  --grant-all  CI escape hatch. Skip the empty-grants writes and leave tool");
