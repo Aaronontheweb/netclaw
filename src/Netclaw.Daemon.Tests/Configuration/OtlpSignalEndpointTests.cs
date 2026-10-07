@@ -4,7 +4,12 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Netclaw.Daemon.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using OpenTelemetry;
 using OpenTelemetry.Exporter;
+using OpenTelemetry.Logs;
+using OpenTelemetry.Metrics;
 using Xunit;
 
 namespace Netclaw.Daemon.Tests.Configuration;
@@ -15,9 +20,9 @@ public sealed class OtlpSignalEndpointTests
     [InlineData("http://collector:4318", "v1/logs", "http://collector:4318/v1/logs")]
     [InlineData("http://collector:4318/", "v1/metrics", "http://collector:4318/v1/metrics")]
     [InlineData("https://gw.example/otel", "v1/metrics", "https://gw.example/otel/v1/metrics")]
-    [InlineData("http://collector:4318/v1/logs", "v1/logs", "http://collector:4318/v1/logs")]
-    [InlineData("https://gw.example/otel/v1/metrics/", "v1/metrics", "https://gw.example/otel/v1/metrics/")]
-    public void HttpProtobuf_AppendsTheSignalPathToABaseUrl_AndKeepsAFullSignalUrl(
+    [InlineData("http://collector:4318/full/v1/logs", "v1/metrics", "http://collector:4318/full/v1/logs/v1/metrics")]
+    [InlineData("http://collector:4318/v1/logs", "v1/logs", "http://collector:4318/v1/logs/v1/logs")]
+    public void HttpProtobuf_AlwaysAppendsTheSignalPathToTheBaseUrl(
         string configured, string signalPath, string expected)
     {
         var resolved = TelemetryRegistrationExtensions.ResolveSignalEndpoint(
@@ -38,4 +43,91 @@ public sealed class OtlpSignalEndpointTests
 
         Assert.Equal(configured, resolved);
     }
+}
+
+/// <summary>
+/// Runs the real <c>AddNetclawTelemetry</c> registration against a local collector, so the URL each
+/// exporter really posts to is observed rather than only the helper that computes it.
+/// </summary>
+[Collection(OtlpExporterEnvironmentCollection.Name)]
+public sealed class OtlpExporterWiringTests
+{
+    [Fact]
+    public async Task HttpProtobuf_PostsLogsAndMetricsToTheirOwnSignalPaths_UnderTheConfiguredBaseUrl()
+    {
+        var port = FreePort();
+        var paths = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        using var collector = new System.Net.HttpListener();
+        collector.Prefixes.Add($"http://127.0.0.1:{port}/");
+        collector.Start();
+        var serving = Task.Run(async () =>
+        {
+            while (collector.IsListening)
+            {
+                System.Net.HttpListenerContext context;
+                try
+                {
+                    context = await collector.GetContextAsync();
+                }
+                catch (Exception ex) when (ex is System.Net.HttpListenerException or ObjectDisposedException)
+                {
+                    return;
+                }
+
+                paths.Enqueue(context.Request.Url!.AbsolutePath);
+                context.Response.StatusCode = 200;
+                context.Response.Close();
+            }
+        }, TestContext.Current.CancellationToken);
+
+        var previousProtocol = Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_PROTOCOL");
+        Environment.SetEnvironmentVariable("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf");
+        try
+        {
+            var builder = Microsoft.AspNetCore.Builder.WebApplication.CreateBuilder();
+            builder.Configuration["Telemetry:Enabled"] = "true";
+            builder.Configuration["Telemetry:Otlp:Endpoint"] = $"http://127.0.0.1:{port}/collector";
+            builder.AddNetclawTelemetry();
+
+            await using var app = builder.Build();
+            var meterProvider = app.Services.GetRequiredService<MeterProvider>();
+            app.Services.GetRequiredService<ILoggerFactory>()
+                .CreateLogger("otlp-wiring-test").LogInformation("exported");
+            Netclaw.Channels.Telemetry.SessionTelemetry.RecordTurnCompleted();
+            meterProvider.ForceFlush();
+            app.Services.GetRequiredService<LoggerProvider>().ForceFlush();
+
+            // The log batch processor exports on its own schedule (5s by default).
+            var deadline = DateTime.UtcNow.AddSeconds(15);
+            while (DateTime.UtcNow < deadline
+                   && !(paths.Contains("/collector/v1/logs") && paths.Contains("/collector/v1/metrics")))
+            {
+                await Task.Delay(100, TestContext.Current.CancellationToken);
+            }
+
+            Assert.Contains("/collector/v1/logs", paths);
+            Assert.Contains("/collector/v1/metrics", paths);
+            Assert.DoesNotContain("/collector", paths);
+            Assert.DoesNotContain("/collector/v1/metrics/v1/logs", paths);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("OTEL_EXPORTER_OTLP_PROTOCOL", previousProtocol);
+            collector.Stop();
+            await serving;
+        }
+    }
+
+    private static int FreePort()
+    {
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        return ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+    }
+}
+
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class OtlpExporterEnvironmentCollection
+{
+    public const string Name = "OtlpExporterEnvironment";
 }

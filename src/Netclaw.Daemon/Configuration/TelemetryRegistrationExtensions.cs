@@ -73,19 +73,15 @@ public static class TelemetryRegistrationExtensions
     /// the endpoint comes from the OTEL_EXPORTER_OTLP_* environment variables; an endpoint set
     /// in code is used verbatim, so HTTP/protobuf would post to "/". Following the
     /// OpenTelemetry specification, <c>Telemetry:Otlp:Endpoint</c> is a base URL and HTTP/protobuf
-    /// appends <paramref name="signalPath"/> (<c>v1/logs</c>, <c>v1/metrics</c>). A URL that already
-    /// ends with that signal path is kept as given. gRPC uses the endpoint unchanged.
+    /// appends <paramref name="signalPath"/> (<c>v1/logs</c>, <c>v1/metrics</c>) whatever the URL
+    /// already ends with. gRPC uses the endpoint unchanged.
     /// </summary>
     internal static Uri ResolveSignalEndpoint(Uri endpoint, OtlpExportProtocol protocol, string signalPath)
     {
         if (protocol != OtlpExportProtocol.HttpProtobuf)
             return endpoint;
 
-        var path = endpoint.AbsolutePath.TrimEnd('/');
-        if (path.EndsWith("/" + signalPath, StringComparison.Ordinal))
-            return endpoint;
-
-        return new UriBuilder(endpoint) { Path = $"{path}/{signalPath}" }.Uri;
+        return new UriBuilder(endpoint) { Path = $"{endpoint.AbsolutePath.TrimEnd('/')}/{signalPath}" }.Uri;
     }
 
     /// <summary>
