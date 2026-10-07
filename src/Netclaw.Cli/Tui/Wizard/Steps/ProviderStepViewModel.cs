@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Json;
+using Netclaw.Cli.Model;
 using Netclaw.Cli.Tui;
 using Netclaw.Cli.Tui.Sections;
 using Netclaw.Configuration;
@@ -626,21 +627,17 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
     }
 
     private static string? ReadExistingProviderType(WizardContext context)
-    {
-        if (context.ExistingConfig is null
-            || !ConfigFileHelper.TryGetPathValue(context.ExistingConfig, "Models.Main.Provider", out var provider)
-            || provider is not string providerText)
-        {
-            return null;
-        }
-
-        return providerText;
-    }
+        => ReadExistingMain(context)?.Provider is { Length: > 0 } provider ? provider : null;
 
     private static string? ReadExistingModelId(WizardContext context)
+        => ReadExistingMain(context)?.ModelId is { Length: > 0 } modelId ? modelId : null;
+
+    // Same resolver as `netclaw model list`, so both the Definitions/Roles and legacy inline shapes prefill.
+    // An unresolvable Models section prefills nothing; the wizard rewrites it.
+    private static ModelReference? ReadExistingMain(WizardContext context)
         => context.ExistingConfig is not null
-           && ConfigFileHelper.TryGetPathValue(context.ExistingConfig, "Models.Main.ModelId", out var model)
-            ? model as string
+           && ModelCommand.TryLoadModelSelection(context.Paths, out var models, out _)
+            ? models?.Main
             : null;
 
     private Dictionary<string, object> BuildProvidersDictionary(ProviderStepViewModel vm, string providerType)

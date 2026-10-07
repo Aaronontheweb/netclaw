@@ -1246,6 +1246,41 @@ public sealed class ProviderManagerViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task RemoveProvider_ReferencedByNamedModelRole_IsRejected()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-ollama"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "ollama",
+                    ["Endpoint"] = "http://localhost:11434"
+                }
+            },
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Definitions"] = new Dictionary<string, object>
+                {
+                    ["qwen"] = new Dictionary<string, object> { ["Provider"] = "my-ollama", ["ModelId"] = "qwen3:30b" }
+                },
+                ["Roles"] = new Dictionary<string, object> { ["Main"] = "qwen" }
+            }
+        });
+
+        using var vm = CreateViewModel();
+        await ActivateAndProbeAsync(vm);
+
+        vm.SelectedProviderIndex = vm.DisplayProviders.FindIndex(p => p.ProviderType == "ollama");
+        vm.ActivateSelectedProvider();
+        vm.StartRemove();
+
+        Assert.Equal(ProviderManagerState.RemoveConfirm, vm.CurrentState.Value);
+        Assert.Contains("Main", vm.RemoveBlockingRoles);
+    }
+
+    [Fact]
     public void GoBack_FromAddName_ReturnsToList()
     {
         using var vm = CreateViewModel();

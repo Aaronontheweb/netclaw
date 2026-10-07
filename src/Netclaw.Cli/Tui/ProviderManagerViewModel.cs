@@ -950,8 +950,16 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         RemoveBlockingRoles.Clear();
         ErrorMessage.Value = "";
 
-        var roles = Provider.ProviderCommand.GetReferencingModelRoles(RemoveProviderName, _paths);
-        RemoveBlockingRoles.AddRange(roles);
+        try
+        {
+            RemoveBlockingRoles.AddRange(Provider.ProviderCommand.GetReferencingModelRoles(RemoveProviderName, _paths));
+        }
+        catch (ModelConfigurationException ex)
+        {
+            RemoveProviderName = null;
+            ErrorMessage.Value = $"Cannot check which model roles use this provider: {ex.Message}";
+            return;
+        }
 
         CurrentState.Value = ProviderManagerState.RemoveConfirm;
         NotifyStateChanged();

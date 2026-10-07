@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Cli.Config;
 using Netclaw.Cli.Provider;
 using Netclaw.Cli.Tui.Sections;
 using Netclaw.Cli.Tui.Wizard;
@@ -33,28 +34,24 @@ public sealed class ProviderSectionEditorTests : SectionEditorTestBase<ProviderS
             field.Path.StartsWith("Models", StringComparison.Ordinal));
     }
 
-    [Fact]
-    public void BuildContribution_BlankCredential_PreservesExistingSecret()
+    [Theory]
+    [InlineData("""{ "Main": { "Provider": "openai", "ModelId": "gpt-4.1" } }""")]
+    [InlineData("""{ "Definitions": { "gpt": { "Provider": "openai", "ModelId": "gpt-4.1" } }, "Roles": { "Main": "gpt" } }""")]
+    public void BuildContribution_BlankCredential_PreservesExistingSecret(string modelsJson)
     {
         File.WriteAllText(Context.Paths.SecretsPath, """
             { "Providers": { "openai": { "ApiKey": "ENC:stored" } } }
+            """);
+        // ExistingConfig is the parsed netclaw.json; the model resolver reads the same file from disk.
+        File.WriteAllText(Context.Paths.NetclawConfigPath, $$"""
+            { "Models": {{modelsJson}}, "Providers": { "openai": { "Type": "openai", "AuthMethod": "ApiKey" } } }
             """);
         using var context = new WizardContext
         {
             Paths = Context.Paths,
             Registry = ProviderCommand.CreateDefaultRegistry(),
             RequestRedraw = () => { },
-            ExistingConfig = new Dictionary<string, object>
-            {
-                ["Models"] = new Dictionary<string, object>
-                {
-                    ["Main"] = new Dictionary<string, object> { ["Provider"] = "openai", ["ModelId"] = "gpt-4.1" }
-                },
-                ["Providers"] = new Dictionary<string, object>
-                {
-                    ["openai"] = new Dictionary<string, object> { ["Type"] = "openai", ["AuthMethod"] = "ApiKey" }
-                }
-            }
+            ExistingConfig = ConfigFileHelper.LoadJsonDictOrNull(Context.Paths.NetclawConfigPath)
         };
 
         using var editor = CreateEditor();

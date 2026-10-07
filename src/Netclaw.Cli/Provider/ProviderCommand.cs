@@ -7,6 +7,7 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Json;
+using Netclaw.Cli.Model;
 using Netclaw.Configuration;
 using Netclaw.Providers;
 using Netclaw.Providers.GitHubCopilot;
@@ -449,7 +450,17 @@ internal static class ProviderCommand
         var name = args[2];
 
         // Check if any model roles reference this provider
-        var referencingRoles = GetReferencingModelRoles(name, paths);
+        List<string> referencingRoles;
+        try
+        {
+            referencingRoles = GetReferencingModelRoles(name, paths);
+        }
+        catch (ModelConfigurationException ex)
+        {
+            writer.WriteLine($"Error: Cannot check which model roles use provider '{name}': {ex.Message}");
+            return 1;
+        }
+
         if (referencingRoles.Count > 0)
         {
             writer.WriteLine($"Error: Cannot remove provider '{name}' — referenced by model role(s): {string.Join(", ", referencingRoles)}");
@@ -579,25 +590,19 @@ internal static class ProviderCommand
     internal static List<(string Role, string ModelId)> GetReferencingModelRoleEntries(
         string providerName, NetclawPaths paths)
     {
+        // The resolver understands both the Definitions/Roles and legacy inline shapes. An
+        // unresolvable Models section throws: the guard must not guess that a provider is unused.
+        if (!ModelCommand.TryLoadModelSelection(paths, out var models, out var error))
+            throw new ModelConfigurationException(error!);
+
         var entries = new List<(string, string)>();
-        if (!File.Exists(paths.NetclawConfigPath))
+        if (models is null)
             return entries;
 
-        using var doc = JsonDocument.Parse(File.ReadAllText(paths.NetclawConfigPath));
-        if (!doc.RootElement.TryGetProperty("Models", out var models))
-            return entries;
-
-        foreach (var roleName in new[] { "Main", "Fallback", "Compaction" })
+        foreach (var (roleName, role) in new[] { ("Main", models.Main), ("Fallback", models.Fallback), ("Compaction", models.Compaction) })
         {
-            if (models.TryGetProperty(roleName, out var role) &&
-                role.TryGetProperty("Provider", out var provider) &&
-                string.Equals(provider.GetString(), providerName, StringComparison.OrdinalIgnoreCase))
-            {
-                var modelId = role.TryGetProperty("ModelId", out var mid)
-                    ? mid.GetString() ?? "<model-id>"
-                    : "<model-id>";
-                entries.Add((roleName, modelId));
-            }
+            if (role is not null && string.Equals(role.Provider, providerName, StringComparison.OrdinalIgnoreCase))
+                entries.Add((roleName, string.IsNullOrEmpty(role.ModelId) ? "<model-id>" : role.ModelId));
         }
 
         return entries;

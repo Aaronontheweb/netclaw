@@ -490,6 +490,115 @@ public sealed class ProviderCommandTests : IDisposable
         Assert.Contains("Main", output);
     }
 
+    private void WriteNamedModels(string mainProvider, string? fallbackProvider = null, string? compactionProvider = null)
+    {
+        var providers = new Dictionary<string, object>();
+        foreach (var name in new[] { mainProvider, fallbackProvider, compactionProvider, "spare" })
+        {
+            if (name is not null)
+                providers[name] = new Dictionary<string, object> { ["Type"] = "ollama", ["Endpoint"] = "http://localhost:11434" };
+        }
+
+        var definitions = new Dictionary<string, object>
+        {
+            ["main-model"] = new Dictionary<string, object> { ["Provider"] = mainProvider, ["ModelId"] = "qwen3:30b" }
+        };
+        var roles = new Dictionary<string, object> { ["Main"] = "main-model" };
+        if (fallbackProvider is not null)
+        {
+            definitions["fallback-model"] = new Dictionary<string, object> { ["Provider"] = fallbackProvider, ["ModelId"] = "qwen3:8b" };
+            roles["Fallback"] = "fallback-model";
+        }
+
+        if (compactionProvider is not null)
+        {
+            definitions["compaction-model"] = new Dictionary<string, object> { ["Provider"] = compactionProvider, ["ModelId"] = "qwen3:4b" };
+            roles["Compaction"] = "compaction-model";
+        }
+
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = providers,
+            ["Models"] = new Dictionary<string, object> { ["Definitions"] = definitions, ["Roles"] = roles }
+        });
+    }
+
+    [Fact]
+    public async Task Remove_ProviderBoundToMainByNamedRoles_ReturnsError()
+    {
+        WriteNamedModels("my-ollama");
+
+        var exitCode = await ProviderCommand.RunAsync(["provider", "remove", "my-ollama"], _paths, output: _output);
+
+        Assert.Equal(1, exitCode);
+        var output = _output.ToString();
+        Assert.Contains("Cannot remove provider 'my-ollama' — referenced by model role(s): Main", output);
+        Assert.Contains("Run `netclaw model set` to reassign these roles first", output);
+        Assert.True(ProviderCommand.LoadProviders(_paths).ContainsKey("my-ollama"));
+    }
+
+    [Fact]
+    public async Task Remove_ProviderBoundOnlyToFallbackAndCompactionByNamedRoles_ReturnsError()
+    {
+        WriteNamedModels("main-host", fallbackProvider: "fallback-host", compactionProvider: "compaction-host");
+
+        Assert.Equal(1, await ProviderCommand.RunAsync(["provider", "remove", "fallback-host"], _paths, output: _output));
+        Assert.Equal(1, await ProviderCommand.RunAsync(["provider", "remove", "compaction-host"], _paths, output: _output));
+
+        var output = _output.ToString();
+        Assert.Contains("referenced by model role(s): Fallback", output);
+        Assert.Contains("referenced by model role(s): Compaction", output);
+    }
+
+    [Fact]
+    public async Task Remove_ProviderUnusedByNamedRoles_Succeeds()
+    {
+        WriteNamedModels("my-ollama");
+
+        var exitCode = await ProviderCommand.RunAsync(["provider", "remove", "spare"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.False(ProviderCommand.LoadProviders(_paths).ContainsKey("spare"));
+        Assert.True(ProviderCommand.LoadProviders(_paths).ContainsKey("my-ollama"));
+    }
+
+    [Fact]
+    public void GetReferencingModelRoleEntries_NamedRoles_ReturnsRoleAndDefinitionModelId()
+    {
+        WriteNamedModels("my-ollama", fallbackProvider: "other");
+
+        var entries = ProviderCommand.GetReferencingModelRoleEntries("my-ollama", _paths);
+
+        Assert.Equal([("Main", "qwen3:30b")], entries);
+    }
+
+    [Fact]
+    public async Task Remove_UnresolvableModelsSection_RefusesWithConfigurationError()
+    {
+        // A Models section mixing both shapes cannot be resolved, so the guard cannot prove the
+        // provider is unused. It must refuse rather than guess.
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-ollama"] = new Dictionary<string, object> { ["Type"] = "ollama" }
+            },
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Main"] = new Dictionary<string, object> { ["Provider"] = "my-ollama", ["ModelId"] = "m" },
+                ["Roles"] = new Dictionary<string, object> { ["Main"] = "x" }
+            }
+        });
+
+        var exitCode = await ProviderCommand.RunAsync(["provider", "remove", "my-ollama"], _paths, output: _output);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("mixes legacy inline roles", _output.ToString());
+        Assert.True(ProviderCommand.LoadProviders(_paths).ContainsKey("my-ollama"));
+    }
+
     [Fact]
     public async Task Remove_NotFound_ReturnsError()
     {
