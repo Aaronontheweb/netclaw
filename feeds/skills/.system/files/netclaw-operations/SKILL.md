@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.99.0"
+  version: "2.100.0"
 ---
 
 # Netclaw Operations
@@ -618,8 +618,18 @@ is intended behavior. Mutating verbs in the same directory still prompt.
   Bash call, only the unresolved command is shown, as its exact text; the
   other commands keep their grants. A command whose only unknown part is an
   operand runs under a safe phrase or an `Always anywhere` grant (decision D1).
-  A variable word is such an operand: a folder grant does not cover
-  `for d in ../x; do dotnet build "$d"; done` or `d=../x; dotnet build "$d"`.
+  A variable word with an unknown value is such an operand
+  (`for n in $(gh issue list); do gh api "x/$n"; done`).
+  A loop over literal values, or a word with one known value, gets the
+  decision of each literal command (decision F1). In
+  `for n in 8250 8244; do gh api repos/o/r/issues/$n; done`, Netclaw checks
+  `gh api repos/o/r/issues/8250` and `gh api repos/o/r/issues/8244` as if you
+  typed them. The prompt offers the normal choices, and a chat or folder
+  grant for `gh api` covers the next run of the loop. One literal command
+  that is denied denies the call. A literal path keeps its scope, so a folder
+  grant does not cover `for d in ../x; do dotnet build "$d"; done` or
+  `d=../x; dotnet build "$d"`. A program word from a value
+  (`for p in /bin/rm; do $p x; done`) gets no literal command.
   Multi-line `python3 -c` code is not unresolved: its scope is the working
   directory, so the prompt offers reusable grants.
   An API route such as `gh api /repos/o/r/...` is not a folder: a word below a

@@ -631,6 +631,15 @@
       "to": "RequiresAgentCorrection",
       "reason": "The brace word is the only cause that makes the command exact, so the agent gets the rewrite correction in place of the unattended denial (#2349 review comment 4187346461). Neither outcome runs the call; the rewritten literal credential paths are denied.",
       "approvedBy": "Aaron Stannard (owner), confirmed 2026-10-06"
+    },
+    {
+      "section": "Fresh Personal approval matrix",
+      "id": "loop-outside-operand-prompts-with-chat-grant",
+      "from": "RequiresApproval",
+      "to": "Allowed",
+      "reason": "Owner decision F1: each literal twin gets the decision of the typed literal. The twin 'dotnet build ../outside/x.slnx' keeps its path scope, and a chat grant for 'dotnet build' covers the typed literal (literal-outside-operand-uses-chat-grant), so it covers the twin. A folder grant still does not cover the path outside the folder.",
+      "negativeControl": "loop-outside-operand-prompts-with-folder-grant",
+      "approvedBy": "owner (2026-10-06, F1 loop values)"
     }
   ]
 }
