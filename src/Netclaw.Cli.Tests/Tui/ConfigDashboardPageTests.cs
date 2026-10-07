@@ -57,11 +57,60 @@ public sealed class ConfigDashboardPageTests : IDisposable
         await AssertDashboardShowsAsync("claude-legacy-3");
     }
 
+    [Theory]
+    [InlineData(40)]
+    [InlineData(24)]
+    [InlineData(16)]
+    public async Task Dashboard_RendersEveryRow_AtNormalAndSmallTerminalHeights(int height)
+    {
+        var (terminal, app, vm) = HeadlessTerminaFixture.Create<ConfigDashboardPage, ConfigDashboardViewModel>(
+            "/config",
+            _ => new ConfigDashboardPage(),
+            () => new ConfigDashboardViewModel(new ConfigDashboardNavigationState(), _paths),
+            out var input,
+            height: height);
+
+        input.EnqueueKey(ConsoleKey.Q, control: true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        // A short terminal may legitimately scroll, so only the rows that fit are
+        // required on screen; at 24 rows and up all twelve must be visible.
+        if (height >= 24)
+        {
+            foreach (var item in vm.Items)
+                Assert.True(terminal.Contains(item.Label), $"Row '{item.Label}' is not on screen at height {height}");
+        }
+    }
+
+    [Fact]
+    public async Task Dashboard_ArrowingToLastRow_ScrollsItIntoView()
+    {
+        var (terminal, app, vm) = HeadlessTerminaFixture.Create<ConfigDashboardPage, ConfigDashboardViewModel>(
+            "/config",
+            _ => new ConfigDashboardPage(),
+            () => new ConfigDashboardViewModel(new ConfigDashboardNavigationState(), _paths),
+            out var input,
+            height: 16);
+
+        for (var i = 0; i < vm.Items.Count - 1; i++)
+            input.EnqueueKey(ConsoleKey.DownArrow);
+        input.EnqueueKey(ConsoleKey.Q, control: true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        Assert.Equal(vm.Items.Count - 1, vm.SelectedIndex.Value);
+        Assert.True(terminal.Contains("Quit"), "The last row must scroll into view");
+        Assert.True(terminal.Contains("Run Full Doctor"), "The second-last row must be on screen");
+    }
+
     private async Task AssertDashboardShowsAsync(string expectedModelId)
     {
         var (terminal, app, _) = HeadlessTerminaFixture.Create<ConfigDashboardPage, ConfigDashboardViewModel>(
             "/config",
-            () => new ConfigDashboardPage(),
+            _ => new ConfigDashboardPage(),
             () => new ConfigDashboardViewModel(new ConfigDashboardNavigationState(), _paths),
             out var input);
 

@@ -167,7 +167,7 @@ public sealed class ModelManagerPageTests : IDisposable
         {
             builder.RegisterRoute<ModelManagerPage, ModelManagerViewModel>(
                 "/model",
-                _ => new ModelManagerPage(),
+                _ => new ModelManagerPage(terminal),
                 _ => new ModelManagerViewModel(_paths, _fakeProbe, _registry));
         });
 

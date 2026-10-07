@@ -176,11 +176,63 @@ public sealed class ProviderManagerPageTests : IDisposable
         }
     }
 
+    [Fact]
+    public async Task ProviderList_LongTypeLabel_KeepsAuthAndEndpointColumnsAligned()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["local"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "ollama",
+                    ["Endpoint"] = "http://localhost:11434",
+                    ["AuthMethod"] = "None"
+                },
+                ["gateway"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "http://gateway.example.test:8080/v1",
+                    ["AuthMethod"] = "None"
+                }
+            }
+        });
+
+        var (terminal, app, _) = CreateHeadlessApp(out var input, width: 140);
+        input.EnqueueKey(ConsoleKey.Q, control: true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        var lines = terminal.GetAllLines();
+        var header = lines.Single(l => l.Contains("Provider") && l.Contains("Endpoint"));
+        var ollamaRow = lines.Single(l => l.Contains("local (Ollama)"));
+        var compatRow = lines.Single(l => l.Contains("gateway (OpenAI-compatible (llama.cpp / vLLM / DwarfStar ds4))"));
+
+        var endpointColumn = header.IndexOf("Endpoint", StringComparison.Ordinal);
+        Assert.Equal(endpointColumn, ollamaRow.IndexOf("http://localhost", StringComparison.Ordinal));
+        Assert.Equal(endpointColumn, compatRow.IndexOf("http://gateway", StringComparison.Ordinal));
+
+        var authColumn = header.IndexOf("Auth", StringComparison.Ordinal);
+        Assert.Equal(authColumn, ollamaRow.IndexOf('\u2014'));
+        Assert.Equal(authColumn, compatRow.IndexOf('\u2014'));
+    }
+
+    private (VirtualTerminal Terminal, TerminaApplication App, ProviderManagerViewModel Vm)
+        CreateHeadlessApp(out VirtualInputSource input, int width)
+        => HeadlessTerminaFixture.Create<ProviderManagerPage, ProviderManagerViewModel>(
+            "/provider",
+            terminal => new ProviderManagerPage(terminal),
+            () => new ProviderManagerViewModel(_paths, _registry, _fakeProbe),
+            out input,
+            width: width);
+
     private (VirtualTerminal Terminal, TerminaApplication App, ProviderManagerViewModel Vm)
         CreateHeadlessApp(out VirtualInputSource input)
         => HeadlessTerminaFixture.Create<ProviderManagerPage, ProviderManagerViewModel>(
             "/provider",
-            () => new ProviderManagerPage(),
+            terminal => new ProviderManagerPage(terminal),
             () => new ProviderManagerViewModel(_paths, _registry, _fakeProbe),
             out input);
 

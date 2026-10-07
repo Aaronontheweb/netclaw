@@ -120,7 +120,7 @@ internal static class ProbeHelpers
             if (!response.IsSuccessStatusCode)
             {
                 var apiErrorDetail = await ExtractApiErrorDetailAsync(response, timeoutCts.Token);
-                return FailForStatus(response.StatusCode, providerName, apiErrorDetail);
+                return FailForStatus(response.StatusCode, providerName, url, apiErrorDetail);
             }
 
             var json = await response.Content.ReadAsStringAsync(timeoutCts.Token);
@@ -155,7 +155,7 @@ internal static class ProbeHelpers
     /// error messages so users can see the actual reason from the provider.
     /// </summary>
     public static ProviderProbeResult FailForStatus(
-        HttpStatusCode statusCode, string providerName, string? apiErrorDetail = null)
+        HttpStatusCode statusCode, string providerName, string requestUrl, string? apiErrorDetail = null)
     {
         var message = statusCode switch
         {
@@ -166,7 +166,7 @@ internal static class ProbeHelpers
                 ? $"Access denied by {providerName}: {apiErrorDetail}"
                 : $"Access denied. Your {providerName} credentials may lack model-listing permissions.",
             HttpStatusCode.NotFound =>
-                $"The {providerName} models API was not found. The service may be down.",
+                $"The {providerName} models API was not found at {requestUrl}. Check the endpoint URL, or the service may be down.",
             HttpStatusCode.TooManyRequests =>
                 $"Rate limited by {providerName}. Wait a moment and try again.",
             HttpStatusCode.InternalServerError or HttpStatusCode.BadGateway

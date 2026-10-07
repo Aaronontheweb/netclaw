@@ -189,6 +189,31 @@ public sealed class InitWizardPageTests : IDisposable
         }
     }
 
+    [Theory]
+    [InlineData("ollama")]
+    [InlineData("openai-compatible")]
+    public async Task EndpointStep_ShowsEndpointHintAndTypingAppendsToTheDefault(string providerType)
+    {
+        var (terminal, app, vm) = HeadlessTerminaFixture.Create<InitWizardPage, InitWizardViewModel>(
+            "/init", () => new InitWizardPage(), CreateViewModel, out var input);
+        var defaultEndpoint = _registry.Get(providerType).DefaultEndpoint;
+
+        foreach (var _ in _registry.KnownTypeKeys.TakeWhile(type => type != providerType))
+            input.EnqueueKey(ConsoleKey.DownArrow);
+        input.EnqueueKey(ConsoleKey.Enter);
+        input.EnqueueString("/x");
+        input.EnqueueKey(ConsoleKey.Q, control: true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        Assert.True(terminal.Contains("Enter the URL of your server, for example " + defaultEndpoint));
+        Assert.False(terminal.Contains("Enter your API key"));
+        Assert.True(terminal.Contains(defaultEndpoint + "/x"),
+            "Typing into the pre-filled endpoint must append to the default, not insert before it");
+        Assert.Equal(providerType, vm.ProviderStep.SelectedProviderType);
+    }
+
     // ── Config integrity: wizard choices must match written config ──────────
 
     /// <summary>
