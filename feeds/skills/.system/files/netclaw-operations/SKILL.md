@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.98.0"
+  version: "2.99.0"
 ---
 
 # Netclaw Operations
@@ -499,6 +499,13 @@ command that reads it as a word gets only `Once` and `Deny`.
 A word that reads a bound value (`x=/etc/app.conf; cat "$x"`) gets the
 decision of the literal value, so a protected path or a hard-deny form stays
 denied.
+A quote or a backslash before the `=` of an option word does not change the
+word that the program gets. `tar --file'='../x`, `tar --file\=../x`, and
+`tar "--file=../x"` get the option, the value, and the path of
+`tar --file=../x`, so a folder grant does not cover a path outside the folder.
+`awk -F'[= ]' '{print $2}' f` is a normal command with reusable choices.
+An option word with an expansion and no proved value (`-o"$n"`, `--$n=x`) is
+an unknown operand.
 
 On Linux, a glob word (`ls -d ~/repositories/*/akka*`) reaches the paths below
 its covering directory, and that directory is its scope. A glob that can match
