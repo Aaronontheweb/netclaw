@@ -553,7 +553,7 @@ internal static class ProviderCommand
                 if (prop.Value.TryGetProperty("OAuthTokenExpiry", out var tokenExpiry))
                 {
                     var expiryStr = ConfigFileHelper.DecryptIfEncrypted(paths, tokenExpiry.GetString());
-                    if (!string.IsNullOrWhiteSpace(expiryStr) && DateTimeOffset.TryParse(expiryStr, out var parsed))
+                    if (!string.IsNullOrWhiteSpace(expiryStr) && DateTimeOffset.TryParse(expiryStr, System.Globalization.CultureInfo.InvariantCulture, System.Globalization.DateTimeStyles.None, out var parsed))
                         entry.OAuthTokenExpiry = parsed;
                 }
             }
