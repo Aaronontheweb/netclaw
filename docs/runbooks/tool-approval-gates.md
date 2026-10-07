@@ -330,8 +330,10 @@ netclaw approvals revoke --tool shell_execute --all --audience personal
 
 - `trust-verb` accepts one complete static phrase. It rejects a flag, a
   redirect, an assignment, a dynamic command name, and a compound command.
-- For a non-shell tool, use `--tool`. Do not use `--shell` with a non-shell
-  tool.
+- For a non-shell tool, use `--tool`, and give the tool name as the phrase:
+  `netclaw approvals trust-verb demo/calculate --tool demo/calculate`. Any
+  other phrase never matches a call, so the command refuses it. Do not use
+  `--shell` with a non-shell tool.
 - Use `netclaw approvals list` to copy the exact label of a repository grant
   before you revoke it.
 

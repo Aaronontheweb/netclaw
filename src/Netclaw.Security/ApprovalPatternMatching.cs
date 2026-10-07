@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Netclaw.Configuration;
 using Netclaw.Security.Authorization.Filesystem;
+using Netclaw.Tools;
 
 namespace Netclaw.Security;
 
@@ -384,6 +385,16 @@ public static class ApprovalPatternMatching
 
         return false;
     }
+
+    /// <summary>
+    /// Returns the phrase a stored non-shell grant needs to cover a call to
+    /// <paramref name="toolName"/>. The matchers of non-shell tools take the
+    /// candidate verb of a call from the tool name, so a grant with any other
+    /// phrase never matches. Apply <see cref="MatchesAny"/> to the result to
+    /// ask whether a grant can ever match.
+    /// </summary>
+    public static string NonShellGrantPhrase(ToolName toolName)
+        => DefaultApprovalMatcher.Instance.ExtractCandidates(toolName, arguments: null).Single().Verb;
 
     /// <summary>
     /// Returns true when this candidate is a pure side-effect clause that

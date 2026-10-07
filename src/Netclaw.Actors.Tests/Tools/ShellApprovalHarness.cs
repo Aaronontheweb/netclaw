@@ -828,9 +828,13 @@ internal sealed class ShellApprovalHarness : IAsyncDisposable
 
     /// <summary>Writes one persistent shell grant, for example a legacy entry from an older store.</summary>
     public void AddStoredShellEntry(TrustAudience audience, ApprovalEntry entry)
+        => AddStoredEntry(audience, ShellTool.ToolName, entry);
+
+    /// <summary>Writes one persistent grant of any tool.</summary>
+    public void AddStoredEntry(TrustAudience audience, string toolName, ApprovalEntry entry)
     {
         var change = _services.GetRequiredService<ToolApprovalStore>()
-            .TryAddApprovals(audience, ShellTool.ToolName, [entry]);
+            .TryAddApprovals(audience, toolName, [entry]);
         if (change is not ApprovalStoreChangeResult.Completed { ChangeCount: 1 })
             throw new InvalidOperationException($"The store did not save the seed grant: {change}.");
     }
