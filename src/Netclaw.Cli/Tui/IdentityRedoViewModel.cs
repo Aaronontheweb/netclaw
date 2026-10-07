@@ -3,7 +3,6 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Text.RegularExpressions;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Tui.Wizard;
 using Netclaw.Cli.Tui.Wizard.Steps;
@@ -90,11 +89,12 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
 
     // The framework message quotes the full path and is clipped on one status line, so
     // lead with the file name and a short reason.
-    private static string DescribeWriteFailure(Exception ex)
+    private string DescribeWriteFailure(Exception ex)
     {
         var reason = ex is UnauthorizedAccessException ? "permission denied" : "write failed";
-        var quoted = Regex.Match(ex.Message, "'([^']+)'");
-        var target = quoted.Success ? Path.GetFileName(quoted.Groups[1].Value) : "the identity files";
+        var failed = new[] { _paths.SoulPath, _paths.ToolingPath, _paths.AgentsPath }
+            .FirstOrDefault(path => ex.Message.Contains(path, StringComparison.Ordinal));
+        var target = failed is null ? "the identity files" : Path.GetFileName(failed);
         return $"Couldn't write {target}: {reason}. Fix it and press Enter to retry.";
     }
 

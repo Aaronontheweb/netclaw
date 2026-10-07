@@ -88,6 +88,40 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         Assert.Equal(InitExistingInstallViewModel.MenuRoute, route);
     }
 
+    [Fact]
+    public void Write_failure_names_the_file_even_when_the_path_contains_an_apostrophe()
+    {
+        var apostropheHome = Path.Combine(_dir.Path, "o'brien");
+        var paths = new NetclawPaths(apostropheHome);
+        paths.EnsureDirectoriesExist();
+        // A directory where SOUL.md belongs makes the write fail with a permission error.
+        Directory.CreateDirectory(paths.SoulPath);
+
+        using var vm = new IdentityRedoViewModel(paths, new ChatNavigationState());
+        DriveToSaved(vm);
+
+        Assert.False(vm.IsSaved.Value);
+        Assert.Equal(
+            "Couldn't write SOUL.md: permission denied. Fix it and press Enter to retry.",
+            vm.Context.StatusMessage.Value);
+    }
+
+    [Fact]
+    public void Write_failure_that_is_not_a_permission_error_reports_write_failed()
+    {
+        // An exclusive handle on SOUL.md makes the write fail with an IOException.
+        File.WriteAllText(_paths.SoulPath, "existing");
+        using var held = new FileStream(_paths.SoulPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        DriveToSaved(vm);
+
+        Assert.False(vm.IsSaved.Value);
+        Assert.Equal(
+            "Couldn't write SOUL.md: write failed. Fix it and press Enter to retry.",
+            vm.Context.StatusMessage.Value);
+    }
+
     // Drives the single-step identity flow forward until the redo reports IsSaved.
     // The orchestrator advances through the identity sub-steps; one extra GoNext past
     // the last sub-step finalizes (writes identity files, sets IsSaved). Guard the loop

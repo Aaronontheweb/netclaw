@@ -96,7 +96,7 @@ public sealed class IdentityRedoPage : ReactivePage<IdentityRedoViewModel>
         => ViewModel.Context.StatusMessage
             .Select(msg => (ILayoutNode)(string.IsNullOrWhiteSpace(msg)
                 ? Layouts.Empty()
-                : new TextNode($"  {msg}").WithForeground(Color.Green)))
+                : new TextNode($"  {msg}").WithForeground(Color.Red)))
             .AsLayout()
             .Height(1);
 

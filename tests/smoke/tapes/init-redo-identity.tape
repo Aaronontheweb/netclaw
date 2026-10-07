@@ -60,6 +60,7 @@ Wait+Screen@10s /Identity updated/
 # has no provider, so only the skip path is exercised here.
 Wait+Screen@10s /Start guided identity chat/
 Escape
+Sleep 1s
 Wait+Screen@10s /TAPE\$/
 
 Type "exit"
