@@ -31,21 +31,16 @@ systemctl --user is-active netclaw.service
 ```
 
 If either command prints `enabled` or `active`, systemd manages the daemon.
-Stop the unit with systemd:
-
-```bash
-systemctl --user stop netclaw.service
-```
-
-**Do not use `netclaw daemon stop` for a systemd-managed daemon.** The unit has
-a restart policy. Systemd starts a new daemon in a few seconds. The binary swap
-then fails, or it replaces a running binary.
-
-If no systemd unit exists (both commands fail), use the CLI:
+`netclaw daemon stop` stops the unit for you when `NETCLAW_HOME` is unset or is
+`~/.netclaw` (the unit serves only that home), so it is safe in both cases:
 
 ```bash
 netclaw daemon stop 2>&1 || true
 ```
+
+To stop the unit directly instead, run `systemctl --user stop netclaw.service`.
+Never use `pkill`; the unit has a restart policy, and a killed daemon returns
+in a few seconds.
 
 In both cases, make sure that no daemon process remains:
 
