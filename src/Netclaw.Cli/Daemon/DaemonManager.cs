@@ -130,15 +130,6 @@ public sealed partial class DaemonManager
         if (!TryGetRunningPid(out var pid))
             return new DaemonResult(false, "Daemon is not running.");
 
-        // Mirror Start(): under a container supervisor the supervisor owns the lifecycle and
-        // restarts the daemon moments after it exits, so killing it here would only look like
-        // a stop.
-        if (_supervisor.IsExternallySupervised)
-            return new DaemonResult(false,
-                "Daemon managed by container supervisor"
-                + (pid == 0 ? string.Empty : $" (PID {pid})")
-                + "; it restarts the daemon when it exits. Stop the container to stop the daemon.");
-
         if (pid == 0)
             return new DaemonResult(false,
                 "Daemon appears running (lock file held) but PID file is missing. " +

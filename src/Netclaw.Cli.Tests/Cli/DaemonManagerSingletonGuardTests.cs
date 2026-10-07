@@ -133,10 +133,11 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
     }
 
     [Fact]
-    public async Task StopAsync_DoesNotKill_AndExplains_WhenSupervised_AndDaemonRunning()
+    public async Task StopAsync_ProceedsToStopTheProcess_WhenSupervised()
     {
-        // The supervisor restarts a stopped daemon within seconds, so a "stop" here would be
-        // undone. Report that the supervisor owns it (the same pattern as Start) and leave it alone.
+        // `netclaw daemon stop` is the only CLI way to bounce a containerised daemon: the
+        // supervisor restarts it after the exit. Stop must act, not refuse: with the lock held and
+        // no usable PID it reaches the same "PID file is missing" outcome as an unsupervised stop.
         using var holder = new FileStream(
             _paths.LockFilePath,
             FileMode.OpenOrCreate,
@@ -147,9 +148,8 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
 
         var result = await supervised.StopAsync("cli-stop", CancellationToken.None);
 
-        Assert.False(result.Success);
-        Assert.Contains("managed by container supervisor", result.Message, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("Stop the container", result.Message, StringComparison.Ordinal);
+        Assert.Contains("PID file is missing", result.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("supervisor", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     private sealed class FakeSupervisor(bool supervised) : IContainerSupervisor

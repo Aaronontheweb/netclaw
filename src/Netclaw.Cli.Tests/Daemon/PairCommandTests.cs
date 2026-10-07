@@ -128,7 +128,7 @@ public sealed class PairCommandTests : IDisposable
     public async Task DaemonPairInstructions_PrintOnlyEndpointsThePairClientAccepts(string daemonEndpoint)
     {
         var instructions = new StringWriter();
-        PairCommand.WriteClientInstructions(instructions, daemonEndpoint);
+        PairCommand.WriteClientInstructions(instructions, daemonEndpoint, ExposureMode.Local);
 
         var printed = Assert.Single(
             instructions.ToString().Split('\n', StringSplitOptions.TrimEntries),
@@ -152,7 +152,7 @@ public sealed class PairCommandTests : IDisposable
     public async Task DaemonPairInstructions_NeverPrintAnEndpointThePairClientRejects(string daemonEndpoint)
     {
         var instructions = new StringWriter();
-        PairCommand.WriteClientInstructions(instructions, daemonEndpoint);
+        PairCommand.WriteClientInstructions(instructions, daemonEndpoint, ExposureMode.Local);
         var text = instructions.ToString();
 
         Assert.DoesNotContain($"netclaw pair {daemonEndpoint}", text);
@@ -166,6 +166,55 @@ public sealed class PairCommandTests : IDisposable
         var result = await RunAsync(httpClient, daemonEndpoint, "ABCD-EFGH\ntablet\n");
         Assert.Equal(1, result.ExitCode);
         Assert.Contains("must use HTTPS", result.Stderr);
+    }
+
+    [Theory]
+    [InlineData(ExposureMode.ReverseProxy)]
+    [InlineData(ExposureMode.TailscaleServe)]
+    [InlineData(ExposureMode.TailscaleFunnel)]
+    [InlineData(ExposureMode.CloudflareTunnel)]
+    public void DaemonPairInstructions_PrintThePlaceholder_ForALoopbackEndpointBehindAnExposure(ExposureMode mode)
+    {
+        // Host=0.0.0.0 resolves to 127.0.0.1, which a remote device cannot reach.
+        var instructions = new StringWriter();
+        PairCommand.WriteClientInstructions(instructions, "http://127.0.0.1:7001", mode);
+        var text = instructions.ToString();
+
+        Assert.DoesNotContain("netclaw pair http://127.0.0.1:7001", text);
+        Assert.Contains("netclaw pair <https-address>", text);
+        Assert.Contains($"exposed through {mode.ToWireValue()}", text);
+    }
+
+    [Theory]
+    [InlineData(ExposureMode.ReverseProxy)]
+    [InlineData(ExposureMode.CloudflareTunnel)]
+    public void DaemonPairInstructions_PrintAnHttpsEndpoint_BehindAnExposure(ExposureMode mode)
+    {
+        var instructions = new StringWriter();
+        PairCommand.WriteClientInstructions(instructions, "https://daemon.example", mode);
+
+        Assert.Contains("netclaw pair https://daemon.example", instructions.ToString());
+        Assert.DoesNotContain("<https-address>", instructions.ToString());
+    }
+
+    [Fact]
+    public void DaemonPairInstructions_PrintTheNormalizedEndpoint()
+    {
+        var instructions = new StringWriter();
+        PairCommand.WriteClientInstructions(instructions, "HTTPS://Daemon.Example:443", ExposureMode.ReverseProxy);
+
+        Assert.Contains(
+            "netclaw pair https://daemon.example",
+            instructions.ToString().Split('\n', StringSplitOptions.TrimEntries));
+    }
+
+    [Fact]
+    public void DaemonPairInstructions_PrintTheLoopbackEndpoint_InLocalMode()
+    {
+        var instructions = new StringWriter();
+        PairCommand.WriteClientInstructions(instructions, "http://127.0.0.1:7001", ExposureMode.Local);
+
+        Assert.Contains("netclaw pair http://127.0.0.1:7001", instructions.ToString());
     }
 
     [Fact]

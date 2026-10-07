@@ -159,7 +159,7 @@ public sealed class UpdateCommandTests : IDisposable
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
         var systemd = CreateSystemdService(runner);
 
-        var result = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop");
+        var result = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop", TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
         Assert.Equal(UpdateDaemonOwner.SystemdUserService, result.Owner);
@@ -179,7 +179,7 @@ public sealed class UpdateCommandTests : IDisposable
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
         var systemd = CreateSystemdService(runner);
 
-        var result = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop");
+        var result = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop", TestContext.Current.CancellationToken);
 
         Assert.True(result.Success);
         Assert.Equal(UpdateDaemonOwner.DetachedProcess, result.Owner);
@@ -196,7 +196,7 @@ public sealed class UpdateCommandTests : IDisposable
         runner.Enqueue(new SystemCommandResult(1, string.Empty));
         var systemd = CreateSystemdService(runner);
 
-        var result = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop");
+        var result = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop", TestContext.Current.CancellationToken);
 
         Assert.False(result.Success);
         Assert.Equal(0, manager.StopCalls);
@@ -226,12 +226,54 @@ public sealed class UpdateCommandTests : IDisposable
         var systemd = new SystemdUserService(
             Path.Combine(_dir.Path, "missing.service"),
             new FakeSystemCommandRunner(),
-            enabledOnThisPlatform: true);
+            enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
 
         var result = await UpdateCommand.StartDaemonAsync(manager, systemd);
 
         Assert.True(result.Success);
         Assert.Equal(1, manager.StartCalls);
+    }
+
+    [Fact]
+    public async Task StartDaemonAsync_ReportsTheRunningDaemon_AndDoesNotStartTheUnit_WhenADetachedDaemonHoldsTheHome()
+    {
+        // The unit's daemon would loop on "Another netclawd instance is already running".
+        var manager = new FakeDaemonUpdateProcessManager();
+        manager.EnqueueStatus(Running());
+        manager.StartResult = new DaemonResult(false, "Daemon already running (PID 4242).");
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(new SystemCommandResult(3, string.Empty));
+        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+        var systemd = CreateSystemdService(runner);
+
+        var result = await UpdateCommand.StartDaemonAsync(manager, systemd);
+
+        Assert.False(result.Success);
+        Assert.Equal("Daemon already running (PID 4242).", result.Message);
+        Assert.DoesNotContain(runner.Commands, c => c.Arguments.Contains("start netclaw.service"));
+    }
+
+    [Fact]
+    public async Task StopAndStart_LeaveTheUnitAlone_ForAHomeOtherThanTheDefault()
+    {
+        // NETCLAW_HOME=<scratch> netclaw daemon stop|start must act on the scratch home's own
+        // daemon, never on the user's real unit, which only ever serves the default home.
+        var manager = new FakeDaemonUpdateProcessManager();
+        var runner = new FakeSystemCommandRunner();
+        var unitPath = Path.Combine(_dir.Path, "netclaw.service");
+        File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
+        var systemd = new SystemdUserService(
+            unitPath, runner, enabledOnThisPlatform: true, homePath: Path.Combine(_dir.Path, "scratch-home"));
+
+        var stop = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop", TestContext.Current.CancellationToken);
+        var start = await UpdateCommand.StartDaemonAsync(manager, systemd);
+
+        Assert.True(stop.Success);
+        Assert.Equal(UpdateDaemonOwner.DetachedProcess, stop.Owner);
+        Assert.True(start.Success);
+        Assert.Equal(1, manager.StopCalls);
+        Assert.Equal(1, manager.StartCalls);
+        Assert.Empty(runner.Commands);
     }
 
     [Fact]
@@ -623,7 +665,7 @@ public sealed class UpdateCommandTests : IDisposable
     {
         var unitPath = Path.Combine(_dir.Path, "netclaw.service");
         File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
-        return new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true);
+        return new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
     }
 
     private sealed class FakeDaemonUpdateProcessManager : IDaemonProcessLifecycle

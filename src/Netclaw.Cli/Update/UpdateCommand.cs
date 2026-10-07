@@ -372,7 +372,8 @@ internal static class UpdateCommand
     internal static async Task<UpdateDaemonStopResult> StopDaemonAsync(
         IDaemonProcessLifecycle manager,
         SystemdUserService systemdService,
-        string reason)
+        string reason,
+        CancellationToken cancellationToken = default)
     {
         var systemdOwnership = await systemdService.GetOwnershipAsync();
         switch (systemdOwnership.Kind)
@@ -395,7 +396,7 @@ internal static class UpdateCommand
                 var remainingStatus = manager.GetStatus();
                 if (remainingStatus.IsRunning)
                 {
-                    var detachedStop = await manager.StopAsync(reason, CancellationToken.None);
+                    var detachedStop = await manager.StopAsync(reason, cancellationToken);
                     if (!detachedStop.Success)
                     {
                         return UpdateDaemonStopResult.Failed(
@@ -413,7 +414,7 @@ internal static class UpdateCommand
             case SystemdUserServiceOwnershipKind.Unmanaged:
             default:
             {
-                var detachedStop = await manager.StopAsync(reason, CancellationToken.None);
+                var detachedStop = await manager.StopAsync(reason, cancellationToken);
                 return detachedStop.Success
                     ? UpdateDaemonStopResult.Succeeded(UpdateDaemonOwner.DetachedProcess, detachedStop.Message)
                     : UpdateDaemonStopResult.Failed(UpdateDaemonOwner.DetachedProcess, detachedStop.Message);
@@ -430,13 +431,22 @@ internal static class UpdateCommand
         SystemdUserService systemdService)
     {
         var systemdOwnership = await systemdService.GetOwnershipAsync();
-        return systemdOwnership.Kind switch
+        switch (systemdOwnership.Kind)
         {
-            SystemdUserServiceOwnershipKind.Unknown => new DaemonResult(false,
-                $"Could not determine whether systemd owns the daemon lifecycle: {systemdOwnership.Message}"),
-            SystemdUserServiceOwnershipKind.Managed => await systemdService.StartAsync(),
-            _ => manager.Start()
-        };
+            case SystemdUserServiceOwnershipKind.Unknown:
+                return new DaemonResult(false,
+                    $"Could not determine whether systemd owns the daemon lifecycle: {systemdOwnership.Message}");
+
+            case SystemdUserServiceOwnershipKind.Managed:
+                // A detached daemon holds the home, so the unit's daemon would only crash-loop on
+                // the singleton lock. Report what Start() reports for any running daemon.
+                return manager.GetStatus().IsRunning
+                    ? manager.Start()
+                    : await systemdService.StartAsync();
+
+            default:
+                return manager.Start();
+        }
     }
 
     internal static async Task<DaemonResult> StartDaemonAfterUpdateAsync(
@@ -769,4 +779,6 @@ internal sealed record UpdateDaemonStopResult(
 
     public static UpdateDaemonStopResult Failed(UpdateDaemonOwner owner, string message) =>
         new(false, owner, message);
+
+    public DaemonResult ToDaemonResult() => new(Success, Message);
 }

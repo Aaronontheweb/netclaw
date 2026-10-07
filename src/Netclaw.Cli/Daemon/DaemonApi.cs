@@ -465,11 +465,20 @@ public sealed class DaemonApi
     /// reads the just-written <c>Daemon</c> section (and still honors an explicit
     /// <c>NETCLAW_DAEMON_ENDPOINT</c> / paired client endpoint when one is set).
     /// </remarks>
-    public async Task<DaemonReadiness> ProbeReadinessAsync(CancellationToken ct = default)
+    public Task<DaemonReadiness> ProbeReadinessAsync(CancellationToken ct = default)
+        => ProbeReadinessAsync(ResolveEndpoint(_paths), ct);
+
+    /// <summary>
+    /// Probes the daemon this home runs, ignoring <c>NETCLAW_DAEMON_ENDPOINT</c> and any paired
+    /// remote endpoint, for callers that ask about the local process (<c>netclaw daemon status</c>).
+    /// </summary>
+    internal Task<DaemonReadiness> ProbeLocalReadinessAsync(CancellationToken ct = default)
+        => ProbeReadinessAsync(LocalControlEndpoint, ct);
+
+    private async Task<DaemonReadiness> ProbeReadinessAsync(string endpoint, CancellationToken ct)
     {
         using var cts = CreateTimeoutCts(DefaultTimeout, ct);
         var client = CreateHttpClient();
-        var endpoint = ResolveEndpoint(_paths);
         using var response = await client.GetAsync($"{endpoint}/api/health/ready", cts.Token);
         if (!response.IsSuccessStatusCode)
             return new DaemonReadiness(false, null);

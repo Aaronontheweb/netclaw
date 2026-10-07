@@ -20,7 +20,7 @@ public sealed class SystemdUserServiceTests : IDisposable
         var service = new SystemdUserService(
             Path.Combine(_dir.Path, "missing.service"),
             runner,
-            enabledOnThisPlatform: true);
+            enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
 
         var ownership = await service.GetOwnershipAsync();
 
@@ -34,7 +34,7 @@ public sealed class SystemdUserServiceTests : IDisposable
         var unitPath = WriteUnit();
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
-        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true);
+        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
 
         var ownership = await service.GetOwnershipAsync();
 
@@ -49,7 +49,7 @@ public sealed class SystemdUserServiceTests : IDisposable
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(new SystemCommandResult(3, string.Empty));
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
-        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true);
+        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
 
         var ownership = await service.GetOwnershipAsync();
 
@@ -68,7 +68,7 @@ public sealed class SystemdUserServiceTests : IDisposable
         var unitPath = WriteUnit();
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(new SystemCommandResult(3, string.Empty, StandardOutput: "deactivating\n"));
-        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true);
+        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
 
         var ownership = await service.GetOwnershipAsync();
 
@@ -83,12 +83,45 @@ public sealed class SystemdUserServiceTests : IDisposable
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(new SystemCommandResult(1, "Failed to connect to bus"));
         runner.Enqueue(new SystemCommandResult(1, string.Empty));
-        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true);
+        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
 
         var ownership = await service.GetOwnershipAsync();
 
         Assert.Equal(SystemdUserServiceOwnershipKind.Unknown, ownership.Kind);
         Assert.Contains("Could not determine", ownership.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task GetOwnershipAsync_ReturnsUnmanaged_ForAHomeOtherThanTheDefault_WithoutAskingSystemd()
+    {
+        // The unit carries no NETCLAW_HOME, so it serves ~/.netclaw only. Treating it as the
+        // owner of a scratch home would stop and start the user's real daemon instead.
+        var unitPath = WriteUnit();
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+        var service = new SystemdUserService(
+            unitPath, runner, enabledOnThisPlatform: true, homePath: Path.Combine(_dir.Path, "scratch-home"));
+
+        var ownership = await service.GetOwnershipAsync();
+
+        Assert.Equal(SystemdUserServiceOwnershipKind.Unmanaged, ownership.Kind);
+        Assert.Contains("default home", ownership.Message, StringComparison.Ordinal);
+        Assert.Empty(runner.Commands);
+    }
+
+    [Fact]
+    public async Task GetOwnershipAsync_ReturnsManaged_ForTheDefaultHomeWrittenWithATrailingSlash()
+    {
+        var unitPath = WriteUnit();
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+        var service = new SystemdUserService(
+            unitPath, runner, enabledOnThisPlatform: true,
+            homePath: SystemdUserService.DefaultHomePath + Path.DirectorySeparatorChar);
+
+        var ownership = await service.GetOwnershipAsync();
+
+        Assert.Equal(SystemdUserServiceOwnershipKind.Managed, ownership.Kind);
     }
 
     [Fact]
@@ -98,7 +131,7 @@ public sealed class SystemdUserServiceTests : IDisposable
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
-        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true);
+        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
 
         var stop = await service.StopAsync();
         var start = await service.StartAsync();

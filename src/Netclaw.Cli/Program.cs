@@ -522,11 +522,13 @@ static async Task RunAsync(string[] args)
                 return;
 
             case "stop":
-                var stopResult = await UpdateCommand.StopDaemonAsync(
+                var stopResult = (await UpdateCommand.StopDaemonAsync(
                     new UpdateCommand.DaemonProcessLifecycle(manager),
                     new SystemdUserService(),
-                    "cli-stop");
-                WriteDaemonResult(new DaemonResult(stopResult.Success, stopResult.Message));
+                    "cli-stop")).ToDaemonResult();
+                WriteDaemonResult(stopResult);
+                if (stopResult.Success && new ContainerSupervisor().IsExternallySupervised)
+                    Console.WriteLine("The container supervisor will restart the daemon.");
                 return;
 
             case "status":
@@ -547,7 +549,7 @@ static async Task RunAsync(string[] args)
                 bool ready;
                 try
                 {
-                    ready = (await statusApi.ProbeReadinessAsync()).Healthy;
+                    ready = (await statusApi.ProbeLocalReadinessAsync()).Healthy;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
@@ -556,7 +558,7 @@ static async Task RunAsync(string[] args)
 
                 if (!ready)
                 {
-                    Console.WriteLine($"Daemon process is running but {statusApi.Endpoint}/api/health/ready did not answer.");
+                    Console.WriteLine($"Daemon process is running but {statusApi.LocalControlEndpoint}/api/health/ready did not answer.");
                     Environment.ExitCode = 1;
                     return;
                 }
@@ -622,7 +624,8 @@ static async Task RunAsync(string[] args)
                     Console.WriteLine($"Pairing code:  {pairingResult.FormattedCode}");
                     Console.WriteLine($"Expires at:    {pairingResult.ExpiresAt.ToLocalTime():HH:mm:ss} (local time)");
                     Console.WriteLine();
-                    PairCommand.WriteClientInstructions(Console.Out, pairApi.Endpoint);
+                    PairCommand.WriteClientInstructions(
+                        Console.Out, pairApi.Endpoint, DaemonClientFactory.ResolveExposureMode(paths));
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {

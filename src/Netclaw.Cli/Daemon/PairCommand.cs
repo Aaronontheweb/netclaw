@@ -291,13 +291,25 @@ internal static class PairCommand
     /// <summary>
     /// Writes the <c>netclaw pair</c> instruction shown by <c>netclaw daemon pair</c>.
     /// The daemon endpoint is printed only when <see cref="TryNormalizeEndpoint"/> accepts it,
-    /// so the printed command can never be one this client then refuses. Behind a proxy or
-    /// tunnel the daemon does not know its public HTTPS address, so the operator must supply it.
+    /// and is reachable from another machine, so the printed command can never be one this client
+    /// then refuses or one a remote device cannot reach. Behind a proxy or tunnel the daemon does
+    /// not know its public HTTPS address, so the operator must supply it.
     /// </summary>
-    internal static void WriteClientInstructions(TextWriter output, string daemonEndpoint)
+    internal static void WriteClientInstructions(TextWriter output, string daemonEndpoint, ExposureMode exposureMode)
     {
         output.WriteLine("On the remote device, run:");
-        if (TryNormalizeEndpoint(daemonEndpoint, out var normalizedEndpoint, out var endpointError))
+        string reason;
+        if (!TryNormalizeEndpoint(daemonEndpoint, out var normalizedEndpoint, out var endpointError))
+        {
+            reason = $"{daemonEndpoint} cannot be used with `netclaw pair`. {endpointError}";
+        }
+        else if (exposureMode != ExposureMode.Local && DaemonClientFactory.IsLoopback(normalizedEndpoint))
+        {
+            // Behind a proxy or tunnel, a loopback address is where the daemon binds, which a
+            // remote device cannot reach.
+            reason = $"The daemon is exposed through {exposureMode.ToWireValue()}, and {daemonEndpoint} is reachable only from this machine.";
+        }
+        else
         {
             output.WriteLine($"  netclaw pair {normalizedEndpoint}");
             return;
@@ -305,7 +317,7 @@ internal static class PairCommand
 
         output.WriteLine("  netclaw pair <https-address>");
         output.WriteLine();
-        output.WriteLine($"The daemon does not know its public address, and {daemonEndpoint} cannot be used with `netclaw pair`. {endpointError}");
+        output.WriteLine($"The daemon does not know its public address. {reason}");
         output.WriteLine("Replace <https-address> with the HTTPS address this daemon is published at.");
     }
 

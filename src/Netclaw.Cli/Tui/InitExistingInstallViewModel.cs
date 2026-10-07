@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Diagnostics;
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Update;
 using Netclaw.Configuration;
 using R3;
 using Termina.Reactive;
@@ -72,9 +73,18 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
         InitNavigationState navigationState,
         DaemonManager daemonManager,
         TimeProvider timeProvider)
-        : this(paths, navigationState, daemonManager.StopAsync, DeleteDirectory, timeProvider)
+        : this(paths, navigationState, StopThroughOwnerAsync(daemonManager), DeleteDirectory, timeProvider)
     {
     }
+
+    // Same stop path as `netclaw daemon stop`: an installed systemd unit would otherwise restart
+    // the daemon under the data the reset is deleting.
+    private static Func<string, CancellationToken, Task<DaemonResult>> StopThroughOwnerAsync(DaemonManager daemonManager)
+        => async (reason, ct) => (await UpdateCommand.StopDaemonAsync(
+            new UpdateCommand.DaemonProcessLifecycle(daemonManager),
+            new SystemdUserService(),
+            reason,
+            ct)).ToDaemonResult();
 
     internal InitExistingInstallViewModel(
         NetclawPaths paths,

@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
+using Netclaw.Configuration;
 
 namespace Netclaw.Cli.Daemon;
 
@@ -31,13 +32,17 @@ internal sealed record SystemdUserServiceOwnership(
 internal sealed class SystemdUserService(
     string? unitFilePath = null,
     ISystemCommandRunner? commandRunner = null,
-    bool? enabledOnThisPlatform = null)
+    bool? enabledOnThisPlatform = null,
+    string? homePath = null)
 {
     private const string ServiceName = "netclaw.service";
 
     private readonly string _unitFilePath = unitFilePath ?? DaemonManager.SystemdUserUnitFilePath;
     private readonly ISystemCommandRunner _commandRunner = commandRunner ?? ProcessSystemCommandRunner.Instance;
     private readonly bool _enabledOnThisPlatform = enabledOnThisPlatform ?? OperatingSystem.IsLinux();
+
+    // The generated unit carries no NETCLAW_HOME, so it can only serve the default home.
+    private readonly string _homePath = homePath ?? new NetclawPaths().BasePath;
 
     public async Task<SystemdUserServiceOwnership> GetOwnershipAsync()
     {
@@ -46,6 +51,11 @@ internal sealed class SystemdUserService(
 
         if (!File.Exists(_unitFilePath))
             return SystemdUserServiceOwnership.Unmanaged("No netclaw systemd user service is installed.");
+
+        // Under any other NETCLAW_HOME the unit would act on the default home's daemon instead.
+        if (!IsDefaultHome(_homePath))
+            return SystemdUserServiceOwnership.Unmanaged(
+                $"netclaw.service serves only the default home ({DefaultHomePath}), not {_homePath}.");
 
         var active = await _commandRunner.RunAsync("systemctl", $"--user is-active {ServiceName}");
         if (active.Success)
@@ -75,6 +85,16 @@ internal sealed class SystemdUserService(
         return SystemdUserServiceOwnership.Unmanaged(
             "netclaw.service is installed but neither active nor enabled.");
     }
+
+    internal static string DefaultHomePath => Path.GetFullPath(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        ".netclaw"));
+
+    private static bool IsDefaultHome(string homePath) =>
+        string.Equals(
+            Path.TrimEndingDirectorySeparator(homePath),
+            Path.TrimEndingDirectorySeparator(DefaultHomePath),
+            StringComparison.Ordinal);
 
     public async Task<DaemonResult> StopAsync()
     {
