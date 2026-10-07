@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.102.0"
+  version: "2.102.1"
 ---
 
 # Netclaw Operations
@@ -853,7 +853,8 @@ Check the actor log before you conclude that an older run skipped a phase.
 
 When something is broken, start with `netclaw status`, then `netclaw doctor`. Feature
 kill switches and self-update/health are covered in the reference. Memory embeddings
-can be backfilled with `netclaw memory backfill-embeddings [--force]`; doctor checks
+can be backfilled with `netclaw memory backfill-embeddings [--force]` (a no-op while
+`Memory.Embeddings.Enabled` is false); doctor checks
 memory embedding availability. Full guidance:
 `skill_read_resource('netclaw-operations', 'references/diagnostics.md')`.
 

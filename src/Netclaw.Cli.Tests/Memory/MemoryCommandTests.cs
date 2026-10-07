@@ -104,7 +104,7 @@ public sealed class MemoryCommandTests : IDisposable
 
         Assert.Equal(0, exitCode);
         Assert.Contains("Usage: netclaw memory <subcommand>", stdout);
-        Assert.DoesNotContain("Embedding", stdout);
+        Assert.DoesNotContain("Embedding 1 document", stdout);
 
         var rows = await store.GetEmbeddingsForModelAsync(ModelId, TestContext.Current.CancellationToken);
         Assert.Empty(rows);

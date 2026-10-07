@@ -105,6 +105,23 @@ public sealed class SQLiteMemoryStoreEmbeddingTests : IAsyncLifetime
     }
 
     [Fact]
+    public async Task UpdateDocumentTextAsync_removes_the_stale_embedding()
+    {
+        await SeedDocumentAsync("doc-1", "Title", "First body");
+        await _store.UpsertEmbeddingAsync(
+            "doc-1", "document", "model-a", MemoryContentHasher.ComputeHash("Title", "First body"),
+            new float[] { 1f }, TestContext.Current.CancellationToken);
+        var versionBeforeUpdate = _store.EmbeddingDataVersion;
+
+        var updated = await _store.UpdateDocumentTextAsync(
+            "doc-1", "First", "Second", TestContext.Current.CancellationToken);
+
+        Assert.Equal(new MemoryDocumentWriteResult("doc-1", "Title", "Second body"), updated);
+        Assert.Empty(await _store.GetEmbeddingsForModelAsync("model-a", TestContext.Current.CancellationToken));
+        Assert.True(_store.EmbeddingDataVersion > versionBeforeUpdate);
+    }
+
+    [Fact]
     public async Task UpsertEmbeddingAsync_rejects_a_hash_from_before_a_document_update()
     {
         await SeedDocumentAsync("doc-1", "Title", "First body");

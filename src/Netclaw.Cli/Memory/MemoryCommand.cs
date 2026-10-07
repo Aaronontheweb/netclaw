@@ -70,6 +70,7 @@ internal static class MemoryCommand
         output.WriteLine("                                   embed memories missing a current-model embedding.");
         output.WriteLine("                                   --force re-scans every recallable document instead");
         output.WriteLine("                                   of only ones missing a current-model embedding.");
+        output.WriteLine("                                   Does nothing when Memory.Embeddings.Enabled is false.");
         return 0;
     }
 
