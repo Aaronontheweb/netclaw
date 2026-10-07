@@ -588,8 +588,7 @@ static async Task RunAsync(string[] args)
                     Console.WriteLine($"Pairing code:  {pairingResult.FormattedCode}");
                     Console.WriteLine($"Expires at:    {pairingResult.ExpiresAt.ToLocalTime():HH:mm:ss} (local time)");
                     Console.WriteLine();
-                    Console.WriteLine("On the remote device, run:");
-                    Console.WriteLine($"  netclaw pair {pairApi.Endpoint}");
+                    PairCommand.WriteClientInstructions(Console.Out, pairApi.Endpoint);
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {

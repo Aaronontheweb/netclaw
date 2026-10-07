@@ -120,6 +120,54 @@ public sealed class PairCommandTests : IDisposable
         Assert.Equal(token, ConfigFileHelper.DecryptIfEncrypted(_paths, protectedToken));
     }
 
+    [Theory]
+    [InlineData("http://127.0.0.1:5199")]
+    [InlineData("http://[::1]:5199")]
+    [InlineData("http://localhost:5199")]
+    [InlineData("https://daemon.example")]
+    public async Task DaemonPairInstructions_PrintOnlyEndpointsThePairClientAccepts(string daemonEndpoint)
+    {
+        var instructions = new StringWriter();
+        PairCommand.WriteClientInstructions(instructions, daemonEndpoint);
+
+        var printed = Assert.Single(
+            instructions.ToString().Split('\n', StringSplitOptions.TrimEntries),
+            line => line.StartsWith("netclaw pair ", StringComparison.Ordinal));
+        var printedEndpoint = printed["netclaw pair ".Length..];
+
+        // Feed the printed endpoint to the real client: it must get past endpoint validation
+        // and ask for the pairing code.
+        using var handler = new FakeHttpMessageHandler(_ =>
+            FakeHttpMessageHandler.JsonResponse(new { token = "device-token" }));
+        using var httpClient = new HttpClient(handler);
+        var result = await RunAsync(httpClient, printedEndpoint, "ABCD-EFGH\ntablet\n");
+
+        Assert.Equal(0, result.ExitCode);
+    }
+
+    [Theory]
+    [InlineData("http://192.168.1.20:5199")]
+    [InlineData("http://daemon.example:5199")]
+    [InlineData("http://[2001:db8::1]:5199")]
+    public async Task DaemonPairInstructions_NeverPrintAnEndpointThePairClientRejects(string daemonEndpoint)
+    {
+        var instructions = new StringWriter();
+        PairCommand.WriteClientInstructions(instructions, daemonEndpoint);
+        var text = instructions.ToString();
+
+        Assert.DoesNotContain($"netclaw pair {daemonEndpoint}", text);
+        Assert.Contains("netclaw pair <https-address>", text);
+        Assert.Contains("HTTPS address this daemon is published at", text);
+
+        // The client really does reject what the old output printed.
+        using var handler = new FakeHttpMessageHandler(_ =>
+            FakeHttpMessageHandler.JsonResponse(new { token = "device-token" }));
+        using var httpClient = new HttpClient(handler);
+        var result = await RunAsync(httpClient, daemonEndpoint, "ABCD-EFGH\ntablet\n");
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains("must use HTTPS", result.Stderr);
+    }
+
     [Fact]
     public async Task NonLoopbackHttpEndpoint_FailsBeforeCodeInput()
     {

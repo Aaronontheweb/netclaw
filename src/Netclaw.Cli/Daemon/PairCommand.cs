@@ -288,6 +288,27 @@ internal static class PairCommand
         return body[..totalRead];
     }
 
+    /// <summary>
+    /// Writes the <c>netclaw pair</c> instruction shown by <c>netclaw daemon pair</c>.
+    /// The daemon endpoint is printed only when <see cref="TryNormalizeEndpoint"/> accepts it,
+    /// so the printed command can never be one this client then refuses. Behind a proxy or
+    /// tunnel the daemon does not know its public HTTPS address, so the operator must supply it.
+    /// </summary>
+    internal static void WriteClientInstructions(TextWriter output, string daemonEndpoint)
+    {
+        output.WriteLine("On the remote device, run:");
+        if (TryNormalizeEndpoint(daemonEndpoint, out var normalizedEndpoint, out var endpointError))
+        {
+            output.WriteLine($"  netclaw pair {normalizedEndpoint}");
+            return;
+        }
+
+        output.WriteLine("  netclaw pair <https-address>");
+        output.WriteLine();
+        output.WriteLine($"The daemon does not know its public address, and {daemonEndpoint} cannot be used with `netclaw pair`. {endpointError}");
+        output.WriteLine("Replace <https-address> with the HTTPS address this daemon is published at.");
+    }
+
     private static bool TryNormalizeEndpoint(
         string endpoint,
         out string normalizedEndpoint,
