@@ -238,6 +238,39 @@ cover each candidate as usual                                   # rule 8
 - A call with a `cd` directory proof gets no twins: the proof already gives
   each command its exact directory.
 
+Assignments that stay in the shell (owner decision F3, October 2026). A Bash
+shell-state assignment qualifies a grant with an assignment digest, because an
+exported variable can change what a program does. ShellSyntaxTree
+0.4.0-beta.24 proves that an assignment reaches no program when the caller
+declares the complete names of the launch environment
+(`ShellLaunchEnvironment.WithCompleteEnvironmentNames`).
+
+- `ShellExecutionEnvironment` takes one snapshot of the daemon environment
+  when the daemon creates it, as it does for `HOME`.
+  `CreateChildEnvironment` removes the Bash startup overrides and adds the
+  launch variables. `CreateProcessStartInfo` copies that environment to each
+  process, and `GetCompleteEnvironmentNames` gives its names to the parser,
+  plus `PWD` and the temporary variable names that the launcher adds. The
+  launcher and the parser read one snapshot, so they cannot drift. A later
+  change to the daemon process environment reaches no shell process.
+- The names never carry a value, and Netclaw never shows them to the model.
+- `ShellAssignmentDigestFactory.ReachingProgram` skips a Bash `ShellState`
+  assignment with `MayAffectProcessEnvironment == false`. A Bash data command
+  (`echo`, `printf`, `test`) keeps every assignment: it reads no environment,
+  and its digest keeps an operand that is not proved data
+  (`d=key; echo ../x/"${d}s"/*`) out of the approval exemption.
+- A read of the variable is an argument with its own value facts: an unknown
+  value is an unknown operand (D1), and a known value gets its literal twin
+  (F1).
+- Fail closed: a Bash host without a proved fresh state, a decoded `bash -c`
+  child, and PowerShell keep every assignment. `set -a`, `declare -x`, and
+  `eval` make the source unresolved.
+
+Example: `b=$(git branch --show-current); git fetch origin` with a chat grant
+for `git fetch` runs with no prompt. Negative example: with `GIT_DIR` in the
+daemon environment, `GIT_DIR=/tmp/x; git status` keeps its digest, so a plain
+`git status` grant does not cover it.
+
 Decision D2 (October 2026): an attended and an unattended call use the same
 rules above. The file reach of an unattended call is the reach of its audience
 profile, as in a chat. The one difference comes after rule 8: when nobody can

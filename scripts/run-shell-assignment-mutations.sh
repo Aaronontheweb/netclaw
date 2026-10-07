@@ -230,10 +230,60 @@ read -r sanitizer_start sanitizer_end sanitizer_start_line sanitizer_start_colum
 )
 security_patterns+=("ShellExecutionEnvironment.cs{$sanitizer_start..$sanitizer_end}")
 
+# Owner decision F3: only an assignment that can reach the program qualifies a
+# grant, a Bash data command keeps every assignment, and the parser names are
+# the names of the one environment snapshot that each process receives.
+digest_factory_file="$repo_root/src/Netclaw.Security/ShellAssignmentDigestFactory.cs"
+read -r reaching_start reaching_end reaching_start_line reaching_start_column reaching_end_line reaching_end_column < <(
+  find_span \
+    "$digest_factory_file" \
+    "public static IReadOnlyList<ShellVariableAssignment> ReachingProgram(" \
+    "return assignments.Where(" \
+    "!StaysInShell(shell, assignment)).ToArray();"
+)
+security_patterns+=("ShellAssignmentDigestFactory.cs{$reaching_start..$reaching_end}")
+
+read -r in_shell_start in_shell_end in_shell_start_line in_shell_start_column in_shell_end_line in_shell_end_column < <(
+  find_span \
+    "$digest_factory_file" \
+    "private static bool StaysInShell(" \
+    "=> shell == ApprovalShell.Bash" \
+    "MayAffectProcessEnvironment: false"
+)
+security_patterns+=("ShellAssignmentDigestFactory.cs{$in_shell_start..$in_shell_end}")
+
+matcher_file="$repo_root/src/Netclaw.Security/IToolApprovalMatcher.cs"
+read -r qualifying_start qualifying_end qualifying_start_line qualifying_start_column qualifying_end_line qualifying_end_column < <(
+  find_span \
+    "$matcher_file" \
+    "private static IReadOnlyList<ShellSyntaxTree.ShellVariableAssignment> QualifyingAssignments(" \
+    "=> ShellVerbPolicyData.IsDataCommand(verb, shell)" \
+    ": ShellAssignmentDigestFactory.ReachingProgram(shell, assignments);"
+)
+security_patterns+=("IToolApprovalMatcher.cs{$qualifying_start..$qualifying_end}")
+
+read -r names_start names_end names_start_line names_start_column names_end_line names_end_column < <(
+  find_span \
+    "$environment_file" \
+    "internal ShellLaunchEnvironment CreateLaunchEnvironment(" \
+    "return Grammar == ShellGrammar.Bash" \
+    ": launch;"
+)
+security_patterns+=("ShellExecutionEnvironment.cs{$names_start..$names_end}")
+
+read -r child_start child_end child_start_line child_start_column child_end_line child_end_column < <(
+  find_span \
+    "$environment_file" \
+    "internal IReadOnlyDictionary<string, string> CreateChildEnvironment(" \
+    "if (Grammar == ShellGrammar.Bash)" \
+    "environment[variable.Key] = variable.Value;"
+)
+security_patterns+=("ShellExecutionEnvironment.cs{$child_start..$child_end}")
+
 security_output="$output_path/security"
 run_group "stryker-shell-command-analysis.json" "$security_output" "${security_patterns[@]}"
 security_report="$security_output/reports/mutation-report.json"
-assert_report "$security_report" 56
+assert_report "$security_report" 66
 assert_target "$security_report" "digest-match" "$matching_file" "$matching_start_line" "$matching_start_column" "$matching_end_line" "$matching_end_column" 2
 assert_target "$security_report" "assignment-span" "$analysis_file" "$span_start_line" "$span_start_column" "$span_end_line" "$span_end_column" 1
 assert_target "$security_report" "fallback-wrapper-assignments" "$analysis_file" "$wrapper_start_line" "$wrapper_start_column" "$wrapper_end_line" "$wrapper_end_column" 6
@@ -243,6 +293,11 @@ assert_target "$security_report" "hard-deny-screen-elements" "$analysis_file" "$
 assert_target "$security_report" "hard-deny-screen-policy" "$policy_file" "$screen_deny_start_line" "$screen_deny_start_column" "$screen_deny_end_line" "$screen_deny_end_column" 1
 assert_target "$security_report" "bash-initial-state" "$environment_file" "$mode_start_line" "$mode_start_column" "$mode_end_line" "$mode_end_column" 7
 assert_target "$security_report" "bash-sanitizer" "$environment_file" "$sanitizer_start_line" "$sanitizer_start_column" "$sanitizer_end_line" "$sanitizer_end_column" 27
+assert_target "$security_report" "f3-reaching-program" "$digest_factory_file" "$reaching_start_line" "$reaching_start_column" "$reaching_end_line" "$reaching_end_column" 1
+assert_target "$security_report" "f3-stays-in-shell" "$digest_factory_file" "$in_shell_start_line" "$in_shell_start_column" "$in_shell_end_line" "$in_shell_end_column" 2
+assert_target "$security_report" "f3-data-command-keeps-assignments" "$matcher_file" "$qualifying_start_line" "$qualifying_start_column" "$qualifying_end_line" "$qualifying_end_column" 2
+assert_target "$security_report" "f3-launch-names" "$environment_file" "$names_start_line" "$names_start_column" "$names_end_line" "$names_end_column" 3
+assert_target "$security_report" "f3-child-environment" "$environment_file" "$child_start_line" "$child_start_column" "$child_end_line" "$child_end_column" 2
 
 actor_output="$output_path/actors"
 run_group "stryker-config.json" "$actor_output" "${actor_patterns[@]}"

@@ -1082,14 +1082,10 @@ public sealed class ApprovalLaunchEnvironmentTests(ShellApprovalMatrixFixture fi
     [Fact(SkipUnless = nameof(IsPosix), Skip = "The launch runs /bin/bash.")]
     public async Task Shell_launch_removes_bash_startup_and_loader_overrides()
     {
-        await using var harness = await ShellApprovalHarness.CreateAsync(
-            "launch-environment",
-            new ShellApprovalInvocation("printenv"),
-            // The command words keep each plain variable name (#2306), so the grant names them.
-            Approvals.PersistentAnywhere("printenv NETCLAW_LAUNCH_PROBE NETCLAW_BASH_ENV_PROBE LD_NETCLAW_PROBE DYLD_NETCLAW_PROBE"),
-            fixture.ActorSystem,
-            Ct);
-        var startupFile = Path.Combine(harness.ProjectDirectory, "startup.sh");
+        // The shell environment takes its daemon environment snapshot when the
+        // harness creates it, so the probe names are set first.
+        using var startupDirectory = new DisposableTempDir();
+        var startupFile = Path.Combine(startupDirectory.Path, "startup.sh");
         await File.WriteAllTextAsync(startupFile, "export NETCLAW_BASH_ENV_PROBE=probe-bash-env\n", Ct);
         var probes = new Dictionary<string, string>
         {
@@ -1104,6 +1100,13 @@ public sealed class ApprovalLaunchEnvironmentTests(ShellApprovalMatrixFixture fi
         {
             foreach (var (name, value) in probes)
                 Environment.SetEnvironmentVariable(name, value);
+            await using var harness = await ShellApprovalHarness.CreateAsync(
+                "launch-environment",
+                new ShellApprovalInvocation("printenv"),
+                // The command words keep each plain variable name (#2306), so the grant names them.
+                Approvals.PersistentAnywhere("printenv NETCLAW_LAUNCH_PROBE NETCLAW_BASH_ENV_PROBE LD_NETCLAW_PROBE DYLD_NETCLAW_PROBE"),
+                fixture.ActorSystem,
+                Ct);
             run = await harness.RunShellAsync(
                 "printenv NETCLAW_LAUNCH_PROBE NETCLAW_BASH_ENV_PROBE LD_NETCLAW_PROBE DYLD_NETCLAW_PROBE",
                 Ct);

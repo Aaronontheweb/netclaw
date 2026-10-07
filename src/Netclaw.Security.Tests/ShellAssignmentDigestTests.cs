@@ -13,10 +13,15 @@ namespace Netclaw.Security.Tests;
 public sealed class ShellAssignmentDigestTests
 {
     private static readonly ToolName ShellToolName = new("shell_execute");
+    // The daemon environment holds "mode" and "other", so an assignment to them
+    // reaches each child process and keeps its digest (decision F3).
     private static readonly ShellApprovalMatcher BashMatcher = new(
-        ShellExecutionEnvironment.CreateBash(
-            ShellPlatform.Linux,
-            new Version(5, 2)));
+        CreateBash52([new("PATH", "/usr/bin"), new("mode", "inherited"), new("other", "inherited")]));
+
+    // The daemon environment holds neither name, so a Bash assignment to them
+    // stays in the shell unless the source exports it.
+    private static readonly ShellApprovalMatcher InShellMatcher = new(
+        CreateBash52([new("PATH", "/usr/bin")]));
 
     [Fact]
     public void Candidate_rejects_a_default_assignment_digest()
@@ -351,6 +356,64 @@ public sealed class ShellAssignmentDigestTests
         Assert.True(analysis.IsMessy);
         Assert.Empty(analysis.Candidates);
     }
+
+    // Owner decision F3: Bash passes a shell variable that no path exports, and
+    // that the launch environment does not hold, to no program. The digest
+    // skips it, so a plain grant covers the command.
+    [Theory]
+    [InlineData("mode='fast'; inspect item")]
+    [InlineData("mode=$(date); inspect item")]
+    [InlineData("mode='one'; mode='two'; inspect item")]
+    public void Bash_assignment_that_stays_in_the_shell_has_no_digest(string command)
+    {
+        Assert.Null(ExtractInspect(InShellMatcher, command).AssignmentDigest);
+    }
+
+    // SECURITY: each of these assignments can reach the program, so it keeps
+    // its digest and a plain grant does not cover the command.
+    [Theory]
+    [InlineData("mode='fast'; export mode; inspect item")]
+    [InlineData("if true; then export mode; fi; mode='fast'; inspect item")]
+    [InlineData("mode='fast' inspect item")]
+    public void Bash_assignment_that_can_reach_the_program_keeps_its_digest(string command)
+    {
+        Assert.NotNull(ExtractInspect(InShellMatcher, command).AssignmentDigest);
+    }
+
+    // SECURITY: GIT_DIR in the daemon environment is exported, so Bash passes
+    // the new value to git. Without it in the environment, the value stays in
+    // the shell.
+    [Fact]
+    public void Assignment_to_a_name_in_the_daemon_environment_keeps_its_digest()
+    {
+        var withGitDirectory = new ShellApprovalMatcher(
+            CreateBash52([new("PATH", "/usr/bin"), new("GIT_DIR", "/work/.git")]));
+
+        Assert.NotNull(ExtractSingle(withGitDirectory, "GIT_DIR=/tmp/x; git status", "/work").AssignmentDigest);
+        Assert.Null(ExtractSingle(InShellMatcher, "GIT_DIR=/tmp/x; git status", "/work").AssignmentDigest);
+    }
+
+    // SECURITY: "set -a" exports each later assignment, so the source is unresolved.
+    [Fact]
+    public void Allexport_keeps_the_call_one_time()
+    {
+        var analysis = InShellMatcher.AnalyzeInvocation(ShellToolName, Args("set -a; mode='fast'; env", "/work"));
+
+        Assert.True(analysis.IsMessy);
+        Assert.Empty(analysis.Candidates);
+    }
+
+    // The candidate of the "inspect item" command of a source with more commands.
+    private static ApprovalCandidate ExtractInspect(ShellApprovalMatcher matcher, string command)
+    {
+        var analysis = matcher.AnalyzeInvocation(ShellToolName, Args(command, "/work"));
+
+        Assert.False(analysis.IsMessy, analysis.DisplayText);
+        return Assert.Single(analysis.Candidates, static candidate => candidate.VerbTokens?[0] == "inspect");
+    }
+
+    private static ShellExecutionEnvironment CreateBash52(IEnumerable<KeyValuePair<string, string>> environment)
+        => ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux, new Version(5, 2), environment);
 
     private static ApprovalCandidate ExtractSingle(
         ShellApprovalMatcher matcher,
