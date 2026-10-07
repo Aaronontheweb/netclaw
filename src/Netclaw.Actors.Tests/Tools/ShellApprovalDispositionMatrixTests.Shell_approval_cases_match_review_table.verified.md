@@ -18,8 +18,8 @@
 | safe-git-ls-tree-external-reuses-canonical-grant | Bash | Personal | External | Interactive | git ls-tree feature | persistent[external]:git ls-tree | Allowed | StoredApproval | none | Not applicable |
 | unattended-external-grant-allows | Bash | Personal | External | Non-interactive | git ls-tree feature | persistent[external]:git ls-tree | Allowed | StoredApproval | none | Not applicable |
 | unattended-external-reviewed-safe-allows | Bash | Personal | External | Non-interactive | git ls-tree feature | none | Allowed | ReviewedSafePolicy | none | Not applicable |
-| prose-quoted-program-word-prompts | Bash | Personal | Project | Interactive | I'm speaking at Stir Trek 2026 - I fly out of IAH. What's the best flight / hotel combination for me? | none | RequiresApproval | approval required | 'Im speaking at Stir Trek 2026 - I fly out of IAH. Whats' the best flight | No |
-| powershell7-prose-quoted-program-word-prompts | PowerShell7 | Personal | Project | Interactive | I'm speaking at Stir Trek 2026 - I fly out of IAH. What's the best flight / hotel combination for me? | none | RequiresApproval | approval required | 'Im speaking at Stir Trek 2026 - I fly out of IAH. Whats' the best flight | No |
+| prose-quoted-program-word-prompts | Bash | Personal | Project | Interactive | I'm speaking at Stir Trek 2026 - I fly out of IAH. What's the best flight / hotel combination for me? | none | RequiresApproval | approval required | 'Im speaking at Stir Trek 2026 - I fly out of IAH. Whats' the best flight hotel combination for | No |
+| powershell7-prose-quoted-program-word-prompts | PowerShell7 | Personal | Project | Interactive | I'm speaking at Stir Trek 2026 - I fly out of IAH. What's the best flight / hotel combination for me? | none | RequiresApproval | approval required | 'Im speaking at Stir Trek 2026 - I fly out of IAH. Whats' the best flight hotel combination for | No |
 | unattended-prose-denies | Bash | Personal | Project | Non-interactive | I'm speaking at Stir Trek 2026 - I fly out of IAH. What's the best flight / hotel combination for me? | none | Denied | approval_required_unattended | none | Not applicable |
 | unattended-cd-semicolon-grant-allows | Bash | Personal | Project | Non-interactive | cd /netclaw-approval-external/cd-list; make | persistent[anywhere]:cd, persistent[anywhere]:make | Allowed | StoredApproval | none | Not applicable |
 | unattended-cd-or-exit-grant-allows | Bash | Personal | Project | Non-interactive | cd /netclaw-approval-external/cd-list \|\| exit 1; make | persistent[anywhere]:cd, persistent[anywhere]:make | Allowed | StoredApproval | none | Not applicable |
@@ -43,7 +43,7 @@
 | mixed-safe-unsafe-compound-prompts | Bash | Personal | Project | Interactive | git status && git push | none | RequiresApproval | approval required | git push | No |
 | safe-pipe-unsafe-tail-prompts | Bash | Personal | Project | Interactive | git status \| git push | none | RequiresApproval | approval required | git push | No |
 | safe-pipeline-allows | Bash | Personal | Project | Interactive | git ls-tree HEAD \| head -20 | none | Allowed | ReviewedSafePolicy | none | Not applicable |
-| unsafe-catalog-find-exec-prompts | Bash | Personal | Project | Interactive | find . -exec rm {} + | none | RequiresApproval | approval required | find | No |
+| unsafe-catalog-find-exec-prompts | Bash | Personal | Project | Interactive | find . -exec rm {} + | none | RequiresApproval | approval required | find rm {} + | No |
 | unsafe-catalog-awk-system-prompts | Bash | Personal | Project | Interactive | awk 'BEGIN { system("touch marker") }' | none | RequiresApproval | approval required | awk | No |
 | reviewed-rg-pre-allows | Bash | Personal | Project | Interactive | rg --pre helper pattern . | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | reviewed-sort-output-allows | Bash | Personal | Project | Interactive | sort -o output input | none | Allowed | ReviewedSafePolicy | none | Not applicable |
@@ -68,9 +68,9 @@
 | reviewed-cd-external-allows | Bash | Personal | Project | Interactive | cd /netclaw-approval-external && ls | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | reviewed-null-device-stderr-allows | Bash | Personal | Project | Interactive | grep -rn needle src 2>/dev/null | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | reviewed-null-device-all-output-allows | Bash | Personal | Project | Interactive | ls -la src > /dev/null 2>&1 | none | Allowed | ReviewedSafePolicy | none | Not applicable |
-| reviewed-project-file-redirect-prompts | Bash | Personal | Project | Interactive | grep -n needle src/readme.txt > hits.txt | none | RequiresApproval | approval required | grep | No |
+| reviewed-project-file-redirect-prompts | Bash | Personal | Project | Interactive | grep -n needle src/readme.txt > hits.txt | none | RequiresApproval | approval required | grep needle | No |
 | reviewed-null-device-with-file-redirect-prompts | Bash | Personal | Project | Interactive | ls src 2>/dev/null > listing.txt | none | RequiresApproval | approval required | ls | No |
-| echo-external-redirect-prompts | Bash | Personal | Project | Interactive | echo x > /netclaw-approval-external/netclaw-approval-echo.txt | none | RequiresApproval | approval required | echo | No |
+| echo-external-redirect-prompts | Bash | Personal | Project | Interactive | echo x > /netclaw-approval-external/netclaw-approval-echo.txt | none | RequiresApproval | approval required | echo x | No |
 | reviewed-backslash-pattern-allows | Bash | Personal | Project | Interactive | grep -n "alpha\\|beta" src/readme.txt | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | reviewed-backslash-word-external-path-allows | Bash | Personal | Project | Interactive | cat '/etc/a\b' | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | reviewed-git-global-option-before-phrase-prompts | Bash | Personal | Project | Interactive | git -c include.path=/tmp/external status | none | RequiresApproval | approval required | git status | No |
@@ -109,8 +109,26 @@
 | glob-intermediate-symlink-scope-fails-closed | Bash | Personal | Project | Interactive | cat artifacts/*/secret.txt | persistent[anywhere]:cat | RequiresApproval | approval required | cat artifacts/*/secret.txt | No |
 | directory-listing-glob-in-project-auto-allows | Bash | Personal | Project | Interactive | ls -d subdirs/*/ | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | directory-listing-glob-external-offers-persistent-grant | Bash | Personal | External | Interactive | ls -d subdirs/*/ | none | Allowed | ReviewedSafePolicy | none | Not applicable |
-| directory-listing-glob-pipeline-offers-persistent-grant | Bash | Personal | External | Interactive | ls -d subdirs/*/ \| xargs -n1 basename | none | RequiresApproval | approval required | xargs | No |
+| directory-listing-glob-pipeline-offers-persistent-grant | Bash | Personal | External | Interactive | ls -d subdirs/*/ \| xargs -n1 basename | none | RequiresApproval | approval required | xargs basename | No |
 | native-global-option-identity-gap-currently-prompts | Bash | Personal | Project | Interactive | git --no-pager status | persistent[project]:git status | Allowed | StoredApproval | none | Not applicable |
+| grant-identity-mixed-case-verb-prompts-with-command-words | Bash | Personal | Project | Interactive | pipedrive dealFields list --custom-only --json | none | RequiresApproval | approval required | pipedrive dealFields list | No |
+| grant-identity-mixed-case-pipeline-prompts-with-command-words | Bash | Personal | Project | Interactive | pipedrive dealFields list --custom-only --json \| jq '.[] \| .name' | none | RequiresApproval | approval required | pipedrive dealFields list | No |
+| grant-identity-mixed-case-chat-grant-allows | Bash | Personal | Project | Interactive | pipedrive dealFields list --json | session[this-chat]:pipedrive dealFields list | Allowed | StoredApproval | none | Not applicable |
+| grant-identity-mixed-case-folder-grant-allows | Bash | Personal | Project | Interactive | pipedrive dealFields list --json | persistent[project]:pipedrive dealFields list | Allowed | StoredApproval | none | Not applicable |
+| grant-identity-mixed-case-grant-keeps-other-verb-prompt | Bash | Personal | Project | Interactive | pipedrive deals delete 42 | session[this-chat]:pipedrive dealFields list, persistent[project]:pipedrive dealFields list | RequiresApproval | approval required | pipedrive deals delete | No |
+| grant-identity-mixed-case-grant-keeps-next-verb-prompt | Bash | Personal | Project | Interactive | pipedrive organizationFields list --json | session[this-chat]:pipedrive dealFields list | RequiresApproval | approval required | pipedrive organizationFields list | No |
+| grant-identity-program-only-grant-keeps-verb-prompt | Bash | Personal | Project | Interactive | pipedrive dealFields list --json | session[this-chat]:pipedrive, persistent[project]:pipedrive | RequiresApproval | approval required | pipedrive dealFields list | No |
+| grant-identity-program-only-grant-allows-bare-program | Bash | Personal | Project | Interactive | pipedrive | session[this-chat]:pipedrive | Allowed | StoredApproval | none | Not applicable |
+| grant-identity-lowercase-verb-prompts-unchanged | Bash | Personal | Project | Interactive | pipedrive dealfields list | none | RequiresApproval | approval required | pipedrive dealfields list | No |
+| grant-identity-case-variants-prompt-with-both-verbs | Bash | Personal | Project | Interactive | pipedrive dealFields list; pipedrive dealfields list | none | RequiresApproval | approval required | pipedrive dealFields list, pipedrive dealfields list | No |
+| grant-identity-powershell-case-variants-prompt-with-one-verb | PowerShell7 | Personal | Project | Interactive | pipedrive dealFields list; pipedrive dealfields list | none | RequiresApproval | approval required | pipedrive dealFields list | No |
+| grant-identity-second-word-mixed-case-prompts-with-command-words | Bash | Personal | Project | Interactive | mytool subCommand list | none | RequiresApproval | approval required | mytool subCommand list | No |
+| grant-identity-second-word-mixed-case-grant-allows | Bash | Personal | Project | Interactive | mytool subCommand list --all | session[this-chat]:mytool subCommand list | Allowed | StoredApproval | none | Not applicable |
+| grant-identity-digit-word-prompts-with-command-words | Bash | Personal | Project | Interactive | aws s3api listObjects --bucket b | none | RequiresApproval | approval required | aws listObjects | No |
+| grant-identity-digit-word-grant-allows | Bash | Personal | Project | Interactive | aws s3api listObjects --bucket b | session[this-chat]:aws listObjects | Allowed | StoredApproval | none | Not applicable |
+| grant-identity-digit-word-grant-keeps-other-verb-prompt | Bash | Personal | Project | Interactive | aws s3api deleteObjects --bucket b | session[this-chat]:aws listObjects | RequiresApproval | approval required | aws deleteObjects | No |
+| grant-identity-powershell-alias-grant-allows | PowerShell7 | Personal | Project | Interactive | gci | session[this-chat]:Get-ChildItem | Allowed | StoredApproval | none | Not applicable |
+| grant-identity-powershell-mixed-case-native-verb-prompts-with-command-words | PowerShell7 | Personal | Project | Interactive | pipedrive dealFields list --json | none | RequiresApproval | approval required | pipedrive dealFields list | No |
 | semicolon-sequence-prompts | Bash | Personal | Project | Interactive | git status; git push | none | RequiresApproval | approval required | git push | No |
 | newline-sequence-prompts | Bash | Personal | Project | Interactive | git status\ngit push | none | RequiresApproval | approval required | git push | No |
 | or-chain-prompts | Bash | Personal | Project | Interactive | git status \|\| git push | none | RequiresApproval | approval required | git push | No |
@@ -190,7 +208,7 @@
 | powershell51-stop-process-hard-deny | WindowsPowerShell51 | Personal | Project | Interactive | Stop-Process -Name netclaw | persistent[anywhere]:Stop-Process | Denied | hard_deny_self_destructive | none | Not applicable |
 | env-nested-shell-prompts | Bash | Personal | Project | Interactive | env bash -lc "git push" | none | RequiresApproval | approval required | env bash, git push | No |
 | nohup-nested-shell-prompts | Bash | Personal | Project | Interactive | nohup bash -lc "git push" | none | RequiresApproval | approval required | nohup bash, git push | No |
-| timeout-nested-shell-prompts | Bash | Personal | Project | Interactive | timeout 5 bash -lc "git push" | none | RequiresApproval | approval required | timeout, git push | No |
+| timeout-nested-shell-prompts | Bash | Personal | Project | Interactive | timeout 5 bash -lc "git push" | none | RequiresApproval | approval required | timeout bash, git push | No |
 | subshell-prompts | Bash | Personal | Project | Interactive | (git status && git push) | none | RequiresApproval | approval required | git push | No |
 | command-substitution-fails-closed | Bash | Personal | Project | Interactive | echo $(git push) | none | RequiresApproval | approval required | git push | No |
 | api-route-word-uses-project-folder-grant | Bash | Personal | Project | Interactive | gh api /repos/o/r/actions/jobs/1/logs | persistent[project]:gh api | Allowed | StoredApproval | none | Not applicable |
@@ -202,7 +220,7 @@
 | multi-line-inline-code-uses-folder-grant | Bash | Personal | Project | Interactive | python3 -c "import sys\nprint(sys.argv)" | persistent[project]:python3 | Allowed | StoredApproval | none | Not applicable |
 | echo-substitution-data-uses-inner-grant | Bash | Personal | Project | Interactive | echo "base: $(git merge-base origin/main origin/dev)"; echo "=== done ===" | persistent[anywhere]:git merge-base | Allowed | StoredApproval | none | Not applicable |
 | echo-substitution-data-allows-reviewed-inner-command | Bash | Personal | Project | Interactive | echo "merged: $(git merge-base --is-ancestor HEAD dev && echo yes)" | none | Allowed | ReviewedSafePolicy | none | Not applicable |
-| echo-substitution-data-prompts-for-unreviewed-inner-command | Bash | Personal | Project | Interactive | echo "remote: $(git ls-remote --heads origin dev && echo yes)" | none | RequiresApproval | approval required | git ls-remote | No |
+| echo-substitution-data-prompts-for-unreviewed-inner-command | Bash | Personal | Project | Interactive | echo "remote: $(git ls-remote --heads origin dev && echo yes)" | none | RequiresApproval | approval required | git ls-remote dev | No |
 | bash-substitution-quoted-path-operand-allows | Bash | Personal | Project | Interactive | cat "$(git status)" | persistent[anywhere]:cat, persistent[anywhere]:git status | Allowed | StoredApproval | none | Not applicable |
 | bash-substitution-multiple-nested-operand-allows | Bash | Personal | Project | Interactive | cat "$(printf '%s' "$(git status)")" "$(dotnet --info)" | persistent[anywhere]:cat, persistent[anywhere]:printf, persistent[anywhere]:git status, persistent[anywhere]:dotnet | Allowed | StoredApproval | none | Not applicable |
 | bash-substitution-redirect-target-fails-closed | Bash | Personal | Project | Interactive | git status > "$(printf result.log)" | persistent[anywhere]:git status, persistent[anywhere]:printf | RequiresApproval | approval required | git status > "$(printf result.log)" | No |
@@ -284,7 +302,7 @@
 | workload-edit-mkdir-grant-allows | Bash | Personal | Project | Interactive | mkdir -p reports/output | persistent[project]:mkdir | Allowed | StoredApproval | none | Not applicable |
 | workload-edit-remove-prompts | Bash | Personal | Project | Interactive | rm -- src/obsolete.txt | none | RequiresApproval | approval required | rm | No |
 | workload-edit-remove-grant-allows | Bash | Personal | Project | Interactive | rm -- src/obsolete.txt | persistent[project]:rm | Allowed | StoredApproval | none | Not applicable |
-| workload-edit-printf-redirect-prompts | Bash | Personal | Project | Interactive | printf '%s\n' "text" > reports/output.txt | none | RequiresApproval | approval required | printf | No |
+| workload-edit-printf-redirect-prompts | Bash | Personal | Project | Interactive | printf '%s\n' "text" > reports/output.txt | none | RequiresApproval | approval required | printf text | No |
 | workload-edit-printf-redirect-grant-allows | Bash | Personal | Project | Interactive | printf '%s\n' "text" > reports/output.txt | persistent[project]:printf | Allowed | StoredApproval | none | Not applicable |
 | workload-edit-search-pipeline-redirect-in-project-prompts-for-writer | Bash | Personal | Project | Interactive | grep -R "error" logs \| head -20 > reports/errors.txt | none | RequiresApproval | approval required | head | No |
 | workload-edit-search-pipeline-redirect-external-prompts | Bash | Personal | External | Interactive | grep -R "error" logs \| head -20 > reports/errors.txt | none | RequiresApproval | approval required | head | No |
@@ -298,7 +316,7 @@
 | workload-search-loop-substitution-pipeline-redirect-remains-complex | Bash | Personal | Project | Interactive | for f in logs/*.log; do grep -n "$(printf '%s' error)" "$f" \| head -20 > "reports/$f.txt"; done | persistent[project]:grep, persistent[project]:head, persistent[project]:printf | RequiresApproval | approval required | grep -n "$(printf '%s' error)" "$f", head -20 > "reports/$f.txt" | No |
 | echo-allows-without-grant | Bash | Personal | Project | Interactive | echo hello | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
 | printf-allows-without-grant | Bash | Personal | Project | Interactive | printf hello | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
-| echo-redirect-prompts | Bash | Personal | Project | Interactive | echo hello > result.txt | none | RequiresApproval | approval required | echo | No |
+| echo-redirect-prompts | Bash | Personal | Project | Interactive | echo hello > result.txt | none | RequiresApproval | approval required | echo hello | No |
 | echo-control-word-argument-allows | Bash | Personal | Project | Interactive | echo done | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
 | unquoted-status-output-reuses-session-grant | Bash | Personal | Project | Interactive | git push; echo $? | session[this-chat]:git push | Allowed | StoredApproval | none | Not applicable |
 | unquoted-status-output-prompts-for-unapproved-verb | Bash | Personal | Project | Interactive | git push; echo $? | none | RequiresApproval | approval required | git push | No |
@@ -371,7 +389,7 @@
 | test-builtin-loop-value-allows | Bash52 | Personal | Project | Interactive | for d in a b; do [ "$d" = a ] && echo yes; done | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
 | test-builtin-file-operand-has-no-scope | Bash52 | Personal | Project | Interactive | test -f /netclaw-approval-external/marker && echo yes | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
 | echo-substitution-value-is-data | Bash52 | Personal | Project | Interactive | n=$(git push); echo "$n"; printf '%s\n' "$n" | none | RequiresApproval | approval required | git push | No |
-| echo-read-value-is-data | Bash52 | Personal | Project | Interactive | read -r n < README.md; echo "$n" | none | RequiresApproval | approval required | read | No |
+| echo-read-value-is-data | Bash52 | Personal | Project | Interactive | read -r n < README.md; echo "$n" | none | RequiresApproval | approval required | read n | No |
 | test-builtin-subscript-operand-prompts | Bash52 | Personal | Project | Interactive | [ -v 'a[$(printf marker >&2)]' ] | none | RequiresApproval | approval required | [ -v 'a[$(printf marker >&2)]' ] | No |
 | test-builtin-unknown-value-prompts | Bash52 | Personal | Project | Interactive | n=$(basename src/a.cs); [ -v "$n" ] | persistent[anywhere]:basename | RequiresApproval | approval required | [ -v "$n" ] | No |
 | output-glob-from-binding-prompts | Bash52 | Personal | Project | Interactive | d=key; echo ../netclaw/"${d}s"/* | none | RequiresApproval | approval required | echo | No |

@@ -96,7 +96,7 @@ public sealed class ShellApprovalMatcherTests
     [InlineData("echo $? > /work/out/marker", "echo@/work/out")]
     [InlineData("echo $@", "echo@")]
     [InlineData(": \"$(date)\"; true \"$(date)\"; false $@", "date@/work|:@|date@/work|true@|false@")]
-    [InlineData("printf '%s\\n' \"$(git rev-parse HEAD)\"", "git rev-parse@/work|printf@")]
+    [InlineData("printf '%s\\n' \"$(git rev-parse HEAD)\"", "git rev-parse HEAD@/work|printf@")]
     [InlineData("git push; echo \"branch: $(git branch --show-current)\"", "git push@/work|git branch@/work|echo@")]
     public void Bash_output_data_value_keeps_static_candidates(string command, string expected)
     {
@@ -563,7 +563,7 @@ public sealed class ShellApprovalMatcherTests
     [InlineData("git show aa211dcb", "git show")]                 // alpha-leading SHA folds into chain, then trims
     [InlineData("git log v0.4.1..dev", "git log")]                // range ref is a value
     [InlineData("git push origin main", "git push origin main")]  // all-alpha operands are unclassifiable by shape -> preserved
-    [InlineData("aws s3 ls", "aws s3 ls")]                        // mid-chain digit token is not trailing -> untouched
+    [InlineData("aws s3 ls", "aws ls")]                           // the command words skip a word with a digit
     public void ExtractCandidateVerbs_trims_digit_bearing_tokens_trailing_only(string command, string expected)
     {
         var verbs = _matcher.ExtractCandidateVerbs(new ToolName("shell_execute"), Args(command));
@@ -1432,8 +1432,10 @@ public sealed class ShellApprovalMatcherPathExtractionTests
         var candidates = _matcher.ExtractCandidates(new ToolName("shell_execute"),
             Args("find /home/user -name X"));
 
+        // The verb is the command words. The parser does not know that -name
+        // takes a value, so X is a command word.
         var c = Assert.Single(candidates);
-        Assert.Equal("find", c.Verb);
+        Assert.Equal("find X", c.Verb);
         Assert.Equal("/home/user", c.Directory);
     }
 
@@ -1588,42 +1590,24 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             new ApprovalCandidate("git push", Directory: null)));
     }
 
+    // The exemption of a data command reads the program word, not the verb
+    // text, so `echo hello` (the verb `echo hello`) stays approval-exempt.
     [Fact]
-    public void ExtractCandidates_caps_echo_at_one_token()
+    public void ExtractCandidates_data_command_with_words_stays_approval_exempt()
     {
-        // Without the SingleTokenSideEffectVerbs cap, the verb-chain
-        // extractor would capture `echo hello` as a 2-token verb (since
-        // `hello` neither starts with `-` nor matches LooksLikeArgument)
-        // and the side-effect skip list would not match. Aaron's real
-        // dogfood case used `echo "---REMOTE-INFO---"` which already
-        // breaks at the leading `-` — but operators routinely run
-        // `echo hello`-shape commands in build scripts.
-        // (`echo done` would be the more obvious example but `done` is
-        // a bash control-flow keyword and triggers IsMessyCompoundCommand,
-        // which returns zero candidates.)
         var candidates = _matcher.ExtractCandidates(
             new ToolName("shell_execute"),
             new Dictionary<string, object?> { ["Command"] = "echo hello" });
 
         var c = Assert.Single(candidates);
-        Assert.Equal("echo", c.Verb);
+        Assert.Equal("echo hello", c.Verb);
         Assert.True(ApprovalPatternMatching.IsPureSideEffect(c));
     }
 
+    // One grant identity: the verb is the phrase of the command words. The
+    // parser verb walk stops at "user", and the command words do not.
     [Fact]
-    public void ExtractCandidates_keeps_parser_tokens_when_legacy_verb_is_shortened()
-    {
-        var candidate = Assert.Single(_matcher.ExtractCandidates(
-            new ToolName("shell_execute"),
-            new Dictionary<string, object?> { ["Command"] = "whoami user" }));
-
-        Assert.Equal("whoami", candidate.Verb);
-        Assert.Equal(["whoami", "user"], candidate.VerbTokens);
-        Assert.Equal(ApprovalShell.Bash, candidate.Shell);
-    }
-
-    [Fact]
-    public void ExtractCandidates_keeps_distinct_occurrences_with_one_legacy_projection()
+    public void ExtractCandidates_keeps_distinct_occurrences_with_their_own_command_words()
     {
         var candidates = _matcher.ExtractCandidates(
             new ToolName("shell_execute"),
@@ -1636,14 +1620,64 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             candidates,
             first =>
             {
-                Assert.Equal("whoami", first.Verb);
+                Assert.Equal("whoami user", first.Verb);
                 Assert.Equal(["whoami", "user"], first.VerbTokens);
             },
             second =>
             {
-                Assert.Equal("whoami", second.Verb);
+                Assert.Equal("whoami admin", second.Verb);
                 Assert.Equal(["whoami", "admin"], second.VerbTokens);
             });
+    }
+
+    // A program path in the verb shows the absolute file that the grant saves (R1).
+    [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
+    public void ExtractCandidates_verb_names_the_resolved_program_path()
+    {
+        var candidate = Assert.Single(_matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            Args("./bin/tool runJob now", "/opt/app")));
+
+        Assert.Equal(["/opt/app/bin/tool", "runJob", "now"], candidate.VerbTokens);
+        Assert.Equal("/opt/app/bin/tool runJob now", candidate.Verb);
+    }
+
+    // SECURITY: an exact candidate keeps its source text and is never exempt,
+    // also when its command words are only the data command.
+    [Fact]
+    public void Exact_candidate_of_a_data_command_is_not_approval_exempt()
+    {
+        var exact = new ApprovalCandidate("echo $x", Directory: null)
+        {
+            Shell = ApprovalShell.Bash,
+            VerbTokens = ["echo"],
+            Unresolved = ShellUnresolvedPart.Command,
+        };
+
+        Assert.False(ApprovalPatternMatching.IsPureSideEffect(exact));
+        Assert.True(ApprovalPatternMatching.IsPureSideEffect(exact with { Verb = "echo", Unresolved = ShellUnresolvedPart.None }));
+    }
+
+    // PowerShell uses the canonical cmdlet name of an alias in the command words,
+    // so the verb shows the cmdlet that the grant saves.
+    [Theory]
+    [InlineData("ls", "Get-ChildItem")]
+    [InlineData("gci", "Get-ChildItem")]
+    [InlineData("Get-ChildItem -Path src", "Get-ChildItem")]
+    [InlineData("echo hi", "Write-Output hi")]
+    [InlineData("Get-Process -Name dotnet", "Get-Process dotnet")]
+    public void PowerShell_verb_is_the_phrase_of_the_canonical_command_words(string command, string expected)
+    {
+        var matcher = new ShellApprovalMatcher(ShellExecutionEnvironment.CreatePowerShell(
+            @"C:\Program Files\PowerShell\7\pwsh.exe",
+            PwshDialect.PowerShell7));
+
+        var candidate = Assert.Single(matcher.ExtractCandidates(
+            new ToolName("shell_execute"),
+            Args(command, @"C:\work\project")));
+
+        Assert.Equal(expected, candidate.Verb);
+        Assert.Equal(expected.Split(' '), candidate.VerbTokens);
     }
 
     // A grant key is the ShellSyntaxTree command words: the program and every
@@ -1804,7 +1838,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
                 ["WorkingDirectory"] = "/workspace/service.repo"
             }));
 
-        Assert.Equal("find", candidate.Verb);
+        Assert.Equal("find f", candidate.Verb);
         Assert.Equal("/workspace/service.repo", candidate.Directory);
     }
 
@@ -1934,8 +1968,8 @@ public sealed class ShellApprovalMatcherPathExtractionTests
     [InlineData("env bash -lc \"git status\"", "env bash", "/work")]
     [InlineData("env /bin/bash -lc \"git status\"", "env", "/bin/bash")]
     [InlineData("nohup bash -lc \"git status\"", "nohup bash", "/work")]
-    [InlineData("timeout 5 bash -lc \"git status\"", "timeout", "/work")]
-    [InlineData("nice -n 5 bash -lc \"git status\"", "nice", "/work")]
+    [InlineData("timeout 5 bash -lc \"git status\"", "timeout bash", "/work")]
+    [InlineData("nice -n 5 bash -lc \"git status\"", "nice bash", "/work")]
     public void ExtractCandidates_retains_prefix_executable(
         string command,
         string expectedPrefix,
@@ -2017,7 +2051,7 @@ public sealed class ShellApprovalMatcherPathExtractionTests
                 ["Command"] = "cd /tmp && echo \"done\""
             });
 
-        Assert.Contains(candidates, c => c.Verb == "echo" && c.Directory == null);
+        Assert.Contains(candidates, c => c.Verb == "echo done" && c.Directory == null);
     }
 
     [Fact(SkipUnless = nameof(IsPosix), Skip = "POSIX-only path semantics")]
@@ -2081,8 +2115,10 @@ public sealed class ShellApprovalMatcherPathExtractionTests
                 ["WorkingDirectory"] = workingDirectory
             });
 
+        // A redirect gives the data command a scope, so the answer can save a
+        // grant. The verb is the command words of that grant.
         Assert.Contains(candidates, candidate =>
-            candidate.Verb == "echo" && candidate.Directory == workingDirectory);
+            candidate.Verb == "echo hello" && candidate.Directory == workingDirectory);
     }
 
     [SlopwatchSuppress("SW001", "This theory verifies POSIX null device behavior, which does not apply to the Windows shell parser.")]
@@ -2292,7 +2328,8 @@ public sealed class ShellApprovalMatcherPathExtractionTests
             });
 
         var printfCandidate = Assert.Single(candidates);
-        Assert.Equal("printf", printfCandidate.Verb);
+        Assert.Equal("printf %d", printfCandidate.Verb);
+        Assert.True(ApprovalPatternMatching.IsPureSideEffect(printfCandidate));
         Assert.Null(printfCandidate.Directory);
     }
 

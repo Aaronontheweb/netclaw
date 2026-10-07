@@ -404,12 +404,39 @@ public static class ApprovalPatternMatching
     /// security-relevant change reviewed alongside the safe-verb list.
     /// </remarks>
     public static bool IsPureSideEffect(ApprovalCandidate candidate)
-    {
-        if (candidate.Directory is not null || candidate.AssignmentDigest is not null)
-            return false;
+        => candidate.Directory is null
+           && candidate.AssignmentDigest is null
+           && ShellVerbPolicyData.IsDataCommand(PolicyProgram(candidate), candidate.Shell);
 
-        return ShellVerbPolicyData.IsDataCommand(candidate.Verb, candidate.Shell);
-    }
+    /// <summary>
+    /// Returns the program word that the data-command rule reads. The verb of a
+    /// candidate is the phrase of its command words (<c>echo hi</c>), so the
+    /// first command word is the program.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: an exact candidate keeps its source text and is never exempt.
+    /// Without the <see cref="ApprovalCandidate.Unresolved"/> test, the exact
+    /// candidate <c>echo $x</c> (command words <c>echo</c>) is approval-exempt.
+    /// A candidate with unknown command words keeps its policy verb.
+    /// </remarks>
+    internal static string PolicyProgram(ApprovalCandidate candidate)
+        => candidate is { Unresolved: ShellUnresolvedPart.None, VerbTokens: [var program, ..] }
+            ? program
+            : candidate.Verb;
+
+    /// <summary>
+    /// Returns the comparer that removes equal verbs from a prompt list. It
+    /// uses the case rule of a grant match: Bash words compare with case, and
+    /// PowerShell words compare without case. A tool with no shell keeps the
+    /// comparison without case.
+    /// </summary>
+    /// <remarks>
+    /// The prompt must show each grant that the answer saves.
+    /// <c>pipedrive dealFields list; pipedrive dealfields list</c> saves two
+    /// Bash grants, so the prompt shows two verbs.
+    /// </remarks>
+    public static StringComparer VerbTextComparer(ApprovalShell? shell)
+        => shell == ApprovalShell.Bash ? StringComparer.Ordinal : StringComparer.OrdinalIgnoreCase;
 }
 
 internal enum ShellApprovalScopeResult

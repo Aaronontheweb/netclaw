@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.101.0"
+  version: "2.102.0"
 ---
 
 # Netclaw Operations
@@ -420,15 +420,20 @@ over to another session. A scheduled reminder run is another session.
 
 Shell approvals store a typed phrase and a scope in `tool-approvals.json`:
 
-- **verb** — the command head plus subcommand chain only (e.g. `git push`,
-  `grep`, `freshdesk`). No flags, no path arguments.
+- **verb** — the command words of the call: the program and its plain words
+  (e.g. `git push`, `pipedrive dealFields list`, `grep needle`). No flags, no
+  path arguments. The prompt shows the same words that the answer saves. So
+  `pipedrive dealFields list --json` shows and saves
+  `pipedrive dealFields list`, not `pipedrive`.
   A phrase of two or more words names a verb. It covers its command words and
   any later command words, which are arguments: `git push` covers
   `git push origin main`, and `dotnet package search` covers each package.
   A phrase of one word names only the program and covers that word alone:
   `gh` covers `gh --help`, not `gh auth logout`. A word of the phrase is never
   free: `git push upstream` does not cover `git push origin main`. A new grant
-  saves the words of the approved call, so it can be narrower than the verb.
+  saves the words of the approved call, and the prompt shows those words. A
+  call with other words (`pipedrive organizationFields list`) gets its own
+  prompt.
 - **directory** — the path field for folder and global grants. Netclaw sets it from:
   - **Path argument** in the original command (`find /repo`, `ls /var/log`,
     `cat ~/.bashrc`). The path argument is the directory; for file targets

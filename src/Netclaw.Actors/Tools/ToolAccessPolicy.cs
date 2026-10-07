@@ -863,7 +863,7 @@ public sealed class ToolAccessPolicy
     {
         var candidateVerbs = candidates
             .Select(static candidate => candidate.Verb)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Distinct(ApprovalPatternMatching.VerbTextComparer(candidates.FirstOrDefault()?.Shell))
             .ToList();
 
         var managedTemporaryRetry = context.Approval.ManagedTemporaryRetry;
@@ -975,7 +975,7 @@ public sealed class ToolAccessPolicy
     {
         var candidateVerbs = unapprovedCandidates
             .Select(static candidate => candidate.Verb)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Distinct(ApprovalPatternMatching.VerbTextComparer(unapprovedCandidates.FirstOrDefault()?.Shell))
             .ToList();
         string? repository = null;
         IReadOnlyList<ToolApprovalOption> options;
