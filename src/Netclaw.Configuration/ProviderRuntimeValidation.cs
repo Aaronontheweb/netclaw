@@ -179,8 +179,8 @@ public sealed record ProviderRuntimeConfiguration(
 
     public static ProviderRuntimeConfiguration FromConfiguration(IConfiguration configuration)
     {
-        var models = configuration.GetSection("Models");
-        var providers = configuration.GetSection("Providers");
+        var models = configuration.GetSection(NamedModelConfiguration.SectionName);
+        var providers = configuration.GetSection(ProviderEntry.EntriesSectionName);
 
         if (models.GetSection(nameof(NamedModelConfiguration.Definitions)).Exists()
             || models.GetSection(nameof(NamedModelConfiguration.Roles)).Exists())

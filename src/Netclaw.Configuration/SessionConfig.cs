@@ -17,6 +17,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed record SessionConfig
 {
+    public const string SectionName = "Session";
+
     /// <summary>
     /// Maximum number of LLM-to-tools-to-LLM iterations allowed per turn. One
     /// LLM response that requests any number of parallel tool calls counts as

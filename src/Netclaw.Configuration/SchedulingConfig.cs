@@ -11,6 +11,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class SchedulingConfig
 {
+    public const string SectionName = "Scheduling";
+
     /// <summary>
     /// When false, the scheduling subsystem is disabled.
     /// Reminder and scheduling tools are not registered regardless of audience profile.

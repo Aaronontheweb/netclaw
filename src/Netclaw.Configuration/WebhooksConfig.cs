@@ -12,6 +12,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class WebhooksConfig
 {
+    public const string SectionName = "Webhooks";
+
     /// <summary>
     /// Enables inbound webhook endpoint registration.
     /// </summary>

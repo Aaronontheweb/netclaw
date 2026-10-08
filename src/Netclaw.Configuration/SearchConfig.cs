@@ -11,6 +11,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class SearchConfig
 {
+    public const string SectionName = "Search";
+
     /// <summary>
     /// When false, the web search subsystem is disabled.
     /// Search tools are not registered regardless of audience profile.

@@ -14,6 +14,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed record DaemonConfig
 {
+    public const string SectionName = "Daemon";
+
     /// <summary>
     /// Default TCP port the daemon listens on when <c>Daemon.Port</c> is not set
     /// in <c>netclaw.json</c>. Single source of truth for the port literal.

@@ -121,6 +121,8 @@ public enum ShellExecutionMode
 /// </summary>
 public sealed class SecurityPolicyConfig
 {
+    public const string SectionName = "Security";
+
     public DeploymentPosture? DeploymentPosture { get; set; }
 
     public ShellExecutionMode? ShellExecutionMode { get; set; }

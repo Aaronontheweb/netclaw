@@ -108,7 +108,7 @@ public sealed class ContextWindowDoctorCheck : IDoctorCheck
 
     private ProviderRuntimeValidation ValidateRuntimeConfiguration(JsonObject root)
     {
-        var providers = ProviderConfigurationLoader.Load(_configuration.GetSection("Providers"));
+        var providers = ProviderConfigurationLoader.Load(_configuration.GetSection(ProviderEntry.EntriesSectionName));
         var models = ModelConfigurationResolver.Resolve(_configuration).Selection;
 
         return ProviderRuntimeValidation.Evaluate(

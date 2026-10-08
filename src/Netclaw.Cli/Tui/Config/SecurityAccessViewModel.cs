@@ -686,7 +686,7 @@ public sealed class SecurityAccessViewModel : ReactiveViewModel
             {
                 var tools = new Dictionary<string, object> { ["Tools"] = new Dictionary<string, object> { ["AudienceProfiles"] = raw } };
                 using var stream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(tools, JsonDefaults.ConfigFile));
-                var section = new ConfigurationBuilder().AddJsonStream(stream).Build().GetSection("Tools");
+                var section = new ConfigurationBuilder().AddJsonStream(stream).Build().GetSection(ToolConfig.SectionName);
                 return ToolConfig.BindFromConfiguration(section, posture, out _).AudienceProfiles;
             }
             catch (Exception ex) when (ex is InvalidOperationException or InvalidDataException or FormatException or ArgumentException)

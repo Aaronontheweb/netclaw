@@ -9,6 +9,8 @@ namespace Netclaw.Channels.Slack;
 
 public sealed class SlackChannelOptions : IRemoteChatChannelOptions
 {
+    public const string SectionName = "Slack";
+
     public bool Enabled { get; init; }
 
     public bool SocketMode { get; init; } = true;

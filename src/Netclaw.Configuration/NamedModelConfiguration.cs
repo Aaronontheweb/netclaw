@@ -12,6 +12,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class NamedModelConfiguration
 {
+    public const string SectionName = "Models";
+
     public Dictionary<string, ModelReference> Definitions { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
 
@@ -81,7 +83,7 @@ public static class ModelConfigurationResolver
     }
 
     public static ModelConfigurationResolution Resolve(IConfiguration configuration)
-        => Resolve(configuration.GetSection("Models"));
+        => Resolve(configuration.GetSection(NamedModelConfiguration.SectionName));
 
     private static ModelReference ResolveRequired(
         NamedModelConfiguration named, string role, string definitionName)

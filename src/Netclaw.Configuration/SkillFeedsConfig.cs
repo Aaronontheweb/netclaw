@@ -12,6 +12,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class SkillFeedsConfig
 {
+    public const string SectionName = "SkillFeeds";
+
     /// <summary>
     /// Ordered list of skill server feeds. Precedence follows list order —
     /// earlier feeds win on name collisions. Native Netclaw skills and

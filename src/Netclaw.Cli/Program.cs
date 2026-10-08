@@ -112,7 +112,7 @@ static async Task RunAsync(string[] args)
     if (UpdateCommand.ShouldRunStartupUpdateCheck(mode, args))
     {
         var backgroundUpdateConfig = BuildCliConfig();
-        var backgroundDaemonConfig = DaemonConfig.BindFromConfiguration(backgroundUpdateConfig.GetSection("Daemon"));
+        var backgroundDaemonConfig = DaemonConfig.BindFromConfiguration(backgroundUpdateConfig.GetSection(DaemonConfig.SectionName));
         _ = UpdateCommand.BackgroundUpdateCheckAsync(backgroundDaemonConfig.DisableSelfUpdate, backgroundDaemonConfig.UpdateChannel);
     }
 
@@ -194,7 +194,7 @@ static async Task RunAsync(string[] args)
                     .AddEnvironmentVariables("NETCLAW_");
                 var initConfig = configBuilder.Build();
 
-                return SessionConfig.BindFromConfiguration(initConfig.GetSection("Session"));
+                return SessionConfig.BindFromConfiguration(initConfig.GetSection(SessionConfig.SectionName));
             });
             builder.Services.AddSingleton(sp =>
             {
@@ -2049,7 +2049,7 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
         .AddJsonFile(paths.SecretsPath, optional: true, reloadOnChange: false)
         .AddEnvironmentVariables("NETCLAW_");
 
-    services.AddSingleton(DaemonConfig.BindFromConfiguration(configuration.GetSection("Daemon")));
+    services.AddSingleton(DaemonConfig.BindFromConfiguration(configuration.GetSection(DaemonConfig.SectionName)));
 
     // TimeProvider (virtualized for testing)
     services.AddSingleton(TimeProvider.System);
@@ -2085,7 +2085,7 @@ static IConfigurationRoot BuildCliConfig()
 static void ConfigureCliChatServices(IServiceCollection services, IConfigurationManager configuration)
 {
     // Session config: bind operator-facing settings
-    var sessionConfig = SessionConfig.BindFromConfiguration(configuration.GetSection("Session"));
+    var sessionConfig = SessionConfig.BindFromConfiguration(configuration.GetSection(SessionConfig.SectionName));
     services.AddSingleton(sessionConfig);
     services.AddSingleton(sp => BuildModelCapabilities(configuration, sp.GetRequiredService<DaemonApi>()));
 
@@ -2105,7 +2105,7 @@ static void ConfigureCliChatServices(IServiceCollection services, IConfiguration
 /// </summary>
 static ModelCapabilities BuildModelCapabilities(IConfiguration configuration, DaemonApi daemonApi)
 {
-    var providers = ProviderConfigurationLoader.Load(configuration.GetSection("Providers"));
+    var providers = ProviderConfigurationLoader.Load(configuration.GetSection(ProviderEntry.EntriesSectionName));
     var models = ModelConfigurationResolver.Resolve(configuration).Selection;
     var validation = ProviderRuntimeValidation.Evaluate(
         providers,

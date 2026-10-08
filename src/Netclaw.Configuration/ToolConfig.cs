@@ -21,9 +21,9 @@ public sealed record PolicyConfiguration(
 {
     public static PolicyConfiguration Bind(IConfiguration configuration)
     {
-        var security = configuration.GetSection("Security").Get<SecurityPolicyConfig>() ?? new SecurityPolicyConfig();
+        var security = configuration.GetSection(SecurityPolicyConfig.SectionName).Get<SecurityPolicyConfig>() ?? new SecurityPolicyConfig();
         var defaults = SecurityPolicyDefaults.Resolve(security);
-        var tools = ToolConfig.BindFromConfiguration(configuration.GetSection("Tools"), defaults.DeploymentPosture, out var warnings);
+        var tools = ToolConfig.BindFromConfiguration(configuration.GetSection(ToolConfig.SectionName), defaults.DeploymentPosture, out var warnings);
         return new PolicyConfiguration(security, defaults, tools, warnings);
     }
 }
@@ -33,6 +33,8 @@ public sealed record PolicyConfiguration(
 /// </summary>
 public sealed class ToolConfig
 {
+    public const string SectionName = "Tools";
+
     public ShellExecutionMode? ShellMode { get; set; }
 
     /// <summary>

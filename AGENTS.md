@@ -223,8 +223,17 @@ procedure, cost limits, and expansion criteria.
 
 When adding or changing properties on any `*Config` type in `Netclaw.Configuration`,
 update `src/Netclaw.Configuration/Schemas/netclaw-config.v1.schema.json` in the same PR.
-The schema uses `"additionalProperties": false` throughout — any new property that is
-missing from the schema will be rejected by `ConfigSchemaDoctorCheck` at runtime.
+Most schema objects set `"additionalProperties": false`, so a new property that is missing from the
+schema is rejected by `ConfigSchemaDoctorCheck` at runtime, and `netclaw doctor --fix` deletes it
+without a backup. Provider entries under `Providers` stay open because the binder ignores key case.
+
+Each options class declares the section it binds as `public const string SectionName` (or
+`EntriesSectionName` for a dictionary of entries), and the binding call sites use that constant.
+`ConfigSchemaAlignmentTests` (in `Netclaw.Cli.Tests`) finds those classes by reflection and diffs their
+keys, types, enum values and defaults against the schema. It fails with the schema entry to add,
+change or remove. Nothing is listed in the test. A new section needs the constant on its options
+class; a credential (`SensitiveString`) may stay out of the schema so that doctor rejects it in
+`netclaw.json`.
 
 **Migration-friendly schema changes:** `netclaw doctor --fix` uses `SchemaFixResolver` to
 auto-fix common schema validation errors. To ensure smooth upgrades for existing configs:

@@ -12,6 +12,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class SubAgentConfig
 {
+    public const string SectionName = "SubAgents";
+
     /// <summary>
     /// When false, the subagent subsystem is disabled.
     /// No subagent-based tools are registered regardless of audience profile.

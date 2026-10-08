@@ -17,6 +17,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class ProviderEntry
 {
+    public const string EntriesSectionName = "Providers";
+
     public string Type { get; set; } = "ollama";
     public string Endpoint { get; set; } = "";
     public AuthMethod AuthMethod { get; set; } = AuthMethod.None;

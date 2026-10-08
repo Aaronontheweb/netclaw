@@ -692,7 +692,7 @@ internal static class SkillCommand
         if (File.Exists(paths.NetclawConfigPath))
             configBuilder.AddJsonFile(paths.NetclawConfigPath, optional: true);
         var configuration = configBuilder.Build();
-        return configuration.GetSection("ExternalSkills").Get<ExternalSkillsConfig>()
+        return configuration.GetSection(ExternalSkillsConfig.SectionName).Get<ExternalSkillsConfig>()
             ?? new ExternalSkillsConfig();
     }
 

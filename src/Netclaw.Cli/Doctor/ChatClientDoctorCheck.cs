@@ -60,7 +60,7 @@ public sealed class ChatClientDoctorCheck : IDoctorCheck
         ProviderRuntimeConfiguration runtimeConfiguration;
         try
         {
-            providers = ProviderConfigurationLoader.Load(_configuration.GetSection("Providers"));
+            providers = ProviderConfigurationLoader.Load(_configuration.GetSection(ProviderEntry.EntriesSectionName));
             models = ModelConfigurationResolver.Resolve(_configuration).Selection;
             // File present: read explicit provider types from the file (matches
             // historical behavior). Env-only: derive them from the bound

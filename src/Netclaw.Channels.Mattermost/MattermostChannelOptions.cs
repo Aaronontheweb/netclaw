@@ -9,6 +9,8 @@ namespace Netclaw.Channels.Mattermost;
 
 public sealed class MattermostChannelOptions : IRemoteChatChannelOptions
 {
+    public const string SectionName = "Mattermost";
+
     public bool Enabled { get; init; }
 
     public string? ServerUrl { get; init; }

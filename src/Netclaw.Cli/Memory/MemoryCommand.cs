@@ -83,7 +83,7 @@ internal static class MemoryCommand
         TextWriter error)
     {
         var force = args.Contains("--force", StringComparer.OrdinalIgnoreCase);
-        var memoryConfig = configuration.GetSection("Memory").Get<MemoryConfig>() ?? new MemoryConfig();
+        var memoryConfig = configuration.GetSection(MemoryConfig.SectionName).Get<MemoryConfig>() ?? new MemoryConfig();
 
         // Same switch the daemon's warmup honours: disabled means no model download and no
         // embedding, --force included.

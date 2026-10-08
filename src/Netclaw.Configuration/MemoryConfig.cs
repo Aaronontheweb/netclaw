@@ -11,6 +11,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class MemoryConfig
 {
+    public const string SectionName = "Memory";
+
     /// <summary>
     /// When false, the entire cross-session memory subsystem is disabled.
     /// Tools and automatic recall are not wired up regardless of audience profile.

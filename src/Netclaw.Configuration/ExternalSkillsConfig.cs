@@ -11,6 +11,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class ExternalSkillsConfig
 {
+    public const string SectionName = "ExternalSkills";
+
     /// <summary>
     /// Single catalog of well-known external skill sources. Both
     /// <see cref="ResolveWellKnownPath"/> and <see cref="ProbeWellKnownSources"/>

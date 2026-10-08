@@ -12,6 +12,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class ModelSelection
 {
+    public const string SectionName = NamedModelConfiguration.SectionName;
+
     /// <summary>Primary model for all interactions.</summary>
     public ModelReference Main { get; set; } = new();
 

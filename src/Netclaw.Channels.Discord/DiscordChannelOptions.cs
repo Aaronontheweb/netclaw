@@ -9,6 +9,8 @@ namespace Netclaw.Channels.Discord;
 
 public sealed class DiscordChannelOptions : IRemoteChatChannelOptions
 {
+    public const string SectionName = "Discord";
+
     public bool Enabled { get; init; }
 
     public SensitiveString? BotToken { get; init; }

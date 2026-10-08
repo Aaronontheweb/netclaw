@@ -10,6 +10,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class SkillSyncConfig
 {
+    public const string SectionName = "SkillSync";
+
     /// <summary>
     /// When false, skill index tools are unavailable to the session.
     /// </summary>

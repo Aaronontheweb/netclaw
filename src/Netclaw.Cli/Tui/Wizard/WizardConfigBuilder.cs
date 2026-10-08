@@ -80,7 +80,7 @@ public sealed class WizardConfigBuilder
             .AddJsonFile(_paths.NetclawConfigPath, optional: true, reloadOnChange: false)
             .Build();
 
-        var existing = DaemonConfig.BindFromConfiguration(config.GetSection("Daemon"));
+        var existing = DaemonConfig.BindFromConfiguration(config.GetSection(DaemonConfig.SectionName));
         if (existing.UpdateChannel == UpdateChannel.Stable)
             return;
 

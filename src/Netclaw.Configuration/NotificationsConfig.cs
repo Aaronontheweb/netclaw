@@ -11,6 +11,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class NotificationsConfig
 {
+    public const string SectionName = "Notifications";
+
     /// <summary>
     /// Webhook targets for operational notifications. Empty = logging only.
     /// </summary>

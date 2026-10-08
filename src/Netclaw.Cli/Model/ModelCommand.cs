@@ -546,7 +546,7 @@ internal static class ModelCommand
         error = null;
         try
         {
-            if (!configuration.GetSection("Models").Exists())
+            if (!configuration.GetSection(NamedModelConfiguration.SectionName).Exists())
                 return true;
 
             models = ModelConfigurationResolver.Resolve(configuration).Selection;

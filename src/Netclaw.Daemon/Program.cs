@@ -165,7 +165,7 @@ static async Task RunDaemonAsync(
 
     // Bind listen address from DaemonConfig; falls back to 127.0.0.1:5199 if
     // the Daemon section is absent from netclaw.json.
-    var daemonConfig = DaemonConfig.BindFromConfiguration(builder.Configuration.GetSection("Daemon"));
+    var daemonConfig = DaemonConfig.BindFromConfiguration(builder.Configuration.GetSection(DaemonConfig.SectionName));
     builder.WebHost.UseUrls($"http://{daemonConfig.Host}:{daemonConfig.Port}");
     var daemonLogLevel = builder.ConfigureNetclawLogging(paths);
     builder.AddNetclawTelemetry();
@@ -416,7 +416,7 @@ static NetclawPaths ConfigureConfigServices(
     // Providers and model resolution via plugin architecture.
     // No silent fallback to local-ollama: an empty Providers section yields
     // the NoProviderConfigured outcome and the host registers NoOpChatClientProvider.
-    var providers = ProviderConfigurationLoader.Load(configuration.GetSection("Providers"));
+    var providers = ProviderConfigurationLoader.Load(configuration.GetSection(ProviderEntry.EntriesSectionName));
     var models = ModelConfigurationResolver.Resolve(configuration).Selection;
     var validation = ProviderRuntimeValidation.Evaluate(
         providers,
@@ -426,7 +426,7 @@ static NetclawPaths ConfigureConfigServices(
     // The transport RetryingChatClient is the single owner of LLM transient-failure
     // retry, so it uses the configured streaming-retry budget.
     var streamingRetryPolicy = SessionConfig
-        .BindFromConfiguration(configuration.GetSection("Session"))
+        .BindFromConfiguration(configuration.GetSection(SessionConfig.SectionName))
         .Tuning.StreamingRetryPolicy;
 
     services.AddSingleton(validation);
@@ -505,7 +505,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     // Capability resolution runs against the loaded providers as-is — if
     // no providers are configured we never reach a real plugin, the No-Op
     // client supersedes, and capabilities default to text-only below.
-    var providers = ProviderConfigurationLoader.Load(configuration.GetSection("Providers"));
+    var providers = ProviderConfigurationLoader.Load(configuration.GetSection(ProviderEntry.EntriesSectionName));
     var mainProviderType = providers.TryGetValue(models.Main.Provider, out var mainProvider)
         ? mainProvider.Type
         : null;
@@ -582,7 +582,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     });
 
     // Session config: bind operator-facing settings from config section
-    var sessionConfig = SessionConfig.BindFromConfiguration(configuration.GetSection("Session"));
+    var sessionConfig = SessionConfig.BindFromConfiguration(configuration.GetSection(SessionConfig.SectionName));
     services.AddSingleton(sessionConfig);
 
     // The Tools defaults depend on the resolved posture, so Security and Tools bind together.
@@ -604,7 +604,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     // Background jobs — infrastructure singleton for async shell execution
     services.AddSingleton<Netclaw.Actors.Jobs.BackgroundJobDefinitionStore>();
 
-    var webhooksConfig = configuration.GetSection("Webhooks")
+    var webhooksConfig = configuration.GetSection(WebhooksConfig.SectionName)
         .Get<WebhooksConfig>() ?? new WebhooksConfig();
     services.AddSingleton(webhooksConfig);
     var webhookRouteStore = new Netclaw.Configuration.WebhookRouteStore(paths);
@@ -616,14 +616,14 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     services.AddSingleton<IWebhookExecutionService>(sp => sp.GetRequiredService<WebhookExecutionService>());
 
     // Search backend selection — gated on SearchConfig.Enabled
-    var searchConfig = configuration.GetSection("Search")
+    var searchConfig = configuration.GetSection(SearchConfig.SectionName)
         .Get<SearchConfig>() ?? new SearchConfig();
     var searchBackend = searchConfig.Enabled ? CreateSearchBackend(searchConfig) : null;
 
     // Server feed skill sources (private skill-server instances). The feed list
     // is fixed for the daemon lifetime; the tool path policy protects the sync
     // state file of each feed.
-    var skillFeedsConfig = configuration.GetSection("SkillFeeds")
+    var skillFeedsConfig = configuration.GetSection(SkillFeedsConfig.SectionName)
         .Get<SkillFeedsConfig>() ?? new SkillFeedsConfig();
     services.AddSingleton(skillFeedsConfig);
 
@@ -635,22 +635,22 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     services.AddShellParser(shellEnvironment);
 
     // Subagent timeout configuration
-    var subAgentConfig = configuration.GetSection("SubAgents")
+    var subAgentConfig = configuration.GetSection(SubAgentConfig.SectionName)
         .Get<SubAgentConfig>() ?? new SubAgentConfig();
     services.AddSingleton(subAgentConfig);
 
     // Cross-session memory: provider-based wiring
-    var memoryConfig = configuration.GetSection("Memory")
+    var memoryConfig = configuration.GetSection(MemoryConfig.SectionName)
         .Get<MemoryConfig>() ?? new MemoryConfig();
     services.AddSingleton(memoryConfig);
 
     // System skill sync behavior
-    var skillSyncConfig = configuration.GetSection("SkillSync")
+    var skillSyncConfig = configuration.GetSection(SkillSyncConfig.SectionName)
         .Get<SkillSyncConfig>() ?? new SkillSyncConfig();
     services.AddSingleton(skillSyncConfig);
 
     // Scheduling / reminders subsystem kill switch
-    var schedulingConfig = configuration.GetSection("Scheduling")
+    var schedulingConfig = configuration.GetSection(SchedulingConfig.SectionName)
         .Get<SchedulingConfig>() ?? new SchedulingConfig();
     services.AddSingleton(schedulingConfig);
 
@@ -690,7 +690,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     var skillRegistry = new SkillRegistry();
 
     // External skill sources (Claude Code, Open Code, custom paths)
-    var externalSkillsConfig = configuration.GetSection("ExternalSkills")
+    var externalSkillsConfig = configuration.GetSection(ExternalSkillsConfig.SectionName)
         .Get<ExternalSkillsConfig>() ?? new ExternalSkillsConfig();
     var resolvedExternalSources = externalSkillsConfig.ResolveEnabledSources();
     services.AddSingleton(externalSkillsConfig);
@@ -781,7 +781,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
 
     services.AddDaemonToolExecutor(toolRegistry, toolAccessPolicy);
     // Operational notification webhooks
-    var notificationsConfig = configuration.GetSection("Notifications")
+    var notificationsConfig = configuration.GetSection(NotificationsConfig.SectionName)
         .Get<NotificationsConfig>() ?? new NotificationsConfig();
     services.AddSingleton(notificationsConfig);
 
@@ -812,7 +812,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     services.AddSingleton<DaemonLifecycleNotifier>();
 
     // MCP server lifecycle management
-    var mcpServers = configuration.GetSection("McpServers")
+    var mcpServers = configuration.GetSection(McpServerEntry.EntriesSectionName)
         .Get<Dictionary<string, McpServerEntry>>() ?? [];
     services.AddSingleton(mcpServers);
     services.AddHttpClient("ProviderOAuth").AddNetclawHeaders("provider-oauth");

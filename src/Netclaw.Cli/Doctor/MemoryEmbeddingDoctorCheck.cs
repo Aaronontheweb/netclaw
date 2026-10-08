@@ -36,7 +36,7 @@ public sealed class MemoryEmbeddingDoctorCheck(
 
     public async Task<DoctorCheckResult> RunAsync(CancellationToken cancellationToken = default)
     {
-        var memoryConfig = configuration.GetSection("Memory").Get<MemoryConfig>() ?? new MemoryConfig();
+        var memoryConfig = configuration.GetSection(MemoryConfig.SectionName).Get<MemoryConfig>() ?? new MemoryConfig();
 
         if (!memoryConfig.Embeddings.Enabled)
         {

@@ -13,6 +13,8 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class McpServerEntry
 {
+    public const string EntriesSectionName = "McpServers";
+
     /// <summary>Transport type: "stdio", "sse", or "http".</summary>
     public string Transport { get; set; } = "stdio";
 

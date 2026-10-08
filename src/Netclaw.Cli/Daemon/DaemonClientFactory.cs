@@ -72,7 +72,7 @@ internal static class DaemonClientFactory
             .AddEnvironmentVariables("NETCLAW_")
             .Build();
 
-        return DaemonConfig.BindFromConfiguration(config.GetSection("Daemon"));
+        return DaemonConfig.BindFromConfiguration(config.GetSection(DaemonConfig.SectionName));
     }
 
     /// <summary>
