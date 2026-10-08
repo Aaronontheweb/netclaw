@@ -835,6 +835,60 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
   `x='a[$(cmd)]'; [ -v "$x" ]` runs `cmd`. Do not simplify the rule that way.
 - Breaks: `[ -n "$FOO" ]` gets `WriteWordsLiterally`. The model cannot write
   the value of `FOO`, so it repeats the call or stops.
+- Follows: an option value can name a path (#2364, 0.27.2). The rule uses a
+  parser fact, not the `--name=value` shape: ShellSyntaxTree 0.4.0-beta.24
+  gives some elements two arguments, an option and a value. Examples are
+  `--output=../x`, `--output\=../x`, `--output'='../x`, `"--output=../x"`, and
+  `-p:OutDir=../x`. The parser types the value as a path only from its own
+  option tables. Netclaw has no option tables, so `ShellApprovalMatcher`
+  (`ResolveOptionValuePathWords`) reads each proved value as a possible
+  location. A value that can leave the working directory becomes a path word
+  with the same text, and the path word code gives its scope. Its data is
+  call-local.
+
+  ```text
+  schematic: one value argument of one occurrence
+  parser types the value as a path -> the path word rule already applies
+  value unproved (Bash)            -> no scope here; unknown operand (D1)
+  text = value after the option; for a glob, the text before the first
+         glob character ("~" is a name: Bash expands no "~" after "=")
+  glob with ".." or with "$" before the glob character -> the path word
+         rule decides (the command is exact)
+  text is not a path of the path style (URL, date) -> no scope
+  location below the working directory, no link    -> no scope
+  otherwise -> a path word with this text: file-parent rule, absent
+               top-level rule (API route), glob covering directory
+  ```
+
+  Positive: a folder or repository grant for `dotnet build` covers
+  `dotnet build --output=bin/x`, `--configuration=Release`, and
+  `dotnet format --include=src/*.cs`. Negative: it does not cover
+  `dotnet build --output=../x`, `--output=$HOME/x` (Bash and PowerShell),
+  `--output=/etc/x`, or `-p:OutDir=../x`. A chat grant and a grant for
+  anywhere have no path scope, so they cover all of these. The separate word
+  in `--output ../x` or `-o ../x` was already a path word. Free text that
+  starts with `../` or `/` also prompts (`--message="../x y"`), as its
+  separate word does.
+
+  Known limits. The parser gives no general fact for these forms, and a split
+  needs the grammar of the program, so they get no path scope
+  (https://github.com/netclaw-dev/netclaw/issues/2383):
+  - a short option with an attached value: `-o../x`, `-I/usr/include`;
+  - text before the path in a value: `--data=@../x`, `--path=a:../b`,
+    `--a=b=../x`, `--files=a,../b`, `"--logger=trx;LogFileName=../x.trx"`,
+    `--output=file:///etc/x`;
+  - a `name=value` word without a dash: `make PREFIX=../x`, `dd of=../x`,
+    `dd of=~/x`, `/p:OutDir=../x`.
+  - a PowerShell value that is relative to a drive: `--output=D:x`,
+    `--output=a:..\b`;
+  - a glob value in the folder whose match is a link to a file outside the
+    folder: `--output=lsrc/*.cs`.
+
+  A glob value with an expansion before its first glob character
+  (`--output=$HOME/*.x`) has no fixed anchor. It gets the result of its
+  separate path word: the command is exact.
+
+  The protected-path check still reads each of these words.
 - Breaks: `ResolveAuthorizationScope` treats the first operand of `find` and
   `cd` as a directory. That is private grammar of two executables.
 

@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.102.0"
+  version: "2.102.1"
 ---
 
 # Netclaw Operations
@@ -652,6 +652,9 @@ is intended behavior. Mutating verbs in the same directory still prompt.
   directory, so the prompt offers reusable grants.
   An API route such as `gh api /repos/o/r/...` is not a folder: a word below a
   top-level directory that does not exist uses the working directory scope.
+  An option value is a path too: a folder grant for `dotnet build` does not
+  cover `dotnet build --output=../x` or `--output=$HOME/x`. Write the output
+  path inside the folder, or ask for `This chat` or `Always anywhere`.
 - **Shallow cwd** (e.g. `/etc/`, `/`) hides `Always here` only. Persisting a
   too-shallow root would grant the verb across most of the filesystem;
   `This chat` and `Always anywhere` remain available.

@@ -822,41 +822,18 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         {
             foreach (var arg in clause.Args)
             {
-                if (arg.IsCwdAttribution
-                    || !IsAuthorizationPathArg(arg, clauseWorkingDirectory, pathStyle))
-                    continue;
-
-                if (arg.Kind == ShellSyntaxTree.ArgKind.Glob)
-                {
-                    var coveringDirectory = ResolveGlobCoveringDirectory(
+                if (!arg.IsCwdAttribution
+                    && !TryAddPathWordScopes(
                         occurrence,
+                        verb,
                         arg,
                         clauseWorkingDirectory,
-                        pathStyle);
-                    if (coveringDirectory is null)
-                        return null;
-
-                    directories.Add(coveringDirectory);
-                    continue;
-                }
-
-                if (ResolveControlCharacterScope(arg, pathStyle) is { } textScope)
+                        pathStyle,
+                        resolveUnknownPathsFromEffectiveValues,
+                        directories))
                 {
-                    directories.Add(textScope);
-                    continue;
-                }
-
-                var resolvedPaths = ResolveArgumentPaths(
-                    occurrence,
-                    arg,
-                    clauseWorkingDirectory,
-                    pathStyle,
-                    resolveUnknownPathsFromEffectiveValues);
-                if (resolvedPaths is null)
                     return null;
-
-                directories.AddRange(resolvedPaths.Select(resolved =>
-                    ResolveAuthorizationScope(verb, arg, resolved, pathStyle)));
+                }
             }
 
             // A file word that left the command words is a path operand.
@@ -877,6 +854,35 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
                     return null;
 
                 directories.AddRange(authoredDirectories);
+            }
+
+            // SECURITY: an option value can name a path for the program
+            // (--output=../x). The parser gives an inline option two arguments
+            // of one element, and it types the value as a path only from its
+            // own option tables. Netclaw has no option tables, so a value that
+            // can leave the working directory gets the scope of a path word
+            // with the same text (#2364). A value that the parser already
+            // types as a path is in the loop above.
+            for (var index = 1; index < occurrence.Arguments.Count; index++)
+            {
+                var value = occurrence.Arguments[index];
+                var option = occurrence.Arguments[index - 1];
+                if (value.Argument.IsPath || !ReferenceEquals(value.Element, option.Element))
+                    continue;
+
+                var words = ResolveOptionValuePathWords(option, value, clauseWorkingDirectory, pathStyle);
+                if (words is null
+                    || words.Any(word => !TryAddPathWordScopes(
+                        occurrence,
+                        verb,
+                        word,
+                        clauseWorkingDirectory,
+                        pathStyle,
+                        resolveUnknownPathsFromEffectiveValues,
+                        directories)))
+                {
+                    return null;
+                }
             }
         }
 
@@ -1109,6 +1115,144 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         return resolved;
     }
 
+    /// <summary>
+    /// Adds the scopes of one path word. Returns false when the word has no
+    /// fixed scope, so the occurrence is unresolved.
+    /// </summary>
+    private static bool TryAddPathWordScopes(
+        CommandOccurrence occurrence,
+        string verb,
+        Arg arg,
+        string? workingDirectory,
+        ShellPathStyle pathStyle,
+        bool resolveUnknownPathsFromEffectiveValues,
+        List<string?> directories)
+    {
+        if (!IsAuthorizationPathArg(arg, workingDirectory, pathStyle))
+            return true;
+
+        if (arg.Kind == ArgKind.Glob)
+        {
+            var coveringDirectory = ResolveGlobCoveringDirectory(
+                occurrence,
+                arg,
+                workingDirectory,
+                pathStyle);
+            if (coveringDirectory is null)
+                return false;
+
+            directories.Add(coveringDirectory);
+            return true;
+        }
+
+        if (ResolveControlCharacterScope(arg, pathStyle) is { } textScope)
+        {
+            directories.Add(textScope);
+            return true;
+        }
+
+        var resolvedPaths = ResolveArgumentPaths(
+            occurrence,
+            arg,
+            workingDirectory,
+            pathStyle,
+            resolveUnknownPathsFromEffectiveValues);
+        if (resolvedPaths is null)
+            return false;
+
+        directories.AddRange(resolvedPaths.Select(resolved =>
+            ResolveAuthorizationScope(verb, arg, resolved, pathStyle)));
+        return true;
+    }
+
+    /// <summary>
+    /// Returns a path word for each text of an option value that can leave the
+    /// working directory. Returns null when a text has no location.
+    /// </summary>
+    /// <remarks>
+    /// A text that stays in the working directory gives no word: the working
+    /// directory scope covers it. A text that is not a path of the shell's
+    /// path style (a URL on PowerShell) gives no word. A glob value uses its
+    /// text before the first glob character. A "~" in the text is a name:
+    /// Bash expands no "~" after the "=" of an option.
+    /// See docs/architecture/tool-authorization.md, section 6.4.
+    /// </remarks>
+    private static IReadOnlyList<Arg>? ResolveOptionValuePathWords(
+        AnalyzedArgument option,
+        AnalyzedArgument value,
+        string? workingDirectory,
+        ShellPathStyle pathStyle)
+    {
+        var isGlob = value.Argument.Kind == ArgKind.Glob;
+        var words = new List<Arg>();
+        foreach (var whole in isGlob ? [value.Element.Value] : BoundedValues(value.Value))
+        {
+            // The element text, and a PowerShell value with an expansion,
+            // hold the whole word. The value is the text after the option.
+            var name = option.Argument.Raw;
+            var text = whole.StartsWith(name, StringComparison.Ordinal)
+                       && whole.AsSpan(name.Length).IndexOfAny('=', ':') == 0
+                ? whole[(name.Length + 1)..]
+                : whole;
+            var segments = pathStyle == ShellPathStyle.Windows ? text.Split('/', '\\') : text.Split('/');
+            var leaves = segments.Contains("..", StringComparer.Ordinal);
+            var anchor = isGlob ? text.Split('*', '?', '[')[0] : text;
+            var placed = TryCreateLocation(anchor, workingDirectory, pathStyle, out var location, out var cwd);
+
+            // A glob with a ".." or with an expansion before its first glob
+            // character has no fixed anchor. The path word rule decides.
+            if (!isGlob || !leaves && !anchor.Contains('$', StringComparison.Ordinal))
+            {
+                if (placed && StaysInWorkingDirectory(location, cwd))
+                    continue;
+
+                // A text that the path style cannot place: a ".." has no
+                // fixed scope, and a rooted text ("/etc/x" on PowerShell) is
+                // its own scope. Other text (a URL, a date) is not a path.
+                if (!placed && leaves)
+                    return null;
+
+                if (!placed && (segments[0].Length > 0 || text.Length == 0))
+                    continue;
+            }
+
+            words.Add(new Arg
+            {
+                Raw = text,
+                Resolved = isGlob ? null : placed ? location.Value : text,
+                Kind = isGlob ? ArgKind.Glob : ArgKind.Literal,
+                IsPath = true
+            });
+        }
+
+        return words;
+    }
+
+    private static bool TryCreateLocation(
+        string text,
+        string? workingDirectory,
+        ShellPathStyle pathStyle,
+        out CanonicalPath location,
+        out CanonicalPath cwd)
+    {
+        location = default;
+        return CanonicalPath.IsHostPathStyle(pathStyle)
+            ? CanonicalPath.TryCreateHost(workingDirectory, relativeBase: null, out cwd)
+              && CanonicalPath.TryCreateHost(text, cwd.Value, out location)
+            : CanonicalPath.TryCreate(workingDirectory, relativeBase: null, pathStyle, out cwd)
+              && CanonicalPath.TryCreate(text, cwd.Value, pathStyle, out location);
+    }
+
+    /// <summary>
+    /// Returns true when a location is below the working directory with no
+    /// link on the way. Such a path word or option value adds no scope. A
+    /// path of another style than the host gets the lexical check only.
+    /// </summary>
+    private static bool StaysInWorkingDirectory(CanonicalPath location, CanonicalPath cwd)
+        => FileSystemAuthority.EvaluateMembership(
+            location,
+            [new PathBoundary.Folder(cwd, LinkRule.BelowRoot)]) is PathDecision.Allowed;
+
     private static IReadOnlyList<string>? ResolveAuthoredFileSystemDirectories(
         ShellValueDomain domain,
         string? workingDirectory,
@@ -1340,9 +1484,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 
         return !CanonicalPath.TryCreateHost(arg.Resolved, relativeBase: null, out var resolved)
                || !CanonicalPath.TryCreateHost(workingDirectory, relativeBase: null, out var cwd)
-               || FileSystemAuthority.EvaluateMembership(
-                   resolved,
-                   [new PathBoundary.Folder(cwd, LinkRule.BelowRoot)]) is not PathDecision.Allowed;
+               || !StaysInWorkingDirectory(resolved, cwd);
     }
 
     /// <summary>
