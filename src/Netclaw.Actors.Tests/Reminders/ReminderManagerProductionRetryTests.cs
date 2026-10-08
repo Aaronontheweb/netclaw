@@ -158,6 +158,41 @@ public sealed class ReminderManagerProductionRetryTests : TestKit
             a.Category == AlertType.ReminderAutoDisabled && a.Source == id.Value);
     }
 
+    // The scheduler does not run for more than three intervals, as after a
+    // host suspend. Akka.Reminders expires the occurrences that it missed and
+    // delivers the current occurrence only. The series then continues.
+    [Fact]
+    public async Task One_minute_series_fires_one_time_after_a_stall_and_continues()
+    {
+        var id = await ScheduleIntervalReminderAsync("stalled-1m", TimeSpan.FromMinutes(1));
+        Advance(FirstFireDelay);
+        await AwaitSettledFailuresAsync(id, 1);
+
+        // 200 seconds after the first due time, the slots at 60 and 120 seconds
+        // are stale and the slot at 180 seconds is current.
+        Advance(TimeSpan.FromSeconds(200));
+
+        // Akka.Reminders expires the stale slot in one pass and starts a timer
+        // with no delay for the current slot. The test scheduler fires that
+        // timer only when the clock moves, so each poll moves it by one tick.
+        await AwaitAssertAsync(
+            () =>
+            {
+                Advance(TimeSpan.FromTicks(1));
+                Assert.Equal(2, CountFailureAlerts(id));
+            },
+            duration: TimeSpan.FromSeconds(10),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Advance(TimeSpan.FromSeconds(40));
+        await AwaitSettledFailuresAsync(id, 3);
+
+        Assert.Equal(3, _sessionPipeline.InvocationCount);
+        var definition = _definitionStore.Get(id);
+        Assert.NotNull(definition);
+        Assert.True(definition.Enabled);
+    }
+
     private async Task<ReminderId> ScheduleIntervalReminderAsync(string id, TimeSpan interval)
     {
         var now = _timeProvider.GetUtcNow();
@@ -205,12 +240,13 @@ public sealed class ReminderManagerProductionRetryTests : TestKit
     // for the next attempt, so the test can advance the clock again.
     private Task AwaitSettledFailuresAsync(ReminderId id, int expected) =>
         AwaitAssertAsync(
-            () => Assert.Equal(
-                expected,
-                _notificationSink.Alerts.Count(a =>
-                    a.Category == AlertType.ReminderExecutionFailed && a.Source == id.Value)),
+            () => Assert.Equal(expected, CountFailureAlerts(id)),
             duration: TimeSpan.FromSeconds(10),
             cancellationToken: TestContext.Current.CancellationToken);
+
+    private int CountFailureAlerts(ReminderId id) =>
+        _notificationSink.Alerts.Count(a =>
+            a.Category == AlertType.ReminderExecutionFailed && a.Source == id.Value);
 
     private Task<ReminderStatusResponse> GetStatusAsync(ReminderId id) =>
         ActorRegistry.For(Sys).Get<ReminderManagerActorKey>().Ask<ReminderStatusResponse>(
