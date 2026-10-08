@@ -41,10 +41,16 @@ internal sealed class SystemdUserService(
     private readonly ISystemCommandRunner _commandRunner = commandRunner ?? ProcessSystemCommandRunner.Instance;
     private readonly bool _enabledOnThisPlatform = enabledOnThisPlatform ?? OperatingSystem.IsLinux();
 
-    // The generated unit carries no NETCLAW_HOME, so it can only serve the default home.
     private readonly string _homePath = homePath ?? new NetclawPaths().BasePath;
 
-    public async Task<SystemdUserServiceOwnership> GetOwnershipAsync()
+    /// <summary>
+    /// Decides whether the unit owns the daemon of this invocation's home. A running daemon is
+    /// the unit's when systemd reports the same main PID the home's pid file records, whatever
+    /// NETCLAW_HOME the unit was given and however the home path is spelled. With no daemon
+    /// running there is no PID to compare, so only the default home (links resolved) is taken
+    /// to be the one the unit serves.
+    /// </summary>
+    public async Task<SystemdUserServiceOwnership> GetOwnershipAsync(DaemonStatus daemonStatus)
     {
         if (!_enabledOnThisPlatform)
             return SystemdUserServiceOwnership.Unmanaged("systemd user services are Linux-only.");
@@ -52,38 +58,64 @@ internal sealed class SystemdUserService(
         if (!File.Exists(_unitFilePath))
             return SystemdUserServiceOwnership.Unmanaged("No netclaw systemd user service is installed.");
 
-        // Under any other NETCLAW_HOME the unit would act on the default home's daemon instead.
-        if (!IsDefaultHome(_homePath))
+        // Another home with nothing running for it: the unit cannot be what starts it.
+        if (!daemonStatus.IsRunning && !IsDefaultHome(_homePath))
             return SystemdUserServiceOwnership.Unmanaged(
-                $"netclaw.service serves only the default home ({DefaultHomePath}), not {_homePath}.");
+                $"No daemon is running for {_homePath}, and netclaw.service starts only the default home ({DefaultHomePath}).");
 
         var active = await _commandRunner.RunAsync("systemctl", $"--user is-active {ServiceName}");
-        if (active.Success)
-            return SystemdUserServiceOwnership.Managed("netclaw.service is active.");
 
         // The unit's ExecStop= runs `netclaw daemon stop`, so that process is part of a stop job
         // that systemd already started. Asking systemd to stop the unit again would wait on itself.
-        if (active.StandardOutput.Trim() == "deactivating")
+        if (!active.Success && active.StandardOutput.Trim() == "deactivating")
             return SystemdUserServiceOwnership.Unmanaged("netclaw.service is already stopping.");
+
+        if (daemonStatus.IsRunning)
+        {
+            if (!active.Success)
+                return StateCheckFailed(active) ?? SystemdUserServiceOwnership.Unmanaged(
+                    "netclaw.service is not active, so it does not own the running daemon.");
+
+            if (daemonStatus.Pid is not { } daemonPid)
+                return SystemdUserServiceOwnership.Unmanaged(
+                    "The running daemon's PID is unknown, so netclaw.service cannot be matched to it.");
+
+            var show = await _commandRunner.RunAsync("systemctl", $"--user show {ServiceName} -p MainPID --value");
+            return show.Success && int.TryParse(show.StandardOutput.Trim(), out var mainPid) && mainPid != 0 && mainPid == daemonPid
+                ? SystemdUserServiceOwnership.Managed($"netclaw.service runs this home's daemon (PID {daemonPid}).")
+                : SystemdUserServiceOwnership.Unmanaged(
+                    $"netclaw.service does not run this home's daemon (PID {daemonPid}).");
+        }
+
+        if (active.Success)
+            return SystemdUserServiceOwnership.Managed("netclaw.service is active.");
 
         var enabled = await _commandRunner.RunAsync("systemctl", $"--user is-enabled --quiet {ServiceName}");
         if (enabled.Success)
             return SystemdUserServiceOwnership.Managed("netclaw.service is enabled.");
 
-        if (active.ExecutionError is not null || enabled.ExecutionError is not null)
-        {
-            return SystemdUserServiceOwnership.Unknown(
-                $"Could not execute systemctl: {active.ExecutionError ?? enabled.ExecutionError}");
-        }
-
-        if (!string.IsNullOrWhiteSpace(active.StandardError) || !string.IsNullOrWhiteSpace(enabled.StandardError))
-        {
-            return SystemdUserServiceOwnership.Unknown(
-                $"Could not determine netclaw.service state: {active.Message}; {enabled.Message}");
-        }
-
-        return SystemdUserServiceOwnership.Unmanaged(
+        return StateCheckFailed(active, enabled) ?? SystemdUserServiceOwnership.Unmanaged(
             "netclaw.service is installed but neither active nor enabled.");
+    }
+
+    private static SystemdUserServiceOwnership? StateCheckFailed(SystemCommandResult active, SystemCommandResult? enabled = null)
+    {
+        if (active.ExecutionError is not null || enabled?.ExecutionError is not null)
+        {
+            return SystemdUserServiceOwnership.Unknown(
+                $"Could not execute systemctl: {active.ExecutionError ?? enabled?.ExecutionError}");
+        }
+
+        if (!string.IsNullOrWhiteSpace(active.StandardError) || !string.IsNullOrWhiteSpace(enabled?.StandardError))
+        {
+            return SystemdUserServiceOwnership.Unknown(
+                $"Could not determine netclaw.service state: {active.Message}" +
+                (enabled is null ? string.Empty : $"; {enabled.Message}") +
+                ". A systemd unit is installed but the user session bus is not reachable: " +
+                "run this command from a login session, or use `systemctl --user` directly.");
+        }
+
+        return null;
     }
 
     internal static string DefaultHomePath => Path.GetFullPath(Path.Combine(
@@ -91,10 +123,24 @@ internal sealed class SystemdUserService(
         ".netclaw"));
 
     private static bool IsDefaultHome(string homePath) =>
-        string.Equals(
-            Path.TrimEndingDirectorySeparator(homePath),
-            Path.TrimEndingDirectorySeparator(DefaultHomePath),
-            StringComparison.Ordinal);
+        string.Equals(ResolveLinks(homePath), ResolveLinks(DefaultHomePath), StringComparison.Ordinal);
+
+    private static string ResolveLinks(string path)
+    {
+        var full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+        try
+        {
+            var target = new DirectoryInfo(full).ResolveLinkTarget(returnFinalTarget: true);
+            if (target is not null)
+                return Path.TrimEndingDirectorySeparator(Path.GetFullPath(target.FullName));
+        }
+        catch (IOException)
+        {
+            // Not a readable link: compare the path as spelled.
+        }
+
+        return full;
+    }
 
     public async Task<DaemonResult> StopAsync()
     {

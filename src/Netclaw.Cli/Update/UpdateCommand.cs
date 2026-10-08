@@ -375,7 +375,17 @@ internal static class UpdateCommand
         string reason,
         CancellationToken cancellationToken = default)
     {
-        var systemdOwnership = await systemdService.GetOwnershipAsync();
+        // Nothing runs for this home, so the unit is not consulted: it may be serving another home.
+        var daemonStatus = manager.GetStatus();
+        if (!daemonStatus.IsRunning)
+        {
+            var notRunning = await manager.StopAsync(reason, cancellationToken);
+            return notRunning.Success
+                ? UpdateDaemonStopResult.Succeeded(UpdateDaemonOwner.DetachedProcess, notRunning.Message)
+                : UpdateDaemonStopResult.Failed(UpdateDaemonOwner.DetachedProcess, notRunning.Message);
+        }
+
+        var systemdOwnership = await systemdService.GetOwnershipAsync(daemonStatus);
         switch (systemdOwnership.Kind)
         {
             case SystemdUserServiceOwnershipKind.Unknown:
@@ -430,7 +440,8 @@ internal static class UpdateCommand
         IDaemonProcessLifecycle manager,
         SystemdUserService systemdService)
     {
-        var systemdOwnership = await systemdService.GetOwnershipAsync();
+        var daemonStatus = manager.GetStatus();
+        var systemdOwnership = await systemdService.GetOwnershipAsync(daemonStatus);
         switch (systemdOwnership.Kind)
         {
             case SystemdUserServiceOwnershipKind.Unknown:
@@ -440,7 +451,7 @@ internal static class UpdateCommand
             case SystemdUserServiceOwnershipKind.Managed:
                 // A detached daemon holds the home, so the unit's daemon would only crash-loop on
                 // the singleton lock. Report what Start() reports for any running daemon.
-                return manager.GetStatus().IsRunning
+                return daemonStatus.IsRunning
                     ? manager.Start()
                     : await systemdService.StartAsync();
 
