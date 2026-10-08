@@ -174,6 +174,39 @@ public sealed class ReminderDeniedRunSettlementTests : TestKit
     }
 
     [Fact]
+    public async Task A_denied_one_shot_is_not_counted_as_failed_and_is_never_pruned()
+    {
+        var manager = ActorRegistry.For(Sys).Get<ReminderManagerActorKey>();
+        var definition = CreateDefinition(new ReminderSchedule
+        {
+            Type = ReminderScheduleType.OneShot,
+            FireAt = TimeProvider.System.GetUtcNow().AddMilliseconds(100)
+        });
+        var saved = await manager.Ask<ReminderSavedResponse>(
+            new SaveReminderCommand(definition, Authorization: new ReminderAudienceAuthorizationContext(TrustAudience.Team, "test")),
+            TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        Assert.True(saved.Success, saved.ErrorMessage);
+        await AwaitHistoryAsync(definition.Id, 1);
+        await AwaitAssertAsync(
+            () => Assert.False(_definitionStore.Get(definition.Id)!.Enabled),
+            TimeSpan.FromSeconds(10), cancellationToken: TestContext.Current.CancellationToken);
+
+        // Age the disabled one-shot well past the retention period, then prune.
+        var stored = _definitionStore.Get(definition.Id)!;
+        _definitionStore.Save(stored with
+        {
+            UpdatedAtMs = _timeProvider.GetUtcNow().Subtract(ReminderManagerActor.TerminalRetention + TimeSpan.FromDays(30)).ToUnixTimeMilliseconds()
+        });
+        manager.Tell(ReminderManagerActor.PruneTerminalReminders.Instance);
+        var health = await manager.Ask<ReminderHealthResponse>(
+            GetReminderHealthQuery.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.NotNull(_definitionStore.Get(definition.Id));
+        Assert.Single(await _historyStore.ReadAsync(definition.Id, 50));
+        Assert.Equal(0, health.FailedCount);
+    }
+
+    [Fact]
     public async Task A_recurring_reminder_stays_enabled_and_alerts_once_until_it_next_runs_ok()
     {
         var definition = CreateDefinition(new ReminderSchedule
