@@ -45,6 +45,10 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
             ExistingConfig = ConfigFileHelper.TryLoadJsonDictOrNull(paths.NetclawConfigPath, out _),
         };
         _orchestrator = new WizardOrchestrator([_step], _context, singleStepMode: true);
+
+        // The form shows defaults for a file it cannot read; say so now, not when the save fails.
+        if (FirstUnreadableConfigFile() is { } unreadable)
+            _context.StatusMessage.Value = DescribeReadFailure(unreadable);
     }
 
     public WizardContext Context => _context;
@@ -102,7 +106,7 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
     private string DescribeWriteFailure(Exception ex)
     {
         if (ex is JsonException)
-            return "Couldn't read netclaw.json: it has comments or is not valid JSON. Fix it and press Enter to retry.";
+            return DescribeReadFailure(FirstUnreadableConfigFile() ?? _paths.NetclawConfigPath);
 
         var reason = ex is UnauthorizedAccessException ? "permission denied" : "write failed";
         var failed = new[] { _paths.SoulPath, _paths.ToolingPath, _paths.AgentsPath, _paths.NetclawConfigPath }
@@ -110,6 +114,18 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         var target = failed is null ? "the identity files" : Path.GetFileName(failed);
         return $"Couldn't write {target}: {reason}. Fix it and press Enter to retry.";
     }
+
+    // The editor session reads netclaw.json and secrets.json; name the one that does not parse.
+    private string? FirstUnreadableConfigFile()
+        => new[] { _paths.NetclawConfigPath, _paths.SecretsPath }
+            .FirstOrDefault(path =>
+            {
+                ConfigFileHelper.TryLoadJsonDictOrNull(path, out var error);
+                return error is not null;
+            });
+
+    private static string DescribeReadFailure(string path)
+        => $"Couldn't read {Path.GetFileName(path)}: it has comments or is not valid JSON. Fix it and press Enter to retry.";
 
     /// <summary>
     /// Hands the onboarding trigger to chat, built from the identity values just saved.

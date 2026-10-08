@@ -236,6 +236,33 @@ public sealed class IdentityRedoViewModelTests : IDisposable
     }
 
     [Fact]
+    public void Redo_says_when_the_form_opens_that_netclaw_json_cannot_be_read()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, "{ // note\n \"configVersion\": 1 }");
+
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+
+        Assert.Equal(
+            "Couldn't read netclaw.json: it has comments or is not valid JSON. Fix it and press Enter to retry.",
+            vm.Context.StatusMessage.Value);
+    }
+
+    [Fact]
+    public void Redo_names_secrets_json_when_that_is_the_file_that_cannot_be_read()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "configVersion": 1 }""");
+        File.WriteAllText(_paths.SecretsPath, "{ \"Slack\": { \"BotToken\": ");
+
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        Assert.StartsWith("Couldn't read secrets.json", vm.Context.StatusMessage.Value, StringComparison.Ordinal);
+
+        DriveToSaved(vm);
+
+        Assert.False(vm.IsSaved.Value);
+        Assert.StartsWith("Couldn't read secrets.json", vm.Context.StatusMessage.Value, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Redo_does_not_touch_SOUL_when_netclaw_json_cannot_be_written()
     {
         File.WriteAllText(_paths.SoulPath, "original soul");

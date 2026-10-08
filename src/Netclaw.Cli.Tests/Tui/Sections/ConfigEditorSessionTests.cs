@@ -44,6 +44,36 @@ public sealed class ConfigEditorSessionTests : IDisposable
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(_paths.NetclawConfigPath));
     }
 
+    // A link into a directory that cannot take a new file: the save replaces the link, as it did
+    // before links were followed, and does not fail.
+    [Fact]
+    public void Save_replaces_a_symbolic_link_whose_target_directory_is_read_only()
+    {
+        if (OperatingSystem.IsWindows() || Environment.UserName == "root")
+            return; // needs POSIX permissions and a non-root user
+
+        var targetDir = Path.Combine(_dir.Path, "dotfiles");
+        Directory.CreateDirectory(targetDir);
+        var real = Path.Combine(targetDir, "netclaw.json");
+        File.WriteAllText(real, """{ "configVersion": 1, "Security": { "DeploymentPosture": "Team" } }""");
+        File.CreateSymbolicLink(_paths.NetclawConfigPath, real);
+        File.SetUnixFileMode(targetDir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            var session = new ConfigEditorSession(_paths);
+            session.Apply(new SectionContribution([new SectionFieldAction("Daemon.Port", SectionFieldActionKind.Set, 5299)]));
+            session.Save();
+
+            Assert.Null(new FileInfo(_paths.NetclawConfigPath).LinkTarget);
+            Assert.Contains("5299", File.ReadAllText(_paths.NetclawConfigPath), StringComparison.Ordinal);
+            Assert.Contains("Team", File.ReadAllText(_paths.NetclawConfigPath), StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.SetUnixFileMode(targetDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     [Fact]
     public void Save_writes_into_the_key_spelling_the_file_already_has()
     {

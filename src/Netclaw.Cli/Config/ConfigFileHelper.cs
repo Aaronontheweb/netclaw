@@ -215,17 +215,31 @@ internal static class ConfigFileHelper
     /// <summary>
     /// Serialize a config dictionary and write it to disk, creating parent directories if needed.
     /// The file keeps its mode (an owner-only netclaw.json stays owner-only), and a symbolic link is
-    /// followed so the file it points at is rewritten and the link stays a link.
+    /// followed so the file it points at is rewritten and the link stays a link. When the link's
+    /// target cannot be written, the link itself is replaced.
     /// </summary>
     internal static void WriteConfigFile(string path, Dictionary<string, object> data)
     {
         var info = new FileInfo(path);
         var target = info.LinkTarget is null ? path : info.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? path;
-        PreserveLegacyModelsBackup(target, data);
-        AtomicFile.WriteAllText(
-            target,
-            JsonSerializer.Serialize(data, JsonDefaults.ConfigFile),
-            temp => AtomicFile.CopyUnixMode(target, temp));
+        var json = JsonSerializer.Serialize(data, JsonDefaults.ConfigFile);
+
+        try
+        {
+            WriteKeepingMode(target, data, json);
+        }
+        catch (Exception ex) when (target != path && ex is IOException or UnauthorizedAccessException)
+        {
+            // The link's target directory cannot take a new file (read-only, or another owner).
+            // Replace the link itself, as saves did before links were followed.
+            WriteKeepingMode(path, data, json);
+        }
+    }
+
+    private static void WriteKeepingMode(string path, Dictionary<string, object> data, string json)
+    {
+        PreserveLegacyModelsBackup(path, data);
+        AtomicFile.WriteAllText(path, json, temp => AtomicFile.CopyUnixMode(path, temp));
     }
 
     private static void PreserveLegacyModelsBackup(string path, Dictionary<string, object> data)
