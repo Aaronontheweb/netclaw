@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Update;
 using Netclaw.Configuration;
 using R3;
 using Termina.Reactive;
@@ -64,6 +65,7 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
     private readonly InitNavigationState _navigationState;
     private readonly Func<string, CancellationToken, Task<DaemonResult>> _stopDaemonAsync;
     private readonly Action<string> _deleteDirectory;
+    private readonly Func<bool> _isDaemonRunning;
     private readonly TimeProvider _timeProvider;
     private readonly CancellationTokenSource _resetCts = new();
     private volatile bool _disposed;
@@ -74,17 +76,50 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
         InitNavigationState navigationState,
         DaemonManager daemonManager,
         TimeProvider timeProvider)
-        : this(paths, navigationState, daemonManager.StopAsync, DeleteDirectory, timeProvider)
+        : this(paths, navigationState, daemonManager, new SystemdUserService(), timeProvider)
     {
     }
 
     internal InitExistingInstallViewModel(
         NetclawPaths paths,
         InitNavigationState navigationState,
+        DaemonManager daemonManager,
+        SystemdUserService systemdService,
+        TimeProvider timeProvider)
+        : this(paths, navigationState, StopThroughOwnerAsync(daemonManager, systemdService), DeleteDirectory, timeProvider,
+            () => DaemonMayStillRun(daemonManager, systemdService))
+    {
+    }
+
+    // The stop's postcondition: nothing is running and nothing, the systemd unit included, will
+    // start the daemon again. A unit state that cannot be read counts as "may still run".
+    private static bool DaemonMayStillRun(DaemonManager daemonManager, SystemdUserService systemdService)
+    {
+        var status = daemonManager.GetStatus();
+        return status.IsRunning
+            || systemdService.GetStopOwnershipAsync(status).GetAwaiter().GetResult().Kind
+                != SystemdUserServiceOwnershipKind.Unmanaged;
+    }
+
+    // Same stop path as `netclaw daemon stop`: an installed systemd unit would otherwise restart
+    // the daemon under the data the reset is deleting.
+    private static Func<string, CancellationToken, Task<DaemonResult>> StopThroughOwnerAsync(
+        DaemonManager daemonManager, SystemdUserService systemdService)
+        => async (reason, ct) => (await UpdateCommand.StopDaemonAsync(
+            new UpdateCommand.DaemonProcessLifecycle(daemonManager),
+            systemdService,
+            reason,
+            ct)).ToDaemonResult();
+
+    internal InitExistingInstallViewModel(
+        NetclawPaths paths,
+        InitNavigationState navigationState,
         Func<string, CancellationToken, Task<DaemonResult>> stopDaemonAsync,
         Action<string> deleteDirectory,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        Func<bool>? isDaemonRunning = null)
     {
+        _isDaemonRunning = isDaemonRunning ?? (() => false);
         _paths = paths;
         _navigationState = navigationState;
         _stopDaemonAsync = stopDaemonAsync;
@@ -352,29 +387,41 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
         PublishOnLoop(() => Navigate?.Invoke(WizardRoute), ct);
     }
 
-    /// <summary>Best-effort daemon stop; deletion still surfaces any locked-file failure.</summary>
+    /// <summary>
+    /// Stops the daemon through its owner. A failed stop only lets the reset continue when no
+    /// daemon is left: deleting the database under a live daemon, then letting its supervisor
+    /// restart it on a wiped home, is worse than refusing.
+    /// </summary>
     private async Task StopDaemonBestEffortAsync(CancellationToken ct)
     {
         Task<DaemonResult>? stopTask = null;
+        string? stopFailure = null;
         try
         {
             stopTask = _stopDaemonAsync("factory-reset", ct);
             var result = await stopTask.WaitAsync(ct);
             if (!result.Success && !IsDaemonAlreadyStopped(result.Message))
-                PublishStatus($"Daemon stop did not complete; reset will continue: {result.Message}", ct);
+                stopFailure = result.Message;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
             ObserveLateStopFailure(stopTask);
-        }
-        catch (OperationCanceledException ex)
-        {
-            PublishStatus($"Daemon stop canceled; reset will continue: {ex.Message}", ct);
+            return;
         }
         catch (Exception ex)
         {
-            PublishStatus($"Daemon stop failed; reset will continue: {ex.Message}", ct);
+            stopFailure = ex.Message;
         }
+
+        if (_isDaemonRunning())
+        {
+            throw new InvalidOperationException(
+                $"the daemon is still running or its systemd unit could restart it ({stopFailure ?? "it did not exit"}). Nothing was deleted. " +
+                "Run this from a login session, or run `systemctl --user stop netclaw.service`, then retry.");
+        }
+
+        if (stopFailure is not null)
+            PublishStatus($"Daemon stop did not complete; reset will continue: {stopFailure}", ct);
     }
 
     private static bool IsDaemonAlreadyStopped(string message)

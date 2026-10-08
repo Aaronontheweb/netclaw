@@ -513,21 +513,47 @@ static async Task RunAsync(string[] args)
         switch (subcommand)
         {
             case "start":
-                var startResult = manager.Start();
+                var startResult = await UpdateCommand.StartDaemonAsync(
+                    new UpdateCommand.DaemonProcessLifecycle(manager),
+                    new SystemdUserService());
                 WriteDaemonResult(startResult);
                 return;
 
             case "stop":
-                var stopResult = await manager.StopAsync("cli-stop", CancellationToken.None);
+                var stopResult = (await UpdateCommand.StopDaemonAsync(
+                    new UpdateCommand.DaemonProcessLifecycle(manager),
+                    new SystemdUserService(),
+                    "cli-stop")).ToDaemonResult();
                 WriteDaemonResult(stopResult);
+                if (stopResult.Success && new ContainerSupervisor().IsExternallySupervised)
+                    Console.WriteLine("The container supervisor will restart the daemon.");
                 return;
 
             case "status":
+            {
                 var status = manager.GetStatus();
                 Console.WriteLine(status.Message);
-                if (status.IsRunning)
-                    Console.WriteLine("Tip: run `netclaw status` for detailed runtime connector and telemetry health.");
+                if (!status.IsRunning)
+                {
+                    Environment.ExitCode = 1;
+                    return;
+                }
+
+                // The container HEALTHCHECK runs this command, so readiness is probed at the
+                // endpoint the CLI resolves (netclaw.json, NETCLAW_* env, default) instead of a
+                // port baked into the image.
+                var (ready, readyEndpoint) = await DaemonApi.ProbeLocalReadinessAsync(paths);
+
+                if (!ready)
+                {
+                    Console.WriteLine($"Daemon process is running but {readyEndpoint}/api/health/ready did not answer.");
+                    Environment.ExitCode = 1;
+                    return;
+                }
+
+                Console.WriteLine("Tip: run `netclaw status` for detailed runtime connector and telemetry health.");
                 return;
+            }
 
             case "install":
                 var installResult = await manager.InstallAsync();
@@ -586,8 +612,8 @@ static async Task RunAsync(string[] args)
                     Console.WriteLine($"Pairing code:  {pairingResult.FormattedCode}");
                     Console.WriteLine($"Expires at:    {pairingResult.ExpiresAt.ToLocalTime():HH:mm:ss} (local time)");
                     Console.WriteLine();
-                    Console.WriteLine("On the remote device, run:");
-                    Console.WriteLine($"  netclaw pair {pairApi.Endpoint}");
+                    PairCommand.WriteClientInstructions(
+                        Console.Out, pairApi.Endpoint, DaemonClientFactory.ResolveExposureMode(paths));
                 }
                 catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
                 {
@@ -1349,7 +1375,7 @@ static void WriteDaemonHelp()
     Console.WriteLine("Subcommands:");
     Console.WriteLine("  start                        Start daemon as a background process");
     Console.WriteLine("  stop                         Stop daemon gracefully");
-    Console.WriteLine("  status                       Show daemon process status");
+    Console.WriteLine("  status                       Show daemon process status (exit 1 if not running or not ready)");
     Console.WriteLine("  install                      Install systemd user service (Linux)");
     Console.WriteLine("  uninstall                    Remove systemd user service (Linux)");
     Console.WriteLine("  pair                         Generate a pairing code for remote device access");
