@@ -15,6 +15,7 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
     private readonly DisposableTempDir _dir = new();
     private readonly NetclawPaths _paths;
     private readonly DaemonManager _sut;
+    private readonly List<System.Diagnostics.Process> _fakeDaemons = [];
 
     public DaemonManagerSingletonGuardTests()
     {
@@ -152,6 +153,53 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
         Assert.DoesNotContain("supervisor", result.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    [SlopwatchSuppress("SW001", "Uses a copy of /bin/sleep as the stand-in daemon process.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Uses a copy of /bin/sleep as the stand-in daemon process.")]
+    public void GetStatus_TreatsAPidFileAsStale_WhenThisHomesLockIsFree_EvenIfTheProcessIsAlive()
+    {
+        // F4: another home's pid file can name the unit's live daemon. Without this home's lock
+        // held, that pid is not this home's daemon.
+        var daemon = StartFakeDaemon();
+        File.WriteAllText(_paths.PidFilePath, daemon.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+
+        var status = _sut.GetStatus();
+
+        Assert.False(status.IsRunning);
+        Assert.Null(status.Pid);
+        Assert.False(File.Exists(_paths.PidFilePath));
+    }
+
+    [SlopwatchSuppress("SW001", "Uses a copy of /bin/sleep as the stand-in daemon process.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Uses a copy of /bin/sleep as the stand-in daemon process.")]
+    public void GetStatus_ReportsThePidFilesProcess_WhenThisHomesLockIsHeld()
+    {
+        var daemon = StartFakeDaemon();
+        File.WriteAllText(_paths.PidFilePath, daemon.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        using var holder = new FileStream(
+            _paths.LockFilePath,
+            FileMode.OpenOrCreate,
+            FileAccess.ReadWrite,
+            FileShare.None);
+
+        var status = _sut.GetStatus();
+
+        Assert.True(status.IsRunning);
+        Assert.Equal(daemon.Id, status.Pid);
+    }
+
+    public static bool IsLinux => OperatingSystem.IsLinux();
+
+    private System.Diagnostics.Process StartFakeDaemon()
+    {
+        var fakeDaemon = Path.Combine(_dir.Path, "netclawd");
+        File.Copy("/bin/sleep", fakeDaemon, overwrite: true);
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(fakeDaemon, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(fakeDaemon, "600") { UseShellExecute = false })!;
+        _fakeDaemons.Add(process);
+        return process;
+    }
+
     private sealed class FakeSupervisor(bool supervised) : IContainerSupervisor
     {
         public bool IsExternallySupervised => supervised;
@@ -159,6 +207,13 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
 
     public void Dispose()
     {
+        foreach (var process in _fakeDaemons)
+        {
+            if (!process.HasExited)
+                process.Kill();
+            process.Dispose();
+        }
+
         try { _dir.Dispose(); }
         catch (IOException) { } // slopwatch-ignore: SW003 test cleanup best-effort — directory may already be gone
     }

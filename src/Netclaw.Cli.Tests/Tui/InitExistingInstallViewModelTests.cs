@@ -457,6 +457,10 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
         try
         {
             File.WriteAllText(_paths.PidFilePath, daemon.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
+            // A real daemon holds the lock for as long as it lives.
+            var daemonLock = new FileStream(_paths.LockFilePath, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None);
+            daemon.EnableRaisingEvents = true;
+            daemon.Exited += (_, _) => daemonLock.Dispose();
             var unitPath = Path.Combine(_dir.Path, "netclaw.service");
             File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
             var runner = new RecordingCommandRunner(daemon.Id);
@@ -490,7 +494,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
             return Task.FromResult(arguments.Contains("show", StringComparison.Ordinal)
                 ? new SystemCommandResult(0, string.Empty, StandardOutput: mainPid + "\n")
-                : new SystemCommandResult(0, string.Empty));
+                : new SystemCommandResult(0, string.Empty, StandardOutput: "active\n"));
         }
     }
 
@@ -530,7 +534,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
         if (Matches())
             return;
 
-        await tcs.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
     }
 
     private static async Task WaitForProgressMessageAsync(InitExistingInstallViewModel vm, string prefix)
@@ -550,7 +554,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
         if (Matches())
             return;
 
-        await tcs.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
     }
 
     private static async Task WaitForStatusMessageAsync(InitExistingInstallViewModel vm, string prefix)
@@ -570,7 +574,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
         if (Matches())
             return;
 
-        await tcs.Task.WaitAsync(TestContext.Current.CancellationToken);
+        await tcs.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
     }
 
     private static void SetNavigate(ReactiveViewModel vm, Action<string> navigate)

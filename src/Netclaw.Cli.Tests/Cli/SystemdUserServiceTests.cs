@@ -22,43 +22,206 @@ public sealed class SystemdUserServiceTests : IDisposable
 
     private string ScratchHome => Path.Combine(_dir.Path, "scratch-home");
 
+    private static SystemCommandResult State(string state) =>
+        new(state == "active" || state == "reloading" ? 0 : 3, string.Empty, StandardOutput: state + "\n");
+
+    private static SystemCommandResult MainPid(string value) => new(0, string.Empty, StandardOutput: value);
+
+    private static readonly string DefaultHome = SystemdUserService.DefaultHomePath;
+
+    private static void AssertKind(SystemdUserServiceOwnershipKind expected, SystemdUserServiceOwnership actual) =>
+        Assert.Equal(expected, actual.Kind);
+
+    // ---- stop rule ----
+
     [Fact]
-    public async Task GetOwnershipAsync_ReturnsUnmanaged_WhenUnitFileMissing()
+    public async Task Stop_ReturnsUnmanaged_WhenUnitFileMissing()
     {
         var runner = new FakeSystemCommandRunner();
         var service = new SystemdUserService(
-            Path.Combine(_dir.Path, "missing.service"),
-            runner,
-            enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
+            Path.Combine(_dir.Path, "missing.service"), runner, enabledOnThisPlatform: true, homePath: DefaultHome);
 
-        var ownership = await service.GetOwnershipAsync(NotRunning);
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, await service.GetStopOwnershipAsync(NotRunning));
+        Assert.Empty(runner.Commands);
+    }
 
-        Assert.Equal(SystemdUserServiceOwnershipKind.Unmanaged, ownership.Kind);
+    [Theory]
+    [InlineData("active", "4242")]
+    [InlineData("reloading", "4242")]
+    public async Task Stop_ReturnsManaged_WhenTheUnitsMainPidIsThisHomesDaemon_WhateverTheHomePath(string state, string mainPid)
+    {
+        foreach (var home in new[] { DefaultHome, ScratchHome })
+        {
+            var runner = new FakeSystemCommandRunner();
+            runner.Enqueue(State(state));
+            runner.Enqueue(MainPid(mainPid));
+
+            AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, home).GetStopOwnershipAsync(RunningAs(4242)));
+        }
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsManaged_ForACrashLoopingUnitOnTheDefaultHome_WithNoDaemonRunning()
+    {
+        // F1: activating, MainPID=0 (auto-restart wait), nothing running: the unit will start a daemon.
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("activating"));
+        runner.Enqueue(MainPid("0\n"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(NotRunning));
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsManaged_ForAnActivatingUnitWithAFreshMainPid_OnTheDefaultHome()
+    {
+        // The unit's process is still starting (or about to crash): it is not another home's settled daemon.
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("activating"));
+        runner.Enqueue(MainPid("777\n"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(NotRunning));
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsManaged_WhenADetachedDaemonHoldsTheDefaultHomeAndTheUnitLoopsOnTheLock()
+    {
+        // F2: detached daemon 4242, unit activating (MainPID 0 between restarts).
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("activating"));
+        runner.Enqueue(MainPid("0\n"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(RunningAs(4242)));
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsUnmanaged_WhenTheDefaultHomeHasNoDaemonAndTheUnitServesAnotherHome()
+    {
+        // Drop-in NETCLAW_HOME=/home/op/data: the unit is active with a settled daemon (not ours).
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("active"));
+        runner.Enqueue(MainPid("9999\n"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(NotRunning));
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsUnmanaged_ForAScratchHomeWhoseDaemonIsNotTheUnitsMainPid()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("active"));
+        runner.Enqueue(MainPid("9999\n"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, await ServiceFor(runner, ScratchHome).GetStopOwnershipAsync(RunningAs(4242)));
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsUnmanaged_ForAScratchHomeWithNoDaemon_WithoutAskingSystemd()
+    {
+        var runner = new FakeSystemCommandRunner();
+
+        var ownership = await ServiceFor(runner, ScratchHome).GetStopOwnershipAsync(NotRunning);
+
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, ownership);
         Assert.Empty(runner.Commands);
     }
 
     [Fact]
-    public async Task GetOwnershipAsync_ReturnsManaged_WhenNoDaemonRunsAndTheDefaultHomesUnitIsActive()
+    public async Task Stop_ReturnsUnmanaged_ForAScratchHomeEvenWhenTheUnitIsActivatingWithMainPidZero()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("activating"));
+        runner.Enqueue(MainPid("0\n"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, await ServiceFor(runner, ScratchHome).GetStopOwnershipAsync(RunningAs(4242)));
+    }
+
+    [Fact]
+    public async Task Stop_DoesNotTreatAnUnknownDaemonPidAsAMainPidMatch()
+    {
+        // Pid unknown (lock held, no pid file) must not equal MainPID=0 and "match".
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("active"));
+        runner.Enqueue(MainPid("0\n"));
+
+        var ownership = await ServiceFor(runner, ScratchHome)
+            .GetStopOwnershipAsync(new DaemonStatus(true, null, "Daemon is running (PID file missing)."));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, ownership);
+    }
+
+    [Fact]
+    public async Task Stop_DoesNotTreatAMainPidOfZeroAsAMatch_ForADaemonWithPidZero()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("active"));
+        runner.Enqueue(MainPid("0\n"));
+
+        var ownership = await ServiceFor(runner, ScratchHome).GetStopOwnershipAsync(RunningAs(0));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, ownership);
+    }
+
+    [Theory]
+    [InlineData("inactive")]
+    [InlineData("failed")]
+    [InlineData("deactivating")]
+    public async Task Stop_ReturnsUnmanaged_WhenTheUnitCannotStartADaemon_AndNeverReadsMainPid(string state)
+    {
+        // deactivating: the unit's own ExecStop is calling us; stopping the unit again would wait on itself.
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State(state));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(RunningAs(4242)));
+        Assert.Equal([("systemctl", "--user is-active netclaw.service")], runner.Commands);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Stop_ReturnsUnknown_AndNamesTheUnreachableBus_WhenSystemctlCannotAnswer(bool daemonRunning)
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(new SystemCommandResult(1, "Failed to connect to bus: No medium found"));
+
+        var ownership = await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(daemonRunning ? RunningAs(4242) : NotRunning);
+
+        AssertKind(SystemdUserServiceOwnershipKind.Unknown, ownership);
+        Assert.Contains("systemd unit is installed but the user session bus is not reachable", ownership.Message, StringComparison.Ordinal);
+        Assert.Contains("login session", ownership.Message, StringComparison.Ordinal);
+        Assert.Contains("systemctl --user", ownership.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsManaged_ForTheDefaultHomeWrittenWithATrailingSlash()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("activating"));
+        runner.Enqueue(MainPid("0\n"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Managed,
+            await ServiceFor(runner, DefaultHome + Path.DirectorySeparatorChar).GetStopOwnershipAsync(NotRunning));
+    }
+
+    // ---- start rule ----
+
+    [Fact]
+    public async Task Start_ReturnsManaged_WhenTheDefaultHomesUnitIsActive()
     {
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
 
-        var ownership = await ServiceFor(runner, SystemdUserService.DefaultHomePath).GetOwnershipAsync(NotRunning);
-
-        Assert.Equal(SystemdUserServiceOwnershipKind.Managed, ownership.Kind);
+        AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, DefaultHome).GetStartOwnershipAsync());
         Assert.Equal([("systemctl", "--user is-active netclaw.service")], runner.Commands);
     }
 
     [Fact]
-    public async Task GetOwnershipAsync_ReturnsManaged_WhenNoDaemonRunsAndTheDefaultHomesUnitIsEnabledButInactive()
+    public async Task Start_ReturnsManaged_WhenTheDefaultHomesUnitIsEnabledButInactive()
     {
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(new SystemCommandResult(3, string.Empty));
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
 
-        var ownership = await ServiceFor(runner, SystemdUserService.DefaultHomePath).GetOwnershipAsync(NotRunning);
-
-        Assert.Equal(SystemdUserServiceOwnershipKind.Managed, ownership.Kind);
+        AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, DefaultHome).GetStartOwnershipAsync());
         Assert.Equal(
             [
                 ("systemctl", "--user is-active netclaw.service"),
@@ -68,126 +231,34 @@ public sealed class SystemdUserServiceTests : IDisposable
     }
 
     [Fact]
-    public async Task GetOwnershipAsync_ReturnsUnmanaged_WhenTheUnitIsAlreadyStopping()
+    public async Task Start_ReturnsUnmanaged_WhenTheUnitIsAlreadyStopping()
     {
         var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(new SystemCommandResult(3, string.Empty, StandardOutput: "deactivating\n"));
+        runner.Enqueue(State("deactivating"));
 
-        var ownership = await ServiceFor(runner, SystemdUserService.DefaultHomePath).GetOwnershipAsync(RunningAs(4242));
-
-        Assert.Equal(SystemdUserServiceOwnershipKind.Unmanaged, ownership.Kind);
-        Assert.Equal([("systemctl", "--user is-active netclaw.service")], runner.Commands);
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, await ServiceFor(runner, DefaultHome).GetStartOwnershipAsync());
     }
 
     [Fact]
-    public async Task GetOwnershipAsync_ReturnsUnknown_AndNamesTheUnreachableBus_WhenSystemctlCannotAnswer()
-    {
-        var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(new SystemCommandResult(1, "Failed to connect to bus: No medium found"));
-        runner.Enqueue(new SystemCommandResult(1, string.Empty));
-
-        var ownership = await ServiceFor(runner, SystemdUserService.DefaultHomePath).GetOwnershipAsync(NotRunning);
-
-        Assert.Equal(SystemdUserServiceOwnershipKind.Unknown, ownership.Kind);
-        Assert.Contains("Could not determine", ownership.Message, StringComparison.Ordinal);
-        Assert.Contains("systemd unit is installed but the user session bus is not reachable", ownership.Message, StringComparison.Ordinal);
-        Assert.Contains("login session", ownership.Message, StringComparison.Ordinal);
-        Assert.Contains("systemctl --user", ownership.Message, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public async Task GetOwnershipAsync_ReturnsUnknown_ForARunningDaemon_WhenSystemctlCannotAnswer()
-    {
-        var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(new SystemCommandResult(1, "Failed to connect to bus: No medium found"));
-
-        var ownership = await ServiceFor(runner, ScratchHome).GetOwnershipAsync(RunningAs(4242));
-
-        Assert.Equal(SystemdUserServiceOwnershipKind.Unknown, ownership.Kind);
-    }
-
-    [Fact]
-    public async Task GetOwnershipAsync_ReturnsUnmanaged_WhenNoDaemonRunsForAHomeOtherThanTheDefault_WithoutAskingSystemd()
+    public async Task Start_ReturnsUnmanaged_ForAHomeOtherThanTheDefault_WithoutAskingSystemd()
     {
         var runner = new FakeSystemCommandRunner();
 
-        var ownership = await ServiceFor(runner, ScratchHome).GetOwnershipAsync(NotRunning);
+        var ownership = await ServiceFor(runner, ScratchHome).GetStartOwnershipAsync();
 
-        Assert.Equal(SystemdUserServiceOwnershipKind.Unmanaged, ownership.Kind);
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, ownership);
         Assert.Contains("default home", ownership.Message, StringComparison.Ordinal);
         Assert.Empty(runner.Commands);
     }
 
     [Fact]
-    public async Task GetOwnershipAsync_ReturnsManaged_ForTheDefaultHomeWrittenWithATrailingSlash()
+    public async Task Start_ReturnsUnknown_WhenSystemctlCannotAnswer()
     {
         var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+        runner.Enqueue(new SystemCommandResult(1, "Failed to connect to bus: No medium found"));
+        runner.Enqueue(new SystemCommandResult(1, string.Empty));
 
-        var ownership = await ServiceFor(runner, SystemdUserService.DefaultHomePath + Path.DirectorySeparatorChar)
-            .GetOwnershipAsync(NotRunning);
-
-        Assert.Equal(SystemdUserServiceOwnershipKind.Managed, ownership.Kind);
-    }
-
-    [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task GetOwnershipAsync_ReturnsManaged_WhenTheUnitsMainPidIsThisHomesDaemon_WhateverTheHomePath(bool defaultHome)
-    {
-        var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(new SystemCommandResult(0, string.Empty));
-        runner.Enqueue(new SystemCommandResult(0, string.Empty, StandardOutput: "4242\n"));
-
-        var ownership = await ServiceFor(runner, defaultHome ? SystemdUserService.DefaultHomePath : ScratchHome)
-            .GetOwnershipAsync(RunningAs(4242));
-
-        Assert.Equal(SystemdUserServiceOwnershipKind.Managed, ownership.Kind);
-        Assert.Equal(
-            [
-                ("systemctl", "--user is-active netclaw.service"),
-                ("systemctl", "--user show netclaw.service -p MainPID --value")
-            ],
-            runner.Commands);
-    }
-
-    [Theory]
-    [InlineData("9999\n")]
-    [InlineData("0\n")]
-    [InlineData("")]
-    public async Task GetOwnershipAsync_ReturnsUnmanaged_WhenTheUnitRunsAnotherDaemon_EvenForTheDefaultHome(string mainPid)
-    {
-        var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(new SystemCommandResult(0, string.Empty));
-        runner.Enqueue(new SystemCommandResult(0, string.Empty, StandardOutput: mainPid));
-
-        var ownership = await ServiceFor(runner, SystemdUserService.DefaultHomePath).GetOwnershipAsync(RunningAs(4242));
-
-        Assert.Equal(SystemdUserServiceOwnershipKind.Unmanaged, ownership.Kind);
-    }
-
-    [Fact]
-    public async Task GetOwnershipAsync_ReturnsUnmanaged_ForARunningDaemon_WhenTheUnitIsNotActive()
-    {
-        var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(new SystemCommandResult(3, string.Empty, StandardOutput: "inactive\n"));
-
-        var ownership = await ServiceFor(runner, SystemdUserService.DefaultHomePath).GetOwnershipAsync(RunningAs(4242));
-
-        Assert.Equal(SystemdUserServiceOwnershipKind.Unmanaged, ownership.Kind);
-        Assert.Equal([("systemctl", "--user is-active netclaw.service")], runner.Commands);
-    }
-
-    [Fact]
-    public async Task GetOwnershipAsync_ReturnsUnmanaged_ForARunningDaemonWhosePidIsUnknown()
-    {
-        var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(new SystemCommandResult(0, string.Empty));
-
-        var ownership = await ServiceFor(runner, SystemdUserService.DefaultHomePath)
-            .GetOwnershipAsync(new DaemonStatus(true, null, "Daemon is running (PID file missing)."));
-
-        Assert.Equal(SystemdUserServiceOwnershipKind.Unmanaged, ownership.Kind);
+        AssertKind(SystemdUserServiceOwnershipKind.Unknown, await ServiceFor(runner, DefaultHome).GetStartOwnershipAsync());
     }
 
     [Fact]

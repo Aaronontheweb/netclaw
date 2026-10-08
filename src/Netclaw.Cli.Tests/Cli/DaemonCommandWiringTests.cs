@@ -170,6 +170,11 @@ public sealed class DaemonCommandWiringTests : IDisposable
         var process = Process.Start(psi)!;
         _children.Add(process);
         File.WriteAllText(Path.Combine(netclawHome, "netclaw.pid"), process.Id.ToString());
+
+        // A real daemon holds the home's lock for as long as it lives; the pid file alone is not proof.
+        var daemonLock = HoldDaemonLock(netclawHome);
+        process.EnableRaisingEvents = true;
+        process.Exited += (_, _) => daemonLock.Dispose();
         return process;
     }
 
@@ -211,6 +216,7 @@ public sealed class DaemonCommandWiringTests : IDisposable
         InstallUnit();
         var daemon = StartFakeDaemonProcess(netclawHome);
         FakeSystemctl("active.code", "0");
+        FakeSystemctl("active.out", "active\n");
         FakeSystemctl("mainpid.out", daemon.Id + "\n");
         return daemon;
     }
@@ -264,6 +270,7 @@ public sealed class DaemonCommandWiringTests : IDisposable
         InstallUnit();
         var scratchDaemon = StartFakeDaemonProcess(ScratchHome);
         FakeSystemctl("active.code", "0");
+        FakeSystemctl("active.out", "active\n");
         FakeSystemctl("mainpid.out", (scratchDaemon.Id + 1) + "\n");
 
         var (exitCode, output) = await RunAsync(ScratchHome, ["daemon", "stop"]);
@@ -281,6 +288,7 @@ public sealed class DaemonCommandWiringTests : IDisposable
         // The default home runs nothing; the unit's daemon belongs to some other home.
         InstallUnit();
         FakeSystemctl("active.code", "0");
+        FakeSystemctl("active.out", "active\n");
         FakeSystemctl("mainpid.out", "4242\n");
 
         var (exitCode, output) = await RunAsync(DefaultNetclawHome, ["daemon", "stop"]);
@@ -289,6 +297,61 @@ public sealed class DaemonCommandWiringTests : IDisposable
         Assert.DoesNotContain("--user stop", SystemctlCalls);
         Assert.Contains("Daemon is not running.", output);
         Assert.DoesNotContain("Stopped systemd user service.", output);
+    }
+
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
+    public async Task Stop_StopsTheUnit_WhenItCrashLoopsOnTheDefaultHomeWithNothingRunning()
+    {
+        // F1: the unit is activating (auto-restart, MainPID 0) and no daemon runs.
+        InstallUnit();
+        FakeSystemctl("active.code", "3");
+        FakeSystemctl("active.out", "activating\n");
+        FakeSystemctl("mainpid.out", "0\n");
+
+        var (exitCode, output) = await RunAsync(DefaultNetclawHome, ["daemon", "stop"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("--user stop netclaw.service", SystemctlCalls);
+        Assert.DoesNotContain("Daemon is not running.", output);
+    }
+
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
+    public async Task Stop_StopsTheUnitAndTheDetachedDaemon_WhenTheUnitLoopsOnTheDefaultHomesLock()
+    {
+        // F2: a detached daemon holds the default home; the enabled unit keeps retrying the lock.
+        var daemon = StartFakeDaemonProcess(DefaultNetclawHome);
+        InstallUnit();
+        FakeSystemctl("active.code", "3");
+        FakeSystemctl("active.out", "activating\n");
+        FakeSystemctl("mainpid.out", "0\n");
+
+        var (exitCode, output) = await RunAsync(DefaultNetclawHome, ["daemon", "stop"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.True(daemon.WaitForExit(5000), output);
+        Assert.Contains("--user stop netclaw.service", SystemctlCalls);
+        Assert.Contains("Stopped systemd user service.", output);
+        Assert.Contains("Daemon stopped", output);
+    }
+
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
+    public async Task Stop_NeverTouchesTheUnit_WhenAnotherHomesStalePidFileNamesTheUnitsDaemon()
+    {
+        // F4: the pid file in the scratch home holds the PID of the default home's live daemon, but
+        // the scratch home's lock is free, so that PID is not the scratch home's daemon.
+        var unitDaemon = UnitRunsDaemonOf(DefaultNetclawHome);
+        Directory.CreateDirectory(ScratchHome);
+        File.WriteAllText(Path.Combine(ScratchHome, "netclaw.pid"), unitDaemon.Id.ToString());
+
+        var (exitCode, output) = await RunAsync(ScratchHome, ["daemon", "stop"]);
+
+        Assert.Equal(1, exitCode);
+        Assert.False(unitDaemon.HasExited);
+        Assert.DoesNotContain("--user stop", SystemctlCalls);
+        Assert.Contains("Daemon is not running.", output);
     }
 
     [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]

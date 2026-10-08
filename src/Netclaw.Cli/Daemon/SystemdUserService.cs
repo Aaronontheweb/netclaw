@@ -44,19 +44,18 @@ internal sealed class SystemdUserService(
     private readonly string _homePath = homePath ?? new NetclawPaths().BasePath;
 
     /// <summary>
-    /// Decides whether the unit owns the daemon of this invocation's home. A running daemon is
-    /// the unit's when systemd reports the same main PID the home's pid file records, whatever
-    /// NETCLAW_HOME the unit was given and however the home path is spelled. With no daemon
-    /// running there is no PID to compare, so only the default home (links resolved) is taken
-    /// to be the one the unit serves.
+    /// Stop rule: after a stop succeeds, nothing may bring this home's daemon back. The unit is
+    /// <see cref="SystemdUserServiceOwnershipKind.Managed"/> (so it must be stopped) when it is
+    /// running or about to run a daemon (<c>active</c>, <c>activating</c> including auto-restart,
+    /// <c>reloading</c>) and serves this home: its MainPID is this home's daemon, or this is the
+    /// default home (links resolved) and the unit has no settled daemon of its own to point at
+    /// (MainPID 0, or still <c>activating</c>). Any other home is never the unit's to stop on a
+    /// guess. <c>deactivating</c> is left alone: that is the unit's own ExecStop re-entering.
     /// </summary>
-    public async Task<SystemdUserServiceOwnership> GetOwnershipAsync(DaemonStatus daemonStatus)
+    public async Task<SystemdUserServiceOwnership> GetStopOwnershipAsync(DaemonStatus daemonStatus)
     {
-        if (!_enabledOnThisPlatform)
-            return SystemdUserServiceOwnership.Unmanaged("systemd user services are Linux-only.");
-
-        if (!File.Exists(_unitFilePath))
-            return SystemdUserServiceOwnership.Unmanaged("No netclaw systemd user service is installed.");
+        if (PlatformOrUnitMissing() is { } skipped)
+            return skipped;
 
         // Another home with nothing running for it: the unit cannot be what starts it.
         if (!daemonStatus.IsRunning && !IsDefaultHome(_homePath))
@@ -64,28 +63,43 @@ internal sealed class SystemdUserService(
                 $"No daemon is running for {_homePath}, and netclaw.service starts only the default home ({DefaultHomePath}).");
 
         var active = await _commandRunner.RunAsync("systemctl", $"--user is-active {ServiceName}");
+        var state = active.StandardOutput.Trim();
+        if (state is not ("active" or "activating" or "reloading"))
+            return StateCheckFailed(active) ?? SystemdUserServiceOwnership.Unmanaged(
+                $"netclaw.service is {(state.Length == 0 ? "not running" : state)}, so it will not start a daemon.");
+
+        var show = await _commandRunner.RunAsync("systemctl", $"--user show {ServiceName} -p MainPID --value");
+        var mainPid = show.Success && int.TryParse(show.StandardOutput.Trim(), out var parsed) ? parsed : 0;
+
+        if (mainPid != 0 && daemonStatus.Pid == mainPid)
+            return SystemdUserServiceOwnership.Managed($"netclaw.service runs this home's daemon (PID {mainPid}).");
+
+        if ((mainPid == 0 || state == "activating") && IsDefaultHome(_homePath))
+            return SystemdUserServiceOwnership.Managed($"netclaw.service is {state} and serves the default home.");
+
+        return SystemdUserServiceOwnership.Unmanaged(
+            $"netclaw.service does not serve {_homePath} (main PID {mainPid}).");
+    }
+
+    /// <summary>
+    /// Start rule, consulted only when no daemon runs for this home: the default home (links
+    /// resolved) is started through the unit when it is active or enabled; any other home is not.
+    /// </summary>
+    public async Task<SystemdUserServiceOwnership> GetStartOwnershipAsync()
+    {
+        if (PlatformOrUnitMissing() is { } skipped)
+            return skipped;
+
+        if (!IsDefaultHome(_homePath))
+            return SystemdUserServiceOwnership.Unmanaged(
+                $"netclaw.service starts only the default home ({DefaultHomePath}), not {_homePath}.");
+
+        var active = await _commandRunner.RunAsync("systemctl", $"--user is-active {ServiceName}");
 
         // The unit's ExecStop= runs `netclaw daemon stop`, so that process is part of a stop job
-        // that systemd already started. Asking systemd to stop the unit again would wait on itself.
+        // that systemd already started. Asking systemd to start the unit now would queue behind it.
         if (!active.Success && active.StandardOutput.Trim() == "deactivating")
             return SystemdUserServiceOwnership.Unmanaged("netclaw.service is already stopping.");
-
-        if (daemonStatus.IsRunning)
-        {
-            if (!active.Success)
-                return StateCheckFailed(active) ?? SystemdUserServiceOwnership.Unmanaged(
-                    "netclaw.service is not active, so it does not own the running daemon.");
-
-            if (daemonStatus.Pid is not { } daemonPid)
-                return SystemdUserServiceOwnership.Unmanaged(
-                    "The running daemon's PID is unknown, so netclaw.service cannot be matched to it.");
-
-            var show = await _commandRunner.RunAsync("systemctl", $"--user show {ServiceName} -p MainPID --value");
-            return show.Success && int.TryParse(show.StandardOutput.Trim(), out var mainPid) && mainPid != 0 && mainPid == daemonPid
-                ? SystemdUserServiceOwnership.Managed($"netclaw.service runs this home's daemon (PID {daemonPid}).")
-                : SystemdUserServiceOwnership.Unmanaged(
-                    $"netclaw.service does not run this home's daemon (PID {daemonPid}).");
-        }
 
         if (active.Success)
             return SystemdUserServiceOwnership.Managed("netclaw.service is active.");
@@ -96,6 +110,16 @@ internal sealed class SystemdUserService(
 
         return StateCheckFailed(active, enabled) ?? SystemdUserServiceOwnership.Unmanaged(
             "netclaw.service is installed but neither active nor enabled.");
+    }
+
+    private SystemdUserServiceOwnership? PlatformOrUnitMissing()
+    {
+        if (!_enabledOnThisPlatform)
+            return SystemdUserServiceOwnership.Unmanaged("systemd user services are Linux-only.");
+
+        return File.Exists(_unitFilePath)
+            ? null
+            : SystemdUserServiceOwnership.Unmanaged("No netclaw systemd user service is installed.");
     }
 
     private static SystemdUserServiceOwnership? StateCheckFailed(SystemCommandResult active, SystemCommandResult? enabled = null)
