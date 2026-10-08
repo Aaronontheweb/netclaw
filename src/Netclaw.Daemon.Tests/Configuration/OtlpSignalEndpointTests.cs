@@ -57,6 +57,7 @@ public sealed class OtlpExporterWiringTests
     {
         var port = FreePort();
         var paths = new System.Collections.Concurrent.ConcurrentQueue<string>();
+        var bothSignalsSeen = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var collector = new System.Net.HttpListener();
         collector.Prefixes.Add($"http://127.0.0.1:{port}/");
         collector.Start();
@@ -75,6 +76,8 @@ public sealed class OtlpExporterWiringTests
                 }
 
                 paths.Enqueue(context.Request.Url!.AbsolutePath);
+                if (paths.Contains("/collector/v1/logs") && paths.Contains("/collector/v1/metrics"))
+                    bothSignalsSeen.TrySetResult();
                 context.Response.StatusCode = 200;
                 context.Response.Close();
             }
@@ -98,12 +101,9 @@ public sealed class OtlpExporterWiringTests
             app.Services.GetRequiredService<LoggerProvider>().ForceFlush();
 
             // The log batch processor exports on its own schedule (5s by default).
-            var deadline = DateTime.UtcNow.AddSeconds(15);
-            while (DateTime.UtcNow < deadline
-                   && !(paths.Contains("/collector/v1/logs") && paths.Contains("/collector/v1/metrics")))
-            {
-                await Task.Delay(100, TestContext.Current.CancellationToken);
-            }
+            // A timeout is reported by the path assertions below, which name what arrived instead.
+            _ = await Record.ExceptionAsync(() => bothSignalsSeen.Task
+                .WaitAsync(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken));
 
             Assert.Contains("/collector/v1/logs", paths);
             Assert.Contains("/collector/v1/metrics", paths);

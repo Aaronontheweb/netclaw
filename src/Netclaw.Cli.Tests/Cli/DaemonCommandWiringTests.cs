@@ -257,6 +257,7 @@ public sealed class DaemonCommandWiringTests : IDisposable
         InstallUnit();
         FakeSystemctl("active.code", "3");
         FakeSystemctl("active.out", "deactivating\n");
+        FakeSystemctl("enabled.code", "0"); // were stdout lost, "enabled" would make the unit the owner
 
         var (_, output) = await RunAsync(DefaultNetclawHome, ["daemon", "stop"]);
 
