@@ -691,20 +691,18 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             return true;
 
         var remaining = envelope.Deadline.UtcDateTime - now;
+        var requiredLease = ReminderExecutionActor.ExecutionAttemptTimeout + SettlementMargin;
+        if (remaining >= requiredLease)
+            return true;
 
-        // Akka.Reminders gives an interval occurrence its next due time as the
-        // deadline when no retry fits before that time. That deadline is not an
-        // acknowledgement lease: Akka.Reminders does not redeliver the occurrence
-        // when the lease ends, so a long attempt cannot cause a duplicate
-        // execution. The occurrence starts while it is current. An occurrence
-        // that arrives at or after its next due time is stale.
-        if (definition.Schedule is { Type: ReminderScheduleType.Interval, Interval: { } interval }
-            && envelope.Deadline.UtcDateTime >= envelope.DueTimeUtc + interval)
-        {
-            return remaining > TimeSpan.Zero;
-        }
-
-        return remaining >= ReminderExecutionActor.ExecutionAttemptTimeout + SettlementMargin;
+        // An interval shorter than the required lease can never satisfy it. The
+        // deadline of each of its occurrences is the next due time, and
+        // Akka.Reminders does not redeliver an occurrence after that time. The
+        // occurrence starts while it is current. An occurrence that arrives at
+        // or after its next due time is stale.
+        return definition.Schedule is { Type: ReminderScheduleType.Interval, Interval: { } interval }
+            && interval < requiredLease
+            && remaining > TimeSpan.Zero;
     }
 
     private async Task SettleBlockedOccurrenceAsync(
@@ -968,8 +966,13 @@ public sealed partial class ReminderManagerActor : ReceiveActor
                 EmitSettlementFailure(definition, ex.Message, ex);
         }
 
+        // An expired occurrence ends a one-shot. It does not end a reminder
+        // series: Akka.Reminders answers Expired when no retry fits before the
+        // next due time, and the next occurrence is already scheduled. The
+        // consecutive failure count is the only stop condition for a series.
+        var isSeries = definition is { Schedule.Type: not ReminderScheduleType.OneShot };
         var occurrenceTerminal = nack?.ResponseCode is ReminderNackResponseCode.Failed
-            or ReminderNackResponseCode.Expired;
+            || (nack?.ResponseCode is ReminderNackResponseCode.Expired && !isSeries);
         if (nack?.ResponseCode is ReminderNackResponseCode.Error)
         {
             if (definition is not null)

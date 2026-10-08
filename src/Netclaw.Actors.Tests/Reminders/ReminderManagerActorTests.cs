@@ -1458,7 +1458,7 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
 
         // One second remains before the next due time.
         _timeProvider.Advance(interval - TimeSpan.FromSeconds(1));
-        manager.Tell(CreateIntervalEnvelope(definition, due, due + interval));
+        manager.Tell(CreateOccurrenceEnvelope(definition, due, due + interval));
 
         await AwaitAssertAsync(
             () => Assert.True(_sessionPipeline.InvocationCount > invocationCount),
@@ -1481,7 +1481,7 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
 
         _timeProvider.Advance(interval);
         var controlProbe = CreateTestProbe("stale-interval-control");
-        controlProbe.Send(manager, CreateIntervalEnvelope(definition, due, due + interval));
+        controlProbe.Send(manager, CreateOccurrenceEnvelope(definition, due, due + interval));
         controlProbe.Send(manager, GetReminderHealthQuery.Instance);
         var health = await controlProbe.ExpectMsgAsync<ReminderHealthResponse>(
             TimeSpan.FromSeconds(5),
@@ -1505,7 +1505,61 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
         var invocationCount = _sessionPipeline.InvocationCount;
 
         var controlProbe = CreateTestProbe("short-lease-interval-control");
-        controlProbe.Send(manager, CreateIntervalEnvelope(definition, due, due.AddMinutes(60)));
+        controlProbe.Send(manager, CreateOccurrenceEnvelope(definition, due, due.AddMinutes(60)));
+        controlProbe.Send(manager, GetReminderHealthQuery.Instance);
+        var health = await controlProbe.ExpectMsgAsync<ReminderHealthResponse>(
+            TimeSpan.FromSeconds(5),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, health.ActiveExecutions);
+        Assert.Equal(invocationCount, _sessionPipeline.InvocationCount);
+        Assert.Equal(1, await GetSkippedOccurrenceCountAsync(manager, definition.Id));
+    }
+
+    // The run of a daily reminder fails late and Akka.Reminders retries it ten
+    // minutes before the next due time. A one-hour attempt would then block the
+    // next occurrence, so the lease rule continues to skip this retry.
+    [Fact]
+    public async Task Late_retry_of_long_interval_occurrence_is_skipped()
+    {
+        var manager = await GetManagerAsync();
+        var interval = TimeSpan.FromHours(24);
+        var due = _timeProvider.GetUtcNow();
+        var definition = CreateIntervalDefinition("late-daily-retry", interval, fireAt: due);
+        _definitionStore.Save(definition);
+        var invocationCount = _sessionPipeline.InvocationCount;
+
+        _timeProvider.Advance(interval - TimeSpan.FromMinutes(10));
+        var controlProbe = CreateTestProbe("late-daily-retry-control");
+        controlProbe.Send(manager, CreateOccurrenceEnvelope(definition, due, due + interval));
+        controlProbe.Send(manager, GetReminderHealthQuery.Instance);
+        var health = await controlProbe.ExpectMsgAsync<ReminderHealthResponse>(
+            TimeSpan.FromSeconds(5),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, health.ActiveExecutions);
+        Assert.Equal(invocationCount, _sessionPipeline.InvocationCount);
+        Assert.Equal(1, await GetSkippedOccurrenceCountAsync(manager, definition.Id));
+    }
+
+    [Fact]
+    public async Task Cron_occurrence_with_short_acknowledgement_lease_is_skipped()
+    {
+        var manager = await GetManagerAsync();
+        var due = _timeProvider.GetUtcNow();
+        var definition = CreateIntervalDefinition("short-lease-cron", TimeSpan.FromMinutes(5), fireAt: due) with
+        {
+            Schedule = new ReminderSchedule
+            {
+                Type = ReminderScheduleType.Cron,
+                CronExpression = "*/5 * * * *"
+            }
+        };
+        _definitionStore.Save(definition);
+        var invocationCount = _sessionPipeline.InvocationCount;
+
+        var controlProbe = CreateTestProbe("short-lease-cron-control");
+        controlProbe.Send(manager, CreateOccurrenceEnvelope(definition, due, due.AddMinutes(60)));
         controlProbe.Send(manager, GetReminderHealthQuery.Instance);
         var health = await controlProbe.ExpectMsgAsync<ReminderHealthResponse>(
             TimeSpan.FromSeconds(5),
@@ -1549,7 +1603,7 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
         };
     }
 
-    private static ReminderEnvelope<ReminderPayload> CreateIntervalEnvelope(
+    private static ReminderEnvelope<ReminderPayload> CreateOccurrenceEnvelope(
         ReminderDefinition definition,
         DateTimeOffset due,
         DateTimeOffset deadline) =>
@@ -1579,7 +1633,7 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
         }
     }
 
-    private sealed class FailingReminderSessionPipeline(string reason) : ISessionPipeline
+    internal sealed class FailingReminderSessionPipeline(string reason) : ISessionPipeline
     {
         private int _invocationCount;
 
@@ -1865,7 +1919,7 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
             message: new ReminderPayload { Id = new ReminderId(reminderId) });
     }
 
-    private sealed class TestNotificationSink : IOperationalNotificationSink
+    internal sealed class TestNotificationSink : IOperationalNotificationSink
     {
         private readonly object _sync = new();
         private readonly List<OperationalAlert> _alerts = [];
