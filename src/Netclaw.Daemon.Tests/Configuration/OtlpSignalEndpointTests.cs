@@ -20,9 +20,24 @@ public sealed class OtlpSignalEndpointTests
     [InlineData("http://collector:4318", "v1/logs", "http://collector:4318/v1/logs")]
     [InlineData("http://collector:4318/", "v1/metrics", "http://collector:4318/v1/metrics")]
     [InlineData("https://gw.example/otel", "v1/metrics", "https://gw.example/otel/v1/metrics")]
-    [InlineData("http://collector:4318/full/v1/logs", "v1/metrics", "http://collector:4318/full/v1/logs/v1/metrics")]
-    [InlineData("http://collector:4318/v1/logs", "v1/logs", "http://collector:4318/v1/logs/v1/logs")]
-    public void HttpProtobuf_AlwaysAppendsTheSignalPathToTheBaseUrl(
+    public void HttpProtobuf_AppendsTheSignalPathToTheBaseUrl(
+        string configured, string signalPath, string expected)
+    {
+        var resolved = TelemetryRegistrationExtensions.ResolveSignalEndpoint(
+            new Uri(configured), OtlpExportProtocol.HttpProtobuf, signalPath);
+
+        Assert.Equal(expected, resolved.AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData("http://collector:4318/v1/logs", "v1/logs", "http://collector:4318/v1/logs")]
+    [InlineData("http://collector:4318/v1/logs", "v1/metrics", "http://collector:4318/v1/metrics")]
+    [InlineData("http://collector:4318/v1/logs/", "v1/logs", "http://collector:4318/v1/logs")]
+    [InlineData("http://collector:4318/full/V1/Logs", "v1/metrics", "http://collector:4318/full/v1/metrics")]
+    [InlineData("https://gw.example/otel/v1/metrics", "v1/logs", "https://gw.example/otel/v1/logs")]
+    [InlineData("https://gw.example/otel/v1/traces", "v1/logs", "https://gw.example/otel/v1/logs")]
+    [InlineData("http://collector:4318/mylogs", "v1/logs", "http://collector:4318/mylogs/v1/logs")]
+    public void HttpProtobuf_ReducesAFullSignalUrlToItsBaseBeforeAppending(
         string configured, string signalPath, string expected)
     {
         var resolved = TelemetryRegistrationExtensions.ResolveSignalEndpoint(
