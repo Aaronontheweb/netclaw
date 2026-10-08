@@ -343,7 +343,7 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
     }
 
     [Fact]
-    public async Task Reconcile_deletes_completed_oneshot_and_retains_ambiguous_or_failed_oneshots()
+    public async Task Reconcile_retains_recent_terminal_oneshots_and_ambiguous_oneshots()
     {
         var manager = await GetManagerAsync();
         var now = TimeProvider.System.GetUtcNow();
@@ -418,8 +418,8 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
         Assert.True(afterReconcile!.Enabled);
         Assert.Null(afterReconcile.TerminalOutcome);
         Assert.Single(await historyStore.ReadAsync(zombie.Id, 10));
-        Assert.Null(_definitionStore.Get(completed.Id));
-        Assert.Empty(await historyStore.ReadAsync(completed.Id, 10));
+        Assert.NotNull(_definitionStore.Get(completed.Id));
+        Assert.Single(await historyStore.ReadAsync(completed.Id, 10));
         Assert.NotNull(_definitionStore.Get(failed.Id));
         Assert.Single(await historyStore.ReadAsync(failed.Id, 10));
     }
@@ -1219,7 +1219,7 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
     }
 
     [Fact]
-    public async Task Successful_retry_deletes_oneshot_definition_and_history()
+    public async Task Successful_oneshot_keeps_its_definition_and_history_for_the_retention_period()
     {
         var manager = await GetManagerAsync();
         var gatewayProbe = CreateTestProbe("retry-success-gateway");
@@ -1250,12 +1250,100 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
             TimeSpan.FromSeconds(5),
             cancellationToken: TestContext.Current.CancellationToken);
 
+        var historyStore = new ReminderHistoryStore(_tempDir.Paths);
         await AwaitAssertAsync(async () =>
         {
-            Assert.Null(_definitionStore.Get(definition.Id));
-            var historyStore = new ReminderHistoryStore(_tempDir.Paths);
-            Assert.Empty(await historyStore.ReadAsync(definition.Id, 10));
+            var stored = _definitionStore.Get(definition.Id);
+            Assert.NotNull(stored);
+            Assert.False(stored!.Enabled);
+            Assert.Equal(ReminderTerminalOutcome.Completed, stored.TerminalOutcome);
+            Assert.Equal(0, stored.ConsecutiveFailures);
+            Assert.Single(await historyStore.ReadAsync(definition.Id, 10));
         }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        var history = await manager.Ask<ReminderHistoryResponse>(
+            new GetReminderHistoryQuery(
+                definition.Id, 10, new ReminderAudienceAuthorizationContext(TrustAudience.Team, "test")),
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        Assert.True(history.Found);
+        Assert.Single(history.Records);
+    }
+
+    [Fact]
+    public async Task Terminal_reminders_are_pruned_with_their_history_once_the_retention_period_has_passed()
+    {
+        var manager = await GetManagerAsync();
+        await DrainStartupReconcileAsync(manager);
+        var historyStore = new ReminderHistoryStore(_tempDir.Paths);
+        var now = _timeProvider.GetUtcNow();
+        var stale = now - ReminderManagerActor.TerminalRetention - TimeSpan.FromHours(1);
+        var recent = now - ReminderManagerActor.TerminalRetention + TimeSpan.FromHours(1);
+
+        async Task<ReminderDefinition> SaveAsync(string id, bool enabled, ReminderTerminalOutcome? outcome, DateTimeOffset updated)
+        {
+            var d = CreateCronDefinition(id, "0 0 1 1 *") with
+            {
+                Id = new ReminderId(id),
+                Enabled = enabled,
+                ConsecutiveFailures = outcome == ReminderTerminalOutcome.Failed ? ReminderManagerActor.FailurePauseThreshold : 0,
+                TerminalOutcome = outcome,
+                UpdatedAtMs = updated.ToUnixTimeMilliseconds()
+            };
+            _definitionStore.Save(d);
+            await historyStore.AppendAsync(d.Id, new HistoryRecord(updated, outcome != ReminderTerminalOutcome.Failed, 1, "s", null));
+            return d;
+        }
+
+        var staleCompleted = await SaveAsync("stale-completed", false, ReminderTerminalOutcome.Completed, stale);
+        var staleFailed = await SaveAsync("stale-failed", false, ReminderTerminalOutcome.Failed, stale);
+        var recentCompleted = await SaveAsync("recent-completed", false, ReminderTerminalOutcome.Completed, recent);
+        var recentFailed = await SaveAsync("recent-failed", false, ReminderTerminalOutcome.Failed, recent);
+        var staleCancelled = await SaveAsync("stale-cancelled", false, null, stale);
+
+        // ReceiveAsync handlers run one at a time, so the health reply proves the prune finished.
+        manager.Tell(ReminderManagerActor.PruneTerminalReminders.Instance);
+        var health = await manager.Ask<ReminderHealthResponse>(
+            GetReminderHealthQuery.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
+        Assert.Null(_definitionStore.Get(staleCompleted.Id));
+        Assert.Empty(await historyStore.ReadAsync(staleCompleted.Id, 10));
+        Assert.Null(_definitionStore.Get(staleFailed.Id));
+        Assert.Empty(await historyStore.ReadAsync(staleFailed.Id, 10));
+        Assert.NotNull(_definitionStore.Get(recentCompleted.Id));
+        Assert.Single(await historyStore.ReadAsync(recentCompleted.Id, 10));
+        Assert.NotNull(_definitionStore.Get(recentFailed.Id));
+        // An operator-disabled reminder has no terminal outcome and is never pruned.
+        Assert.NotNull(_definitionStore.Get(staleCancelled.Id));
+        // The stats counter reads the same store, so the failed reminder that was pruned stops counting.
+        Assert.Equal(1, health.FailedCount);
+    }
+
+    [Fact]
+    public async Task Completed_oneshot_id_can_be_created_again_before_it_is_pruned()
+    {
+        var manager = await GetManagerAsync();
+        await DrainStartupReconcileAsync(manager);
+        var historyStore = new ReminderHistoryStore(_tempDir.Paths);
+        var done = CreateCronDefinition("reuse-id", "0 0 1 1 *") with
+        {
+            Id = new ReminderId("reuse-id"),
+            Enabled = false,
+            TerminalOutcome = ReminderTerminalOutcome.Completed
+        };
+        _definitionStore.Save(done);
+        await historyStore.AppendAsync(done.Id, new HistoryRecord(_timeProvider.GetUtcNow(), true, 1, "old-session", null));
+
+        var recreated = done with { Enabled = true, TerminalOutcome = null };
+        var saved = await manager.Ask<ReminderSavedResponse>(
+            new SaveReminderCommand(
+                recreated,
+                Authorization: new ReminderAudienceAuthorizationContext(TrustAudience.Team, "test")),
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+
+        Assert.True(saved.Success, saved.ErrorMessage);
+        Assert.Empty(await historyStore.ReadAsync(done.Id, 10));
     }
 
     [Fact]

@@ -19,7 +19,7 @@ namespace Netclaw.Actors.Reminders;
 /// Schedules durable timer entries and resolves execution behavior from
 /// file-backed reminder definitions.
 /// </summary>
-public sealed partial class ReminderManagerActor : ReceiveActor
+public sealed partial class ReminderManagerActor : ReceiveActor, IWithTimers
 {
     public const string ShardRegionName = "netclaw-reminders";
     public const string EntityId = "manager";
@@ -31,6 +31,19 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     /// first — the two counters are kept out of conflict by inspection.
     /// </summary>
     internal const int FailurePauseThreshold = 5;
+
+    /// <summary>
+    /// How long a reminder that reached a terminal outcome (a completed one-shot, or a
+    /// reminder paused as failed) keeps its definition and execution history before it
+    /// is pruned. Not configurable. Also handed to Akka.Reminders as its
+    /// <c>PruneOlderThan</c> (the library's own default), so both stores agree.
+    /// </summary>
+    internal static readonly TimeSpan TerminalRetention = TimeSpan.FromDays(12);
+
+    /// <summary>How often terminal reminders past <see cref="TerminalRetention"/> are pruned.</summary>
+    internal static readonly TimeSpan TerminalPruneInterval = TimeSpan.FromHours(12);
+
+    private static readonly object TerminalPruneTimerKey = new();
 
     /// <summary>Recent run records returned by the per-reminder status query.</summary>
     internal const int RecentHistoryCount = 5;
@@ -48,6 +61,9 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     private readonly ILoggingAdapter _log;
 
     private IReminderClient? _client;
+
+    /// <summary>Timer scheduler injected by Akka for <see cref="IWithTimers"/>.</summary>
+    public ITimerScheduler Timers { get; set; } = null!;
 
     private readonly ActiveExecutionTracker _activeExecutions = new();
     private readonly Dictionary<ReminderId, int> _skipCounts = [];
@@ -92,6 +108,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         ReceiveAsync<ReminderExecutionTerminated>(HandleExecutionTerminatedAsync);
 
         ReceiveAsync<ReconcileReminders>(_ => HandleReconcileAsync());
+        ReceiveAsync<PruneTerminalReminders>(_ => PruneTerminalRemindersAsync());
         Receive<GetReminderHealthQuery>(_ => HandleGetHealth());
         ReceiveAsync<GetReminderStatusQuery>(HandleGetStatusAsync);
     }
@@ -116,6 +133,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         EmitRejectedLegacyDefinitionAlerts();
 
         Self.Tell(ReconcileReminders.Instance);
+        Timers.StartPeriodicTimer(TerminalPruneTimerKey, PruneTerminalReminders.Instance, TerminalPruneInterval);
     }
 
     protected override SupervisorStrategy SupervisorStrategy() =>
@@ -235,7 +253,8 @@ public sealed partial class ReminderManagerActor : ReceiveActor
 
         switch (cmd.WriteMode)
         {
-            case ReminderWriteMode.CreateOnly when exists:
+            // A retained completed one-shot is history, not a live reminder: its id is free again.
+            case ReminderWriteMode.CreateOnly when exists && existing is not { Enabled: false, TerminalOutcome: ReminderTerminalOutcome.Completed }:
                 replyTo.Tell(new ReminderSavedResponse(
                     id,
                     title,
@@ -301,6 +320,8 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         if (exists)
         {
             await CancelScheduleOnlyAsync(id);
+            if (existing is { Enabled: false, TerminalOutcome: ReminderTerminalOutcome.Completed })
+                _historyStore.DeleteHistory(id);
         }
 
         DateTimeOffset? nextFire = null;
@@ -919,7 +940,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         }
 
         if (definition is { Schedule.Type: ReminderScheduleType.OneShot })
-            await DeleteReminderInternalAsync(outcome.Id);
+            await RetainCompletedOneShotAsync(definition);
 
         _log.Info("Reminder '{0}' execution completed successfully", outcome.Id.Value);
     }
@@ -1163,6 +1184,52 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             }));
     }
 
+    /// <summary>
+    /// A delivered one-shot keeps its definition (disabled, <c>Completed</c>) and its
+    /// execution history until <see cref="TerminalRetention"/> has passed.
+    /// </summary>
+    private async Task RetainCompletedOneShotAsync(ReminderDefinition definition)
+    {
+        await CancelScheduleOnlyAsync(definition.Id);
+        _skipCounts.Remove(definition.Id);
+        _definitionStore.Save(definition with
+        {
+            Enabled = false,
+            ConsecutiveFailures = 0,
+            TerminalOutcome = ReminderTerminalOutcome.Completed,
+            UpdatedAtMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds()
+        });
+    }
+
+    /// <summary>
+    /// Removes every disabled reminder that reached a terminal outcome more than
+    /// <see cref="TerminalRetention"/> ago, with its history. This is the only rule that
+    /// clears completed one-shots and reminders paused as failed. Returns the removed ids.
+    /// </summary>
+    private async Task<IReadOnlyList<ReminderId>> PruneTerminalRemindersAsync()
+    {
+        var cutoffMs = _timeProvider.GetUtcNow().Subtract(TerminalRetention).ToUnixTimeMilliseconds();
+        var pruned = new List<ReminderId>();
+        foreach (var definition in _definitionStore.List().Where(d =>
+                     !d.Enabled && d.TerminalOutcome is not null && d.UpdatedAtMs < cutoffMs))
+        {
+            try
+            {
+                await DeleteReminderInternalAsync(definition.Id);
+                pruned.Add(definition.Id);
+            }
+            catch (Exception ex)
+            {
+                _log.Warning(ex, "Failed to prune terminal reminder '{0}'", definition.Id.Value);
+            }
+        }
+
+        if (pruned.Count > 0)
+            _log.Info("Pruned {0} terminal reminder(s) older than {1}", pruned.Count, TerminalRetention);
+
+        return pruned;
+    }
+
     private async Task HandleReconcileAsync()
     {
         var sender = Sender; // capture before any await
@@ -1173,13 +1240,9 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             var definitionsById = definitions.ToDictionary(d => d.Id.Value, StringComparer.Ordinal);
 
             var deletedCompletedOneShots = 0;
-            foreach (var definition in definitions.Where(d =>
-                         !d.Enabled &&
-                         d.Schedule.Type == ReminderScheduleType.OneShot &&
-                         d.TerminalOutcome == ReminderTerminalOutcome.Completed))
+            foreach (var id in await PruneTerminalRemindersAsync())
             {
-                await DeleteReminderInternalAsync(definition.Id);
-                definitionsById.Remove(definition.Id.Value);
+                definitionsById.Remove(id.Value);
                 deletedCompletedOneShots++;
             }
 
@@ -1252,8 +1315,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
 
                 if (outcome == ReminderTerminalOutcome.Completed)
                 {
-                    await DeleteReminderInternalAsync(definition.Id);
-                    deletedCompletedOneShots++;
+                    await RetainCompletedOneShotAsync(definition);
                     continue;
                 }
 
@@ -1671,6 +1733,11 @@ public sealed partial class ReminderManagerActor : ReceiveActor
     internal sealed record ReconcileReminders : INoSerializationVerificationNeeded
     {
         public static readonly ReconcileReminders Instance = new();
+    }
+
+    internal sealed record PruneTerminalReminders : INoSerializationVerificationNeeded
+    {
+        public static readonly PruneTerminalReminders Instance = new();
     }
 
     /// <summary>

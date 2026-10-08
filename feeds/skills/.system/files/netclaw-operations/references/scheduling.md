@@ -75,6 +75,8 @@ netclaw reminder delete <id>
 The `cancel` CLI subcommand mirrors the tool behavior (disable only):
 
 ```
+netclaw reminder list            # table: id, status, failures, schedule, next_fire, title
+netclaw reminder list --json     # raw JSON, for parsing
 netclaw reminder cancel <id>     # disable, keep definition
 netclaw reminder delete <id>     # permanent delete + history
 ```
@@ -96,10 +98,13 @@ The retry uses bounded backoff and the same durable occurrence identity. A
 successful execution resets the consecutive failure count.
 
 A one-shot reminder stays enabled while an occurrence can retry. After a
-successful acknowledgement, Netclaw deletes its definition and history. A poison
-one-shot becomes disabled with a `Failed` outcome. Its definition and history
-remain available until an operator uses the permanent delete command.
-Startup reconciliation also removes completed one-shots from prior versions.
+successful acknowledgement, it becomes disabled with a `Completed` outcome. A
+poison one-shot becomes disabled with a `Failed` outcome. Either way the
+definition and its history stay available (`netclaw reminder history <id>`,
+`netclaw reminder status <id>`) for 12 days, then Netclaw prunes both. The same
+rule clears reminders that were auto-disabled as failed, so they stop counting
+in `netclaw stats`. `netclaw reminder delete <id>` removes one sooner. Creating a
+reminder with the id of a completed one-shot replaces it and drops its old history.
 
 Each attempt has a 20-minute inactivity limit and a one-hour absolute limit.
 The durable acknowledgement lease is 70 minutes. A daemon crash therefore lets
