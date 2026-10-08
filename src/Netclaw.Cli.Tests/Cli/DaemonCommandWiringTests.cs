@@ -53,7 +53,7 @@ public sealed class DaemonCommandWiringTests : IDisposable
                   *is-enabled*)
                     exit "$(read_file enabled.code || echo 1)" ;;
                   *show*)
-                    read_file mainpid.out ;;
+                    printf 'MainPID=%s\nEnvironment=DOTNET_ENVIRONMENT=Production %s\n' "$(read_file mainpid.out)" "$(read_file environment.out)" ;;
                   *) exit 0 ;;
                 esac
                 """.Replace("\r\n", "\n"));
@@ -290,6 +290,7 @@ public sealed class DaemonCommandWiringTests : IDisposable
         FakeSystemctl("active.code", "0");
         FakeSystemctl("active.out", "active\n");
         FakeSystemctl("mainpid.out", "4242\n");
+        FakeSystemctl("environment.out", "NETCLAW_HOME=/home/op/data");
 
         var (exitCode, output) = await RunAsync(DefaultNetclawHome, ["daemon", "stop"]);
 

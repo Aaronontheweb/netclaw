@@ -72,7 +72,7 @@ public sealed class UpdateCommandTests : IDisposable
         manager.EnqueueStatus(NotRunning());
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(Active());
-        runner.Enqueue(new SystemCommandResult(0, string.Empty, StandardOutput: "123\n"));
+        runner.Enqueue(MainPid("123\n"));
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
         var systemd = CreateSystemdService(runner);
 
@@ -83,7 +83,7 @@ public sealed class UpdateCommandTests : IDisposable
         Assert.Equal(
             [
                 ("systemctl", "--user is-active netclaw.service"),
-                ("systemctl", "--user show netclaw.service -p MainPID --value"),
+                ("systemctl", "--user show netclaw.service -p MainPID -p Environment"),
                 ("systemctl", "--user stop netclaw.service")
             ],
             runner.Commands);
@@ -99,7 +99,7 @@ public sealed class UpdateCommandTests : IDisposable
         manager.EnqueueStatus(Running());
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(Active());
-        runner.Enqueue(new SystemCommandResult(0, string.Empty, StandardOutput: "123\n"));
+        runner.Enqueue(MainPid("123\n"));
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
         var systemd = CreateSystemdService(runner);
 
@@ -110,7 +110,7 @@ public sealed class UpdateCommandTests : IDisposable
         Assert.Equal(
             [
                 ("systemctl", "--user is-active netclaw.service"),
-                ("systemctl", "--user show netclaw.service -p MainPID --value"),
+                ("systemctl", "--user show netclaw.service -p MainPID -p Environment"),
                 ("systemctl", "--user stop netclaw.service")
             ],
             runner.Commands);
@@ -763,7 +763,8 @@ public sealed class UpdateCommandTests : IDisposable
 
     private static SystemCommandResult Activating() => new(3, string.Empty, StandardOutput: "activating\n");
 
-    private static SystemCommandResult MainPid(string pid) => new(0, string.Empty, StandardOutput: pid);
+    private static SystemCommandResult MainPid(string pid) =>
+        new(0, string.Empty, StandardOutput: $"MainPID={pid.Trim()}\nEnvironment=DOTNET_ENVIRONMENT=Production\n");
 
     private static DaemonStatus Running() => new(true, 123, "Daemon running.");
 

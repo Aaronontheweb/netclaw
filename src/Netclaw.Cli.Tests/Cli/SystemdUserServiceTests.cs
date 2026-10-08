@@ -25,7 +25,9 @@ public sealed class SystemdUserServiceTests : IDisposable
     private static SystemCommandResult State(string state) =>
         new(state == "active" || state == "reloading" ? 0 : 3, string.Empty, StandardOutput: state + "\n");
 
-    private static SystemCommandResult MainPid(string value) => new(0, string.Empty, StandardOutput: value);
+    // What `systemctl --user show netclaw.service -p MainPID -p Environment` prints.
+    private static SystemCommandResult MainPid(string value, string environment = "") =>
+        new(0, string.Empty, StandardOutput: $"MainPID={value.Trim()}\nEnvironment=DOTNET_ENVIRONMENT=Production {environment}\n");
 
     private static readonly string DefaultHome = SystemdUserService.DefaultHomePath;
 
@@ -71,13 +73,40 @@ public sealed class SystemdUserServiceTests : IDisposable
         AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(NotRunning));
     }
 
-    [Fact]
-    public async Task Stop_ReturnsManaged_ForAnActivatingUnitWithAFreshMainPid_OnTheDefaultHome()
+    [Theory]
+    [InlineData("activating")]
+    [InlineData("active")]
+    public async Task Stop_ReturnsManaged_WhileACrashLoopingUnitsMainProcessIsStarting_OnTheDefaultHome(string state)
     {
-        // The unit's process is still starting (or about to crash): it is not another home's settled daemon.
+        // The unit is "active" with a MainPID for the second or so each cycle before the daemon dies.
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State(state));
+        runner.Enqueue(MainPid("777\n"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(NotRunning));
+    }
+
+    [Theory]
+    [InlineData("NETCLAW_HOME=/home/op/data")]
+    [InlineData("\"NETCLAW_HOME=/home/op/my data\"")]
+    public async Task Stop_ReturnsUnmanaged_WhenTheUnitIsConfiguredForAnotherHome_WhateverItsState(string environment)
+    {
+        foreach (var (state, pid) in new[] { ("active", "9999"), ("activating", "0") })
+        {
+            var runner = new FakeSystemCommandRunner();
+            runner.Enqueue(State(state));
+            runner.Enqueue(MainPid(pid, environment));
+
+            AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(NotRunning));
+        }
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsManaged_WhenTheUnitIsConfiguredForTheDefaultHomeExplicitly()
+    {
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(State("activating"));
-        runner.Enqueue(MainPid("777\n"));
+        runner.Enqueue(MainPid("0", $"NETCLAW_HOME={DefaultHome}/"));
 
         AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(NotRunning));
     }
@@ -91,17 +120,6 @@ public sealed class SystemdUserServiceTests : IDisposable
         runner.Enqueue(MainPid("0\n"));
 
         AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(RunningAs(4242)));
-    }
-
-    [Fact]
-    public async Task Stop_ReturnsUnmanaged_WhenTheDefaultHomeHasNoDaemonAndTheUnitServesAnotherHome()
-    {
-        // Drop-in NETCLAW_HOME=/home/op/data: the unit is active with a settled daemon (not ours).
-        var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(State("active"));
-        runner.Enqueue(MainPid("9999\n"));
-
-        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(NotRunning));
     }
 
     [Fact]

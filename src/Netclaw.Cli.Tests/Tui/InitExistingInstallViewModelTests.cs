@@ -520,7 +520,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
                 _stopSeen.TrySetResult();
 
             return Task.FromResult(arguments.Contains("show", StringComparison.Ordinal)
-                ? new SystemCommandResult(0, string.Empty, StandardOutput: mainPid + "\n")
+                ? new SystemCommandResult(0, string.Empty, StandardOutput: $"MainPID={mainPid}\nEnvironment=\n")
                 : new SystemCommandResult(0, string.Empty, StandardOutput: "active\n"));
         }
     }

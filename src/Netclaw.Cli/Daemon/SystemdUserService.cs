@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Netclaw.Configuration;
 
 namespace Netclaw.Cli.Daemon;
@@ -48,9 +49,9 @@ internal sealed class SystemdUserService(
     /// <see cref="SystemdUserServiceOwnershipKind.Managed"/> (so it must be stopped) when it is
     /// running or about to run a daemon (<c>active</c>, <c>activating</c> including auto-restart,
     /// <c>reloading</c>) and serves this home: its MainPID is this home's daemon, or this is the
-    /// default home (links resolved) and the unit has no settled daemon of its own to point at
-    /// (MainPID 0, or still <c>activating</c>). Any other home is never the unit's to stop on a
-    /// guess. <c>deactivating</c> is left alone: that is the unit's own ExecStop re-entering.
+    /// default home (links resolved) and the unit is not given a different NETCLAW_HOME. Any other
+    /// home is never the unit's to stop on a guess. <c>deactivating</c> is left alone: that is the
+    /// unit's own ExecStop re-entering.
     /// </summary>
     public async Task<SystemdUserServiceOwnership> GetStopOwnershipAsync(DaemonStatus daemonStatus)
     {
@@ -68,14 +69,17 @@ internal sealed class SystemdUserService(
             return StateCheckFailed(active) ?? SystemdUserServiceOwnership.Unmanaged(
                 $"netclaw.service is {(state.Length == 0 ? "not running" : state)}, so it will not start a daemon.");
 
-        var show = await _commandRunner.RunAsync("systemctl", $"--user show {ServiceName} -p MainPID --value");
-        var mainPid = show.Success && int.TryParse(show.StandardOutput.Trim(), out var parsed) ? parsed : 0;
+        var show = await _commandRunner.RunAsync("systemctl", $"--user show {ServiceName} -p MainPID -p Environment");
+        var mainPid = ShowValue(show, "MainPID") is { } text && int.TryParse(text, out var parsed) ? parsed : 0;
 
         if (mainPid != 0 && daemonStatus.Pid == mainPid)
             return SystemdUserServiceOwnership.Managed($"netclaw.service runs this home's daemon (PID {mainPid}).");
 
-        if ((mainPid == 0 || state == "activating") && IsDefaultHome(_homePath))
-            return SystemdUserServiceOwnership.Managed($"netclaw.service is {state} and serves the default home.");
+        // Mid-restart (or mid-crash) the unit has no daemon to point at, so its configuration says
+        // which home it will start. Without a NETCLAW_HOME of its own it starts the default home.
+        var unitHome = EnvironmentValue(ShowValue(show, "Environment"), "NETCLAW_HOME") ?? DefaultHomePath;
+        if (IsDefaultHome(_homePath) && IsDefaultHome(unitHome))
+            return SystemdUserServiceOwnership.Managed($"netclaw.service is {state} and starts the default home.");
 
         return SystemdUserServiceOwnership.Unmanaged(
             $"netclaw.service does not serve {_homePath} (main PID {mainPid}).");
@@ -110,6 +114,23 @@ internal sealed class SystemdUserService(
 
         return StateCheckFailed(active, enabled) ?? SystemdUserServiceOwnership.Unmanaged(
             "netclaw.service is installed but neither active nor enabled.");
+    }
+
+    private static string? ShowValue(SystemCommandResult show, string property) =>
+        show.Success
+            ? show.StandardOutput.Split('\n')
+                .FirstOrDefault(line => line.StartsWith(property + "=", StringComparison.Ordinal))
+                ?[(property.Length + 1)..].Trim()
+            : null;
+
+    // `systemctl show -p Environment` prints `A=b "C=d e" NETCLAW_HOME=/x`.
+    private static string? EnvironmentValue(string? environment, string name)
+    {
+        if (environment is null)
+            return null;
+
+        var match = Regex.Match(environment, "(?:^|\\s)(?:\"" + name + "=([^\"]*)\"|" + name + "=(\\S*))");
+        return match.Success ? (match.Groups[1].Success ? match.Groups[1].Value : match.Groups[2].Value) : null;
     }
 
     private SystemdUserServiceOwnership? PlatformOrUnitMissing()
