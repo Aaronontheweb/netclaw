@@ -31,6 +31,12 @@ internal sealed class FakeDaemonHubTransport : IDaemonHubTransport
     /// </summary>
     public Func<object?[], SessionEnsureResultDto> EnsureSessionResponder { get; set; } = DefaultEnsureResponder();
 
+    /// <summary>
+    /// Awaited before every EnsureSession RPC is answered. A test completes it later to hold a
+    /// session set-up in flight without blocking a thread.
+    /// </summary>
+    public Func<object?[], Task>? EnsureSessionGate { get; set; }
+
     /// <summary>Override to make a value-less RPC (SendMessage / RespondToInteraction) delay or fail.</summary>
     public Func<string, object?[], CancellationToken, Task>? VoidInvokeHook { get; set; }
 
@@ -67,12 +73,17 @@ internal sealed class FakeDaemonHubTransport : IDaemonHubTransport
         _connected = true;
     }
 
-    public Task<TResult> InvokeAsync<TResult>(string methodName, object?[] args, CancellationToken cancellationToken)
+    public async Task<TResult> InvokeAsync<TResult>(string methodName, object?[] args, CancellationToken cancellationToken)
     {
         Record(methodName, args);
 
         if (methodName == "EnsureSession")
-            return Task.FromResult((TResult)(object)EnsureSessionResponder(args));
+        {
+            if (EnsureSessionGate is not null)
+                await EnsureSessionGate(args);
+
+            return (TResult)(object)EnsureSessionResponder(args);
+        }
 
         throw new InvalidOperationException($"FakeDaemonHubTransport has no value result for '{methodName}'.");
     }
