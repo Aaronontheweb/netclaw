@@ -153,6 +153,34 @@ runtime detection for an affected definition.
 | `InputModalities` | string? | `null` | Manual override for input modalities. Comma-separated flags from `Text`, `Image`, `Audio`, `Video` — e.g. `"Text"` or `"Text, Image"`. When set, bypasses automated capability detection. |
 | `OutputModalities` | string? | `null` | Manual override for output modalities. Same form as `InputModalities`. |
 
+**Invalid Models configuration.** One check, `ModelConfigurationValidation.Check`, validates the
+Models section. The daemon runs it at startup. The config watcher runs it before it restarts the
+daemon. It rejects these cases:
+
+- legacy keys (`Main`, `Fallback`, `Compaction`) mixed with `Definitions`/`Roles`, in the file or in
+  `NETCLAW_Models__*` environment variables
+- `Definitions` without `Roles`, or `Roles` without `Definitions`
+- a role that names an unknown definition
+- a definition with a value that cannot be read (for example `InputModalities: "banana"`)
+- a role-bound `ContextWindow` below 4,096
+- a Fallback or Compaction model whose provider is not configured
+- a provider that a role uses and that cannot be built: an unknown `Type`, a missing credential for
+  `openai` or `anthropic`, an `openai-compatible` provider without `Endpoint`, or a `Providers` entry
+  with a value that cannot be read (`AuthMethod`, `VendorOptions`, `OAuthTokenExpiry`). The check builds
+  each role's client once and discards it; this makes no network call.
+- a `netclaw.json` or `secrets.json` that the configuration source cannot read: invalid JSON, or a
+  key written twice (`Models` and `models`)
+
+At startup the daemon stops with exit code 1. It prints one `error:` line to stderr and writes the
+same text to `daemon.log`. It writes no stack trace and no crash log. The message names the keys and
+says what to remove or run. A missing Main model is not an error: it selects the No-Op chat client.
+
+When the watcher finds the file invalid (any of the cases above, or invalid JSON), it logs one
+warning per distinct reason and file content and does not restart the daemon. The
+daemon keeps its previous configuration and applies no change from `netclaw.json` until the file is
+fixed. `netclaw status` shows `config on disk not applied: <reason>` and reports
+`overall: degraded`. `netclaw doctor` reports the same message.
+
 ### Session
 
 Tuning parameters for LLM session behavior.

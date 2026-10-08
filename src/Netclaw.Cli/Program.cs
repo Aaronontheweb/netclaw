@@ -252,7 +252,19 @@ static async Task RunAsync(string[] args)
                 {
                     var shouldApply = doctorOptions.Yes || PromptForDoctorFixApply();
                     if (shouldApply)
-                        await fixService.ApplyAsync(fixPlan);
+                    {
+                        try
+                        {
+                            foreach (var backup in await fixService.ApplyAsync(fixPlan))
+                                Console.WriteLine($"Backed up the original to {backup}");
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            Console.Error.WriteLine($"Error: could not apply the fixes: {ex.Message}");
+                            Environment.ExitCode = 1;
+                            return;
+                        }
+                    }
                 }
             }
 
@@ -1563,6 +1575,8 @@ static void WriteDoctorFixPlan(DoctorFixPlan plan, bool dryRun)
     {
         Console.WriteLine($"- {fix.FilePath}");
         Console.WriteLine($"  {fix.Description}");
+        foreach (var backup in DoctorFixService.PlannedBackups(fix))
+            Console.WriteLine($"  Original is backed up to {backup} before the change.");
         WriteSimpleDiff(fix.OriginalText, fix.UpdatedText);
     }
 }
@@ -1730,6 +1744,12 @@ static void WriteSessionsHelp()
 static void WriteStatusResult(DaemonRuntimeStatus.Response status, string endpoint, StatusUpdateResult? cliUpdate = null)
 {
     Console.WriteLine($"overall: {status.Overall}");
+    if (!string.IsNullOrWhiteSpace(status.ConfigNotApplied))
+    {
+        Console.WriteLine($"config on disk not applied: {status.ConfigNotApplied}");
+        Console.WriteLine("  The daemon is still running the previous configuration. No change from netclaw.json is applied until this is fixed.");
+    }
+
     Console.WriteLine($"version: {status.Build.Version} (commit {status.Build.CommitHash}, built {status.Build.BuildTimestamp})");
     Console.WriteLine($"daemon: PID {status.Process.Pid}, uptime {FormatUptime(status.Process.UptimeSeconds)}, endpoint {endpoint}");
     Console.WriteLine($"persistence: {status.Persistence.Provider}");

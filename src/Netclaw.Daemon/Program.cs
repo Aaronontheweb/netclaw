@@ -127,6 +127,22 @@ catch (NetclawDirectoryInitializationException ex)
     Console.Error.WriteLine(ex.Message);
     Environment.ExitCode = 1;
 }
+catch (ModelConfigurationException ex)
+{
+    // An operator error, not a crash: no crash log and no stack trace.
+    StartupConfigurationFailure.Report(bootstrapPaths, ex.Message, Console.Error);
+    Environment.ExitCode = 1;
+}
+catch (InvalidDataException ex)
+{
+    // netclaw.json or secrets.json that the configuration source cannot read (invalid JSON, a
+    // duplicate key such as Models and models): also an operator error.
+    StartupConfigurationFailure.Report(
+        bootstrapPaths,
+        $"Cannot read netclaw.json or secrets.json: {ex.InnerException?.Message ?? ex.Message}",
+        Console.Error);
+    Environment.ExitCode = 1;
+}
 catch (Exception ex)
 {
     crashMonitor.RecordTopLevelException(ex);
@@ -161,7 +177,7 @@ static async Task RunDaemonAsync(
 
     // Load configuration first (netclaw.json, secrets.json, env vars) so that
     // DaemonConfig.Host/Port can be read before binding the WebHost URL.
-    var paths = ConfigureConfigServices(builder.Services, builder.Configuration, bootstrapPaths);
+    var (paths, models) = ConfigureConfigServices(builder.Services, builder.Configuration, bootstrapPaths);
 
     // Bind listen address from DaemonConfig; falls back to 127.0.0.1:5199 if
     // the Daemon section is absent from netclaw.json.
@@ -173,6 +189,7 @@ static async Task RunDaemonAsync(
         builder.Services,
         builder.Configuration,
         paths,
+        models,
         daemonLogLevel,
         daemonConfig,
         shellResolution);
@@ -227,10 +244,15 @@ static async Task RunDaemonAsync(
     builder.Services.AddSingleton<SessionIngressGate>();
     builder.Services.AddSingleton<ISessionStorageResolver, SqliteSessionStorageResolver>();
     builder.Services.AddSingleton<RestartManifestStore>();
+    builder.Services.AddSingleton<RejectedConfigState>();
     builder.Services.AddSingleton<DaemonRestartCoordinator>();
     builder.Services.AddSingleton<IDaemonRestartCoordinator>(sp => sp.GetRequiredService<DaemonRestartCoordinator>());
 
     var app = builder.Build();
+
+    // Part of the same Models check as ConfigureConfigServices: the plugin and its credentials.
+    if (app.Services.GetService<ProviderPluginFactory>()?.Validate(models) is { } providerError)
+        throw new ModelConfigurationException(providerError);
     crashMonitor.AttachServices(app.Services);
 
     var startupLogger = app.Services
@@ -384,7 +406,7 @@ static async Task RunDaemonAsync(
 // Shared configuration services
 // ═══════════════════════════════════════════════════════════════════════
 
-static NetclawPaths ConfigureConfigServices(
+static (NetclawPaths Paths, ModelSelection Models) ConfigureConfigServices(
     IServiceCollection services,
     IConfigurationManager configuration,
     NetclawPaths bootstrapPaths)
@@ -416,12 +438,9 @@ static NetclawPaths ConfigureConfigServices(
     // Providers and model resolution via plugin architecture.
     // No silent fallback to local-ollama: an empty Providers section yields
     // the NoProviderConfigured outcome and the host registers NoOpChatClientProvider.
-    var providers = ProviderConfigurationLoader.Load(configuration.GetSection("Providers"));
-    var models = ModelConfigurationResolver.Resolve(configuration).Selection;
-    var validation = ProviderRuntimeValidation.Evaluate(
-        providers,
-        models,
-        ProviderRuntimeConfiguration.FromConfiguration(configuration));
+    // The same check gates the config watcher's restart. An invalid Models section is an operator
+    // error: startup stops with the message and no crash log (see the catch in the main try block).
+    var (providers, models, validation) = ModelConfigurationValidation.Require(configuration);
 
     // The transport RetryingChatClient is the single owner of LLM transient-failure
     // retry, so it uses the configured streaming-retry budget.
@@ -432,7 +451,7 @@ static NetclawPaths ConfigureConfigServices(
     services.AddSingleton(validation);
     services.AddDaemonLlmProviders(providers, models, validation, streamingRetryPolicy);
 
-    return paths;
+    return (paths, models);
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -444,6 +463,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     IServiceCollection services,
     IConfigurationManager configuration,
     NetclawPaths paths,
+    ModelSelection resolvedModels,
     LogLevel daemonLogLevel,
     DaemonConfig daemonConfig,
     ShellEnvironmentResolution shellResolution)
@@ -466,7 +486,6 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     services.AddHostedService<ExposureModeValidationService>();
     services.AddHostedService<BootstrapCompletionMarkerService>();
 
-    var resolvedModels = ModelConfigurationResolver.Resolve(configuration).Selection;
     services
         .AddOptions<ModelSelection>()
         .Configure(options =>
@@ -474,9 +493,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
             options.Main = resolvedModels.Main;
             options.Fallback = resolvedModels.Fallback;
             options.Compaction = resolvedModels.Compaction;
-        })
-        .ValidateOnStart();
-    services.AddSingleton<IValidateOptions<ModelSelection>, ModelSelectionValidator>();
+        });
     var sqlitePath = paths.SqliteDbPath;
 
     services.Configure<HostOptions>(options =>

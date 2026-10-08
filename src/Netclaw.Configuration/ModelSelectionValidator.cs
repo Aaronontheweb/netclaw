@@ -4,9 +4,8 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Microsoft.Extensions.Options;
-using Netclaw.Configuration;
 
-namespace Netclaw.Daemon.Configuration;
+namespace Netclaw.Configuration;
 
 public sealed class ModelSelectionValidator : IValidateOptions<ModelSelection>
 {
