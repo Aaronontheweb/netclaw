@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text;
+using System.Text.RegularExpressions;
 using Netclaw.Actors.Protocol;
 using R3;
 using Termina.Components.Streaming;
@@ -424,6 +425,10 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
 
             case ToolCallOutput msg:
                 RemoveThinkingSpinner();
+                // Streamed text that never got a closing TextOutput (whitespace-only
+                // preamble, or a tool call straight after deltas) would otherwise
+                // stay open and be joined by the tool line.
+                FinalizeAssistantSegmentIfNeeded();
                 var toolSegmentId = NextSegmentId();
                 _thinkingSegmentId = toolSegmentId;
                 _toolTimer = new ElapsedTimeSegment(Color.BrightBlack);
@@ -432,7 +437,8 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                         new SpinnerSegment(Termina.Components.Streaming.SpinnerStyle.Dots, Color.Yellow, intervalMs: 80),
                         new StaticTextSegment($" {msg.ToolName}({TruncateArgs(msg.ArgumentsJson)})",
                             Color.Yellow),
-                        _toolTimer));
+                        _toolTimer,
+                        new StaticTextSegment("\n", TextStyle.Default)));
                 break;
 
             case ToolResultOutput msg:
@@ -447,7 +453,7 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
 
                     _chatHistory.Replace(_thinkingSegmentId,
                         new StaticTextSegment(
-                            $"  \u2713 {msg.ToolName} \u2192 {Truncate(msg.Result, 80)}{elapsed}",
+                            $"  \u2713 {msg.ToolName} \u2192 {Truncate(msg.Result, 80)}{elapsed}\n",
                             Color.Green),
                         keepTracked: false);
                     _thinkingSegmentId = default;
@@ -526,11 +532,24 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
         }
     }
 
+    private static readonly Regex WhitespaceRun = new(@"\s+", RegexOptions.Compiled);
+
     private static string TruncateArgs(string? json) =>
         json is null or "" ? "" : Truncate(json, 60);
 
-    private static string Truncate(string text, int maxLength) =>
-        text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength - 3), "...");
+    // Tool output (a web_fetch summary is a dozen lines) must stay on the one
+    // row its tool line owns, so whitespace runs and newlines collapse. Only a
+    // bounded prefix is scanned: the preview is far shorter than the result.
+    private const int PreviewScanChars = 512;
+
+    private static string Truncate(string text, int maxLength)
+    {
+        var clipped = text.Length > PreviewScanChars;
+        text = WhitespaceRun.Replace(clipped ? text[..PreviewScanChars] : text, " ").Trim();
+        return !clipped && text.Length <= maxLength
+            ? text
+            : string.Concat(text.AsSpan(0, Math.Min(text.Length, maxLength - 3)), "...");
+    }
 
     private static string FormatElapsed(TimeSpan elapsed) =>
         elapsed.TotalSeconds < 60
