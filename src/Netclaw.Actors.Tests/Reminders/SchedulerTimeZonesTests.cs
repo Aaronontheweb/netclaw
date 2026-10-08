@@ -48,15 +48,15 @@ public sealed class SchedulerTimeZonesTests
     }
 
     [Theory]
-    [InlineData("Eastern Standard Time")]
-    [InlineData("")]
-    [InlineData(" ")]
-    public void Ids_the_scheduler_cannot_carry_are_rejected_even_when_the_host_knows_them(string zoneId)
+    [InlineData("Eastern Standard Time", "Time zone 'Eastern Standard Time' has spaces. Use an IANA id such as America/Chicago.")]
+    [InlineData("", "Enter a time zone. Use an IANA id such as America/Chicago.")]
+    [InlineData(" ", "Enter a time zone. Use an IANA id such as America/Chicago.")]
+    public void Ids_the_scheduler_cannot_carry_are_rejected_even_when_the_host_knows_them(string zoneId, string expected)
     {
         var host = new SystemTimeZones(id => Chicago, _ => null);
 
         Assert.False(SchedulerTimeZones.TryResolve(zoneId, out _, out var error, host));
-        Assert.Contains("empty or has spaces", error, StringComparison.Ordinal);
+        Assert.Equal(expected, error);
     }
 
     [Fact]

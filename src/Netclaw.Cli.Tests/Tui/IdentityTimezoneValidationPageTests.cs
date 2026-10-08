@@ -41,7 +41,7 @@ public sealed class IdentityTimezoneValidationPageTests : IDisposable
         => HeadlessTerminaFixture.Create<IdentityRedoPage, IdentityRedoViewModel>(
             "/identity-redo",
             () => new IdentityRedoPage(),
-            () => new IdentityRedoViewModel(_paths),
+            () => new IdentityRedoViewModel(_paths, new ChatNavigationState()),
             out input);
 
     [Fact]

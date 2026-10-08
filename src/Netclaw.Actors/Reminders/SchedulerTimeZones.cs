@@ -43,9 +43,15 @@ public static class SchedulerTimeZones
 
         // The scheduler ends the zone id at the first space, so an id with spaces
         // (a Windows name such as "Eastern Standard Time") can never be used.
-        if (string.IsNullOrWhiteSpace(zoneId) || zoneId.Any(char.IsWhiteSpace))
+        if (string.IsNullOrWhiteSpace(zoneId))
         {
-            error = $"Time zone '{zoneId}' is empty or has spaces. {ExampleHint}";
+            error = $"Enter a time zone. {ExampleHint}";
+            return false;
+        }
+
+        if (zoneId.Any(char.IsWhiteSpace))
+        {
+            error = $"Time zone '{zoneId}' has spaces. {ExampleHint}";
             return false;
         }
 
