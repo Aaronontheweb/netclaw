@@ -2971,17 +2971,19 @@ position_response_has() {
     jq -r '.response' <<<"$EVAL_POSITION_EVIDENCE" | grep -qaiE -- "$1"
 }
 
-# The common precondition: a valid envelope and the named skill loaded through
-# `skill_load`.
-# Args: the skill name.
+# The common precondition: one envelope for each turn, and the named skill
+# loaded through `skill_load`.
+# Args: the skill name, and the number of turns (default 1).
 position_skill_loaded() {
     EVAL_POSITION_FACTS_OK=0
     if ! position_evidence_load; then
         EVAL_ASSERTION_DETAILS="no-evidence"
         return 1
     fi
-    if ! position_evidence_is '.turns >= 1'; then
-        EVAL_ASSERTION_DETAILS="no-envelope"
+    # A turn that reaches the prompt timeout writes no envelope.
+    if ! jq -e --argjson turns "${2:-1}" '.turns >= $turns' \
+            <<<"$EVAL_POSITION_EVIDENCE" >/dev/null 2>&1; then
+        EVAL_ASSERTION_DETAILS="timeout"
         return 1
     fi
     if ! jq -e --arg skill "$1" '.skillsLoaded | index($skill) != null' \
@@ -3005,10 +3007,11 @@ position_logical_route_only() {
 }
 
 # Args: the skill name, then one regex for each fact that the response must hold.
+# EVAL_POSITION_TURNS gives the number of turns of a multi-turn case.
 position_fact_case() {
     local skill="$1" fact
     shift
-    position_skill_loaded "$skill" || return 1
+    position_skill_loaded "$skill" "${EVAL_POSITION_TURNS:-1}" || return 1
     for fact in "$@"; do
         if ! position_response_has "$fact"; then
             EVAL_ASSERTION_DETAILS="fact-missing: $fact"
@@ -3173,7 +3176,7 @@ assert_skill_position_middle_long_commit() {
 # that the window removes. The existing `skill_progressive_disclosure` case
 # reads the same file for a fact in its first half-budget.
 assert_skill_position_reference_middle() {
-    position_skill_loaded 'netclaw-operations' || return 1
+    position_skill_loaded 'netclaw-operations' "${EVAL_POSITION_TURNS:-1}" || return 1
     if ! position_evidence_is '.resourcesRead | index("netclaw-operations:references/scheduling.md") != null'; then
         EVAL_ASSERTION_DETAILS="reference-not-read"
         return 1
@@ -3193,10 +3196,12 @@ assert_skill_position_reference_middle() {
 # Turn 2 is the question. The recorded evidence shows whether the line was
 # present and whether the agent followed it.
 assert_skill_position_middle_oauth_redirect_steer() {
+    local EVAL_POSITION_TURNS=2
     assert_skill_position_middle_oauth_redirect
 }
 
 assert_skill_position_reference_middle_steer() {
+    local EVAL_POSITION_TURNS=2
     assert_skill_position_reference_middle
 }
 
@@ -3224,11 +3229,7 @@ setup_skill_position_memory_tool_choice() {
 # `get_memories`). Turn 3 corrects the saved memory (`update_memory`, and no
 # second `store_memory`).
 assert_skill_position_memory_tool_choice() {
-    position_skill_loaded 'netclaw-memory' || return 1
-    if ! position_evidence_is '.turns == 3'; then
-        EVAL_ASSERTION_DETAILS="turn-missing"
-        return 1
-    fi
+    position_skill_loaded 'netclaw-memory' 3 || return 1
     if ! position_evidence_is '.toolsByTurn[0] | index("store_memory") != null'; then
         EVAL_ASSERTION_DETAILS="turn1-no-store_memory"
         return 1
@@ -3571,12 +3572,13 @@ run_all() {
 
     # ── Skill Guidance Position ──
     # Where a rule sits in an oversized skill file, and what that costs.
-    # See the assertion comments. Each case needs several model calls.
+    # See the assertion comments. A run that reads more of a skill needs many
+    # model calls, so a turn gets 480 seconds or more.
     print_category "Skill Guidance Position"
 
     local position_previous_timeout="$PROMPT_TIMEOUT"
-    if [[ "$PROMPT_TIMEOUT" -lt 240 ]]; then
-        PROMPT_TIMEOUT=240
+    if [[ "$PROMPT_TIMEOUT" -lt 480 ]]; then
+        PROMPT_TIMEOUT=480
     fi
     CASE_EVIDENCE_FN=record_position_evidence
     EVAL_POSITION_EVIDENCE_FILE=""
@@ -3590,8 +3592,8 @@ run_all() {
         "Load your netclaw-operations skill. Netclaw applies my edited older Team AllowedTools list exactly as written. Name the two tools that I must add to it by hand."
 
     run_case --json skill_position_middle_oauth_redirect "middle: the MCP OAuth redirect URI (hidden today)" \
-        "Use your netclaw-operations skill. My OAuth provider needs a pre-registered redirect URI before I can authorize an HTTP MCP server. What exact redirect URI does Netclaw use?" \
-        "Load your netclaw-operations skill. I must register a redirect URI with an OAuth provider for an HTTP MCP server. Give me the exact URI format that Netclaw listens on."
+        "Use your netclaw-operations skill. My OAuth provider needs a pre-registered redirect URI before I can authorize an HTTP MCP server. Which redirect URI does Netclaw use? I know my daemon port, so give me the URI as the skill writes it." \
+        "Load your netclaw-operations skill. I must register a redirect URI with an OAuth provider for an HTTP MCP server. Give me the URI as the skill writes it. Do not look up my daemon port."
 
     run_case --json skill_position_middle_approvals_quarantine "middle: the quarantine name of a corrupt grant store (hidden today)" \
         "Use your netclaw-operations skill. The daemon warned that my saved shell approvals file was corrupt and that it moved the file. Under what exact file name does the daemon keep the corrupt file?" \
@@ -3606,7 +3608,7 @@ run_all() {
 
     run_multi_turn_case --json skill_position_middle_oauth_redirect_steer "middle, after a shell call: the MCP OAuth redirect URI" \
         "Run pwd in the shell and tell me the directory." \
-        "Use your netclaw-operations skill. My OAuth provider needs a pre-registered redirect URI before I can authorize an HTTP MCP server. What exact redirect URI does Netclaw use?"
+        "Use your netclaw-operations skill. My OAuth provider needs a pre-registered redirect URI before I can authorize an HTTP MCP server. Which redirect URI does Netclaw use? I know my daemon port, so give me the URI as the skill writes it."
 
     run_multi_turn_case --json skill_position_reference_middle_steer "reference middle, after a shell call: the one-shot prune rule" \
         "Run pwd in the shell and tell me the directory." \

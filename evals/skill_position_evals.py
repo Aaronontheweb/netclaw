@@ -25,7 +25,7 @@ TRUNCATION_MARK = re.compile(r"\[output truncated to (\d+) chars of (\d+)")
 STEER_MARK = "continue with tool_output_read using CallId="
 # A path below a skills folder. `skill_read_resource` prints the path of one
 # resource, so an agent can find the folder without a guess.
-PHYSICAL_SKILL_PATH = re.compile(r"\.netclaw/skills/|/skills/\.system|/skills/\.server-feeds|SKILL\.md")
+PHYSICAL_SKILL_PATH = re.compile(r"\.netclaw/skills(?![\w-])|/skills/\.system|/skills/\.server-feeds|SKILL\.md")
 RECORD_START = re.compile(r"^\[\d{4}-\d{2}-\d{2}T[^\]]*\] ")
 TOOL_RESULT = re.compile(r"^TOOL_RESULT: (\S+) call_id=(\S+) result=(.*)$", re.DOTALL)
 

@@ -177,7 +177,17 @@ class AssertionTests(unittest.TestCase):
             with self.subTest(case=case):
                 passed, details = self.run_assertion(f"assert_skill_position_{case}", nothing, [])
                 self.assertFalse(passed)
-                self.assertEqual("skill-not-loaded", details)
+                self.assertIn(details, ("skill-not-loaded", "timeout"))
+
+    def test_a_turn_without_an_envelope_is_a_timeout(self):
+        passed, details = self.run_assertion(
+            "assert_skill_position_middle_oauth_redirect_steer",
+            [envelope([("shell_execute", "s", {"Command": "pwd"})], "/work")], [])
+        self.assertFalse(passed)
+        self.assertEqual("timeout", details)
+        passed, details = self.run_assertion("assert_skill_position_head", [], [])
+        self.assertFalse(passed)
+        self.assertEqual("timeout", details)
 
     def test_fact_case_passes_with_the_skill_loaded_and_the_fact(self):
         load = ("skill_load", "load1", {"Name": "netclaw-operations"})
@@ -206,7 +216,8 @@ class AssertionTests(unittest.TestCase):
         for call in [
                 ("file_read", "f1", {"Path": "/home/netclaw/.netclaw/skills/.system/netclaw-operations/SKILL.md"}),
                 ("shell_execute", "s1", {
-                    "Command": "grep -rn redirect /home/netclaw/.netclaw/skills/.system/netclaw-operations/"})]:
+                    "Command": "grep -rn redirect /home/netclaw/.netclaw/skills/.system/netclaw-operations/"}),
+                ("file_search", "q1", {"Root": "/home/netclaw/.netclaw/skills", "Query": "oauth"})]:
             with self.subTest(tool=call[0]):
                 passed, details = self.run_assertion(
                     "assert_skill_position_tail",

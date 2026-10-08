@@ -270,8 +270,12 @@ skill case asserts. It also has the facts of the Skill Discovery cases.
 zone. Then update the row and the comment of the case, because the case
 measures another position.
 
+The category gives each turn 480 seconds or more. A run that reads more of a
+skill makes many model calls. A turn that reaches the timeout writes no
+envelope, and the runner records the run as `timeout`.
+
 ```bash
-NETCLAW_EVAL_CATEGORY='Skill Guidance Position' NETCLAW_EVAL_TIMEOUT=240 ./evals/run-evals.sh
+NETCLAW_EVAL_CATEGORY='Skill Guidance Position' ./evals/run-evals.sh
 ```
 
 ### Tool Cycle Cases
