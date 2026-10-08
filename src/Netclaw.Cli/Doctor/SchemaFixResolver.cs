@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Json.Schema;
 using Netclaw.Security;
 
@@ -207,9 +208,41 @@ public static class SchemaFixResolver
         return changed;
     }
 
+    // IsSecretKey is the output redactor's rule and stays the one source for what a secret key
+    // name is. These are extra names that are unambiguous as config keys, and URL values that
+    // carry a credential. A bare "Key" is left alone: too many ordinary settings are called that.
+    private static readonly HashSet<string> CredentialNames =
+        new(["passphrase", "pwd", "cookie", "bearer", "pat"], StringComparer.OrdinalIgnoreCase);
+
+    private static readonly Regex UrlWithPassword = new(@"://[^/\s:@]+:[^/\s@]+@", RegexOptions.Compiled);
+    private static readonly Regex UrlWithUserInfo = new(@"://[^/\s@]+@", RegexOptions.Compiled);
+    private static readonly Regex ChatWebhookUrl = new(
+        @"hooks\.slack\.com/(services|workflows)/|discord(app)?\.com/api/webhooks/",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    // Looks through objects and arrays: a credential nested anywhere under the key keeps the key.
     private static bool HoldsCredential(string name, JsonNode? value)
         => SecretOutputRedactor.IsSecretKey(name)
-           || value is JsonObject obj && obj.Any(property => HoldsCredential(property.Key, property.Value));
+           || CredentialNames.Contains(name.Replace("_", "", StringComparison.Ordinal).Replace("-", "", StringComparison.Ordinal))
+           || IsCredentialUrl(name, value)
+           || value switch
+           {
+               JsonObject obj => obj.Any(property => HoldsCredential(property.Key, property.Value)),
+               JsonArray array => array.Any(item => HoldsCredential(name, item)),
+               _ => false,
+           };
+
+    private static bool IsCredentialUrl(string name, JsonNode? value)
+    {
+        if (value is not JsonValue json || !json.TryGetValue<string>(out var text))
+            return false;
+
+        if (name.EndsWith("Dsn", StringComparison.OrdinalIgnoreCase))
+            return UrlWithUserInfo.IsMatch(text);
+
+        return (name.EndsWith("Url", StringComparison.OrdinalIgnoreCase) || name.EndsWith("Uri", StringComparison.OrdinalIgnoreCase))
+               && (UrlWithPassword.IsMatch(text) || ChatWebhookUrl.IsMatch(text));
+    }
 
     /// <summary>
     /// Inserts default values for missing required properties when the schema defines a default.

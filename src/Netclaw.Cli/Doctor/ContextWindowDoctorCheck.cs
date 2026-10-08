@@ -58,6 +58,17 @@ public sealed class ContextWindowDoctorCheck : IDoctorCheck
 
         var main = resolvedModels.Main;
 
+        // The same check the daemon runs at startup, so this line cannot pass a value that the
+        // Chat Client check and the daemon reject.
+        if (main.ContextWindow is > 0
+            && ModelConfigurationValidation.ValidateSelection(_configuration, resolvedModels) is { } selectionError)
+        {
+            return DoctorCheckResult.Error(
+                "Context Window",
+                selectionError,
+                "Fix the Models configuration in netclaw.json, then rerun `netclaw doctor`.");
+        }
+
         var runtimeValidation = ValidateRuntimeConfiguration(root);
         if (runtimeValidation.Status != ProviderRuntimeStatus.Valid)
         {

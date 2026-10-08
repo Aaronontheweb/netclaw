@@ -136,6 +136,23 @@ public sealed class ContextWindowDoctorCheckTests : IDisposable
     }
 
     [Fact]
+    public async Task ExplicitContextWindow_BelowTheStartupMinimum_ReturnsError()
+    {
+        WriteConfig(new
+        {
+            configVersion = 1,
+            Providers = ProviderConfig("local-ollama", "ollama"),
+            Models = new { Main = new { ModelId = "test-model", Provider = "local-ollama", ContextWindow = 100 } }
+        });
+        var check = CreateCheck(CreateOfflineDaemonApi());
+
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Error, result.Severity);
+        Assert.Contains("ContextWindow (100) is below minimum", result.Message);
+    }
+
+    [Fact]
     public async Task ExplicitContextWindow_DaemonReportsDifferentValue_ReturnsWarning()
     {
         WriteConfig(new

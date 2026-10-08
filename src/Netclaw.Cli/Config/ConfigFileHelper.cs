@@ -236,9 +236,7 @@ internal static class ConfigFileHelper
 
         ModelEntryWriter.ThrowIfLegacyEnvironmentOverride();
 
-        var backupPath = path + ".legacy-models.bak";
-        if (!File.Exists(backupPath))
-            File.Copy(path, backupPath);
+        File.Copy(path, Doctor.DoctorFixService.NextBackupPath(path, "legacy-models"), overwrite: false);
     }
 
     /// <summary>

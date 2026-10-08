@@ -115,6 +115,94 @@ public sealed class DoctorFixKeepsUserConfigTests : IDisposable
         Assert.Contains("Definitions", File.ReadAllText(paths.NetclawConfigPath));
     }
 
+    [Theory]
+    [InlineData("Hooks", """[{"Name":"a","Token":"t"}]""", true)]
+    [InlineData("Hooks", """[["x",{"Nested":{"Password":"p"}}]]""", true)]
+    [InlineData("Settings", """{"Inner":{"Apikey":"k"}}""", true)]
+    [InlineData("Pat", "\"ghp_abc\"", true)]
+    [InlineData("Passphrase", "\"p\"", true)]
+    [InlineData("Pwd", "\"p\"", true)]
+    [InlineData("Cookie", "\"c\"", true)]
+    [InlineData("Bearer", "\"b\"", true)]
+    [InlineData("RedisUrl", "\"redis://user:pass@host:6379\"", true)]
+    [InlineData("HomeUri", "\"https://hooks.slack.com/services/T0/B0/xyz\"", true)]
+    [InlineData("AlertUrl", "\"https://discord.com/api/webhooks/1/abc\"", true)]
+    [InlineData("ErrorsDsn", "\"https://abc123@o1.ingest.sentry.io/42\"", true)]
+    [InlineData("HomepageUrl", "\"https://example.com/docs\"", false)]
+    [InlineData("Path", "\"/tmp/x\"", false)]
+    [InlineData("Key", "\"plain\"", false)]
+    [InlineData("Hooks", """[{"Name":"a"}]""", false)]
+    public async Task OnlyAKeyThatHoldsACredentialIsKeptWhenTheSchemaRejectsIt(string key, string valueJson, bool kept)
+    {
+        var paths = NewPaths();
+        File.WriteAllText(
+            paths.NetclawConfigPath,
+            """{"configVersion":1,"Slack":{"Enabled":false,"Comment":"mine",""" + $"\"{key}\":{valueJson}" + "}}");
+
+        await ApplyAsync(paths);
+
+        var updated = File.ReadAllText(paths.NetclawConfigPath);
+        Assert.DoesNotContain("Comment", updated);
+        Assert.Equal(kept, updated.Contains($"\"{key}\"", StringComparison.Ordinal));
+    }
+
+    [Theory]
+    [InlineData("0600")]
+    [InlineData("0644")]
+    public async Task RewriteKeepsTheFileMode(string octal)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var mode = (UnixFileMode)Convert.ToInt32(octal, 8);
+        foreach (var original in new[]
+                 {
+                     """{"configVersion":1,"Slack":{"Enabled":false,"BotToken":"xoxb-test-secret-value","Comment":"mine"}}""",
+                     """{"configVersion":1,"Models":{"Main":{"Provider":"p","ModelId":"a"}}}""",
+                 })
+        {
+            var paths = NewPaths();
+            File.WriteAllText(paths.NetclawConfigPath, original);
+            File.SetUnixFileMode(paths.NetclawConfigPath, mode);
+
+            var plan = await ApplyAsync(paths);
+
+            Assert.True(plan.HasChanges);
+            Assert.NotEqual(original, File.ReadAllText(paths.NetclawConfigPath));
+            Assert.Equal(mode, File.GetUnixFileMode(paths.NetclawConfigPath));
+        }
+    }
+
+    [Fact]
+    public async Task PlanNamesTheBackupThatApplyWrites()
+    {
+        var paths = NewPaths();
+        File.WriteAllText(paths.NetclawConfigPath, """{"configVersion":1,"Slack":{"Enabled":false,"Comment":"mine"}}""");
+
+        var service = Service(paths);
+        var plan = await service.BuildPlanAsync(TestContext.Current.CancellationToken);
+        var planned = DoctorFixService.PlannedBackups(Assert.Single(plan.Fixes));
+        var written = await service.ApplyAsync(plan, TestContext.Current.CancellationToken);
+
+        Assert.Equal(written, planned);
+    }
+
+    [Fact]
+    public async Task EachLegacyModelsMigrationWritesItsOwnBackup()
+    {
+        var paths = NewPaths();
+        var first = """{"configVersion":1,"Models":{"Main":{"Provider":"p","ModelId":"a"}}}""";
+        File.WriteAllText(paths.NetclawConfigPath, first);
+        await ApplyAsync(paths);
+
+        var second = """{"configVersion":1,"Models":{"Main":{"Provider":"p","ModelId":"b"}}}""";
+        File.WriteAllText(paths.NetclawConfigPath, second);
+        await ApplyAsync(paths);
+
+        Assert.Equal(first, File.ReadAllText(paths.NetclawConfigPath + ".legacy-models.bak"));
+        Assert.Equal(second, File.ReadAllText(paths.NetclawConfigPath + ".legacy-models.2.bak"));
+    }
+
     [Fact]
     public async Task EachRunWritesItsOwnBackup()
     {

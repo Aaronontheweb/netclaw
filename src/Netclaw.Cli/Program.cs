@@ -1575,6 +1575,8 @@ static void WriteDoctorFixPlan(DoctorFixPlan plan, bool dryRun)
     {
         Console.WriteLine($"- {fix.FilePath}");
         Console.WriteLine($"  {fix.Description}");
+        foreach (var backup in DoctorFixService.PlannedBackups(fix))
+            Console.WriteLine($"  Original is backed up to {backup} before the change.");
         WriteSimpleDiff(fix.OriginalText, fix.UpdatedText);
     }
 }
