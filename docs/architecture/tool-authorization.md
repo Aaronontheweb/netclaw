@@ -452,6 +452,11 @@ Fixed text on stdin (owner decision 2026-10-07, heredoc parity):
   analyze the text of a heredoc or a here string as a script. Thus a grant for
   a shell does not cover such text. Text from a pipe (`printf ... | bash`) is
   outside this rule.
+- Fixed text on stdin opens no file. A data command with such text
+  (`: <<'EOF'`, `echo x <<< 'y'`) still runs no program and needs no prompt,
+  and the file rules judge each file redirect of the command. A program with
+  such text and a write redirect (`python3 - > out.txt <<'EOF'`) keeps its
+  normal candidate and the write scope.
 - Known limits:
   - A program that reads paths from stdin gets its normal candidate. A folder
     grant for `xargs cat` covers `xargs cat <<< /etc/passwd`, as it covers
