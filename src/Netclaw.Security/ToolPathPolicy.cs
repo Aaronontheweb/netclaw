@@ -115,9 +115,12 @@ public sealed class ToolPathPolicy
             if (netclawSegmentIdx >= 0)
                 indicators.Add(slashPath[(netclawSegmentIdx + 1)..]);
 
+            // A dot directory name (".ssh") is an indicator only after a slash. As a
+            // bare substring it would deny "docs.aws.amazon.com". The slash form
+            // still shows "~/.ssh" and "$HOME/.ssh" in program text.
             var fileName = Path.GetFileName(path);
             if (!string.IsNullOrWhiteSpace(fileName) && fileName.Contains('.', StringComparison.Ordinal))
-                indicators.Add(fileName);
+                indicators.Add(fileName.StartsWith('.') ? "/" + fileName : fileName);
         }
 
         return indicators;

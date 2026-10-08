@@ -149,6 +149,76 @@ public sealed class DaemonToolPathPolicyFactoryTests
         Assert.All(controlPlanePaths, path => Assert.True(policy.FileSystem.IsProtected(path, PathOperation.Write), path));
     }
 
+    // Owner decision (2026-10-07): ~/.ssh and ~/.aws are denied like the control
+    // plane. A file tool and a shell path operand meet the same lists. The
+    // program that needs them (ssh, git, aws) reads them as the child process.
+    // Windows has no Bash home, so the shell forms run on Linux only.
+    [Theory]
+    [InlineData(".ssh/id_ed25519")]
+    [InlineData(".ssh/id_ed25519.pub")]
+    [InlineData(".ssh")]
+    [InlineData(".aws/credentials")]
+    [InlineData(".aws")]
+    public void Credential_locations_are_denied_to_read_write_and_shell(string relativePath)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var environment = ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux, new Version(5, 2));
+        var home = Assert.IsType<string>(environment.HomeDirectory);
+        var policy = DaemonToolPathPolicyFactory.Create(
+            new NetclawPaths(Path.Combine(home, ".netclaw")),
+            environment,
+            new SkillFeedsConfig());
+        var path = Path.Combine(home, relativePath);
+
+        Assert.True(policy.FileSystem.IsProtected(path, PathOperation.Read), path);
+        Assert.True(policy.FileSystem.IsProtected(path, PathOperation.Write), path);
+        Assert.True(policy.CommandReferencesDeniedPath($"cat '{path}'"), path);
+        Assert.True(policy.CommandReferencesDeniedPath($"cat ~/{relativePath}"), relativePath);
+        Assert.True(policy.CommandReferencesDeniedPath($"cat \"$HOME\"/{relativePath}"), relativePath);
+        Assert.True(policy.CommandReferencesDeniedPath($"cat ${{HOME}}/{relativePath}"), relativePath);
+        Assert.True(policy.CommandReferencesDeniedPath("cat id_ed25519", Path.Combine(home, ".ssh")));
+        // A glob word that can match the directory gets the decision of the directory.
+        Assert.True(policy.CommandReferencesDeniedPath("cat ~/.s*/id_ed25519"));
+        Assert.True(policy.CommandReferencesDeniedPath("cat ~/.aw?/credentials"));
+        // Program text that names the directory stays denied, as for the control plane.
+        Assert.True(policy.CommandReferencesDeniedPath("git -c core.sshCommand=\"cat ~/.ssh/id_ed25519 >&2\" fetch"));
+    }
+
+    [Fact]
+    public void A_neighbour_of_a_credential_location_stays_open()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var environment = ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux, new Version(5, 2));
+        var home = Assert.IsType<string>(environment.HomeDirectory);
+        var policy = DaemonToolPathPolicyFactory.Create(
+            new NetclawPaths(Path.Combine(home, ".netclaw")),
+            environment,
+            new SkillFeedsConfig());
+
+        foreach (var neighbour in new[] { ".bashrc", ".config/git/config", "projects/app/README.md", ".sshrc-notes", ".awsome/x" })
+        {
+            var path = Path.Combine(home, neighbour);
+            Assert.False(policy.FileSystem.IsProtected(path, PathOperation.Read), path);
+            Assert.False(policy.FileSystem.IsProtected(path, PathOperation.Write), path);
+        }
+
+        // The directory name is no text indicator: a command that only spells
+        // ".aws" or ".ssh" inside a longer word stays open.
+        foreach (var command in new[]
+                 {
+                     "curl https://docs.aws.amazon.com/cli/latest/userguide/",
+                     "git clone https://github.com/example/dotfiles.ssh.git",
+                     "cat notes.ssh.md",
+                 })
+        {
+            Assert.False(policy.CommandReferencesDeniedPath(command), command);
+        }
+    }
+
     [Theory]
     [InlineData("tool-index.md")]
     [InlineData("mcp/synthetic-server.md")]

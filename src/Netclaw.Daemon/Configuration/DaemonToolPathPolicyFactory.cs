@@ -44,6 +44,17 @@ internal static class DaemonToolPathPolicyFactory
                 paths.ServerFeedSyncStatePath(feed.Name),
                 paths.ServerFeedAgentSyncStatePath(feed.Name)
             });
+        // Owner decision (2026-10-07): the well-known credential locations below
+        // the user's home are denied to agent tools, as the Netclaw secrets are.
+        // The program that needs them (ssh, git, aws) reads them as the child
+        // process, which no path operand names.
+        var home = shellEnvironment.HomeDirectory
+            ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        string[] credentialLocations =
+        [
+            Path.Combine(home, ".ssh"),
+            Path.Combine(home, ".aws"),
+        ];
         string[] writeDenyList =
         [
             paths.ConfigDirectory,
@@ -54,6 +65,7 @@ internal static class DaemonToolPathPolicyFactory
             ..processControlPaths,
             paths.ToolingShadowDirectory,
             ..feedSyncStatePaths,
+            ..credentialLocations,
         ];
         // Owner decision D6: the agent may read each file under the config
         // directory, with a file tool or a read-only shell program, except
@@ -69,6 +81,7 @@ internal static class DaemonToolPathPolicyFactory
             ..sqliteSidecars,
             ..processControlPaths,
             paths.ToolingShadowDirectory,
+            ..credentialLocations,
         ];
         // Shell text that names a read-denied path is denied, whatever the
         // program. A shell write to a config file meets the write list.
