@@ -40,7 +40,7 @@ public sealed class IdentityTimezoneValidationPageTests : IDisposable
         CreateHeadlessApp(out VirtualInputSource input)
         => HeadlessTerminaFixture.Create<IdentityRedoPage, IdentityRedoViewModel>(
             "/identity-redo",
-            () => new IdentityRedoPage(),
+            _ => new IdentityRedoPage(),
             () => new IdentityRedoViewModel(_paths, new ChatNavigationState()),
             out input);
 
@@ -93,8 +93,9 @@ public sealed class IdentityTimezoneValidationPageTests : IDisposable
         input.EnqueueKey(ConsoleKey.Enter); // agent name
         input.EnqueueKey(ConsoleKey.Enter); // communication style
         input.EnqueueKey(ConsoleKey.Enter); // user name
+        // Pre-filled inputs start with the cursor at the end, so Backspace clears the field.
         for (var i = 0; i < "Not/AZone".Length; i++)
-            input.EnqueueKey(ConsoleKey.Delete);
+            input.EnqueueKey(ConsoleKey.Backspace);
         input.EnqueueKey(ConsoleKey.Enter); // blank timezone -> default
         input.EnqueueKey(ConsoleKey.Q, false, false, true);
 

@@ -133,7 +133,7 @@ public sealed class IdentityStepView : IWizardStepView
                 if (error is not null)
                 {
                     // Submit clears the field; keep the rejected text so a second Enter is rejected again.
-                    _timezoneInput.Text = timezone;
+                    WizardStepHelpers.SeedTextInput(_timezoneInput, timezone);
                     callbacks.ShowValidationError(error);
                     return;
                 }
