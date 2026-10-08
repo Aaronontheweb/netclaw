@@ -206,7 +206,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
         vm.Dispose();
         _time.Advance(InitExistingInstallViewModel.CompletionPause);
-        await vm.ResetTask!.WaitAsync(TestContext.Current.CancellationToken);
+        await vm.ResetTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.Null(route);
     }
@@ -244,7 +244,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
             releaseStop.TrySetResult(new DaemonResult(true, "Daemon stopped."));
             await dispose.WaitAsync(TestContext.Current.CancellationToken);
-            await vm.ResetTask!.WaitAsync(TestContext.Current.CancellationToken);
+            await vm.ResetTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
             Assert.Null(route);
             Assert.False(deleteCalled, "Cancelling during daemon stop must not proceed into deletion.");
@@ -278,7 +278,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
         vm.RequestQuit();
         releaseStop.TrySetResult(new DaemonResult(true, "Daemon stopped."));
-        await vm.ResetTask!.WaitAsync(TestContext.Current.CancellationToken);
+        await vm.ResetTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.False(deleteCalled, "Ctrl+Q during daemon stop must cancel before deletion starts.");
         Assert.Null(route);
@@ -323,7 +323,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
         releaseDelete.TrySetResult();
         await dispose.WaitAsync(TestContext.Current.CancellationToken);
-        await vm.ResetTask!.WaitAsync(TestContext.Current.CancellationToken);
+        await vm.ResetTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.Null(route);
     }
@@ -343,7 +343,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
         StartFullReset(vm);
         await WaitForProgressMessageAsync(vm, "Reset failed:");
-        await vm.ResetTask!.WaitAsync(TestContext.Current.CancellationToken);
+        await vm.ResetTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.StartsWith("Reset failed:", vm.ProgressMessage.Value, StringComparison.Ordinal);
         Assert.Null(route);
@@ -374,7 +374,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
         releaseDelete.TrySetResult();
         await WaitForProgressMessageAsync(vm, "Reset failed:");
-        await vm.ResetTask!.WaitAsync(TestContext.Current.CancellationToken);
+        await vm.ResetTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.False(
             vm.StatusMessage.Value.StartsWith("Reset is deleting data;", StringComparison.Ordinal),
@@ -416,7 +416,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
         StartFullReset(vm);
         await WaitForProgressMessageAsync(vm, "Reset failed:");
-        await vm.ResetTask!.WaitAsync(TestContext.Current.CancellationToken);
+        await vm.ResetTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.Contains("still running", vm.ProgressMessage.Value, StringComparison.Ordinal);
         Assert.Contains("Could not determine whether systemd owns", vm.ProgressMessage.Value, StringComparison.Ordinal);
@@ -430,6 +430,33 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
     }
 
     [Fact]
+    public async Task Reset_Aborts_WhenTheUnitStateCannotBeRead_EvenThoughNoDaemonRuns()
+    {
+        // No session bus: the unit may be crash-looping and about to start a daemon on the wiped
+        // home, so a reset with nothing visibly running must still refuse.
+        File.WriteAllText(_paths.SqliteDbPath, "db");
+        var unitPath = Path.Combine(_dir.Path, "netclaw.service");
+        File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
+        var systemd = new SystemdUserService(
+            unitPath, new BusUnreachableRunner(), enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
+        var vm = new InitExistingInstallViewModel(
+            _paths, _nav, new DaemonManager(_paths, TimeProvider.System), systemd, _time);
+
+        StartFullReset(vm);
+        await WaitForProgressMessageAsync(vm, "Reset failed:");
+        await vm.ResetTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+
+        Assert.Contains("Nothing was deleted", vm.ProgressMessage.Value, StringComparison.Ordinal);
+        Assert.True(File.Exists(_paths.SqliteDbPath));
+    }
+
+    private sealed class BusUnreachableRunner : ISystemCommandRunner
+    {
+        public Task<SystemCommandResult> RunAsync(string command, string arguments)
+            => Task.FromResult(new SystemCommandResult(1, "Failed to connect to bus: No medium found"));
+    }
+
+    [Fact]
     public async Task Reset_Aborts_WhenTheStopReportedSuccessButTheDaemonIsStillRunning()
     {
         File.WriteAllText(_paths.SqliteDbPath, "db");
@@ -438,7 +465,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
         StartFullReset(vm);
         await WaitForProgressMessageAsync(vm, "Reset failed:");
-        await vm.ResetTask!.WaitAsync(TestContext.Current.CancellationToken);
+        await vm.ResetTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
 
         Assert.True(File.Exists(_paths.SqliteDbPath));
     }
@@ -514,7 +541,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
         // advance-before-registration lost wakeup this helper used to hit on loaded CI runners.
         await WaitForProgressAsync(vm, 3);
         _time.Advance(InitExistingInstallViewModel.CompletionPause);
-        await vm.ResetTask!.WaitAsync(TestContext.Current.CancellationToken);
+        await vm.ResetTask!.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
     }
 
     private static async Task WaitForProgressAsync(InitExistingInstallViewModel vm, int expectedStep)

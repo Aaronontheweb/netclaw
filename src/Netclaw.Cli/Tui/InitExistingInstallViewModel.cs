@@ -85,8 +85,18 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
         SystemdUserService systemdService,
         TimeProvider timeProvider)
         : this(paths, navigationState, StopThroughOwnerAsync(daemonManager, systemdService), DeleteDirectory, timeProvider,
-            () => daemonManager.GetStatus().IsRunning)
+            () => DaemonMayStillRun(daemonManager, systemdService))
     {
+    }
+
+    // The stop's postcondition: nothing is running and nothing, the systemd unit included, will
+    // start the daemon again. A unit state that cannot be read counts as "may still run".
+    private static bool DaemonMayStillRun(DaemonManager daemonManager, SystemdUserService systemdService)
+    {
+        var status = daemonManager.GetStatus();
+        return status.IsRunning
+            || systemdService.GetStopOwnershipAsync(status).GetAwaiter().GetResult().Kind
+                != SystemdUserServiceOwnershipKind.Unmanaged;
     }
 
     // Same stop path as `netclaw daemon stop`: an installed systemd unit would otherwise restart
@@ -358,7 +368,7 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
         if (_isDaemonRunning())
         {
             throw new InvalidOperationException(
-                $"the daemon is still running ({stopFailure ?? "it did not exit"}). Nothing was deleted. " +
+                $"the daemon is still running or its systemd unit could restart it ({stopFailure ?? "it did not exit"}). Nothing was deleted. " +
                 "Run this from a login session, or run `systemctl --user stop netclaw.service`, then retry.");
         }
 
