@@ -45,7 +45,7 @@ public sealed class IdentityStepView : IWizardStepView
     private ILayoutNode BuildAgentName(IdentityStepViewModel vm, StepViewCallbacks callbacks)
     {
         _agentNameInput = new TextInputNode().WithPlaceholder("Netclaw");
-        _agentNameInput.Text = vm.AgentName;
+        WizardStepHelpers.SeedTextInput(_agentNameInput, vm.AgentName);
         _agentNameInput.OnFocused();
         _lastFocusedInput = _agentNameInput;
         _lastFocusedList = null;
@@ -97,7 +97,7 @@ public sealed class IdentityStepView : IWizardStepView
     {
         _userNameInput = new TextInputNode().WithPlaceholder("Your name");
         if (!string.IsNullOrWhiteSpace(vm.UserName))
-            _userNameInput.Text = vm.UserName;
+            WizardStepHelpers.SeedTextInput(_userNameInput, vm.UserName);
 
         _userNameInput.OnFocused();
         _lastFocusedInput = _userNameInput;
@@ -119,7 +119,7 @@ public sealed class IdentityStepView : IWizardStepView
     private ILayoutNode BuildTimezone(IdentityStepViewModel vm, StepViewCallbacks callbacks)
     {
         _timezoneInput = new TextInputNode().WithPlaceholder(TimeZoneInfo.Local.Id);
-        _timezoneInput.Text = vm.UserTimezone;
+        WizardStepHelpers.SeedTextInput(_timezoneInput, vm.UserTimezone);
 
         _timezoneInput.OnFocused();
         _lastFocusedInput = _timezoneInput;

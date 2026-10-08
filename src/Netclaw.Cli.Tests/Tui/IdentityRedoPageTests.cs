@@ -353,7 +353,7 @@ public sealed class IdentityRedoPageTests : IDisposable
         CreateHeadlessApp(out VirtualInputSource input)
         => HeadlessTerminaFixture.Create<IdentityRedoPage, IdentityRedoViewModel>(
             "/identity-redo",
-            () => new IdentityRedoPage(),
+            _ => new IdentityRedoPage(),
             () => new IdentityRedoViewModel(_paths, new ChatNavigationState()),
             out input);
 }
