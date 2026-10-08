@@ -174,6 +174,122 @@ public sealed class SecretOutputRedactorTests
         _ = format;
     }
 
+    // ── Where a token ends ──
+    // A format whose characters are letters and digits ends at \\b, as the released redactor did,
+    // so "ghp_...-backup" is still masked. A format that may itself contain '-' or '_' ends where
+    // its own character class stops. What follows the token decides the outcome; the table
+    // below is that rule, written out per format.
+
+    private readonly record struct Boundary(string Name, string Token, string ClassChars, bool VariableLength, bool WordBoundary);
+
+    private static readonly Boundary[] BoundaryFormats =
+    [
+        new("github ghp", Pad("ghp_", 36), "alnum", true, true),
+        new("github gho", Pad("gho_", 36), "alnum", true, true),
+        new("github ghu", Pad("ghu_", 36), "alnum", true, true),
+        new("github ghs", Pad("ghs_", 36), "alnum", true, true),
+        new("github ghr", Pad("ghr_", 36), "alnum", true, true),
+        new("aws AKIA", "AKIA" + new string('A', 16), "alnum", false, true),
+        new("aws ASIA", "ASIA" + new string('B', 16), "alnum", false, true),
+        new("npm", Pad("npm_", 36, 'n'), "alnum", false, true),
+        new("stripe sk_live", Pad("sk_live_", 24, 'G'), "alnum", true, true),
+        new("stripe rk_live", Pad("rk_live_", 24, 'H'), "alnum", true, true),
+        new("stripe whsec", Pad("whsec_", 32, 'W'), "alnum", true, true),
+        new("github_pat", "github_pat_" + new string('1', 11) + "_" + new string('b', 59), "alnum_", true, false),
+        new("slack xoxb", "xoxb-1234567890-1234567890123-" + new string('c', 24), "alnum-", true, false),
+        new("slack xapp", "xapp-1-A0123456789-1234567890123-" + new string('e', 40), "alnum-", true, false),
+        new("openai sk-", Pad("sk-", 40, 'k'), "alnum_-", true, false),
+        new("pypi", Pad("pypi-AgEIcHlwaS5vcmc", 60, 'p'), "alnum_-", true, false),
+        new("google AIza", Pad("AIza", 35, 'x'), "alnum_-", false, false),
+        new("discord (longest HMAC)", "MTAxMDEwMTAxMDEwMTAxMDEw.GabcDE." + new string('d', 38), "alnum_-", false, false),
+    ];
+
+    private static readonly string[] Followers =
+        ["-x", "_x", ".x", "/x", "-", "_", "-backup", " old", ",", ")", "\n", "", new string('Z', 40)];
+
+    public static TheoryData<string, string> BoundaryCases()
+    {
+        var data = new TheoryData<string, string>();
+        foreach (var f in BoundaryFormats)
+        {
+            foreach (var follower in Followers)
+                data.Add(f.Name, follower);
+        }
+
+        return data;
+    }
+
+    // Mirrors the regex semantics. A follower's first character either continues the token (it is
+    // in the format's class, or is a word character for a \\b format) or ends it. A continuing
+    // character is swallowed when the format is variable length and the character is in its
+    // class; otherwise the token is not a token any more and the text passes through.
+    private static bool ExpectMasked(Boundary f, string follower)
+    {
+        if (follower.Length == 0)
+            return true;
+
+        var c = follower[0];
+        var inClass = char.IsAsciiLetterOrDigit(c) || (f.ClassChars.Contains('_') && c == '_') || (f.ClassChars.Contains('-') && c == '-');
+        var continues = inClass || (f.WordBoundary && c == '_');
+        if (!continues)
+            return true;
+
+        return f.VariableLength && inClass;
+    }
+
+    [Theory]
+    [MemberData(nameof(BoundaryCases))]
+    public void Redact_ends_each_token_format_at_its_own_boundary(string format, string follower)
+    {
+        var f = BoundaryFormats.Single(x => x.Name == format);
+        var input = "see " + f.Token + follower;
+
+        var redacted = SecretOutputRedactor.Redact(input);
+
+        if (ExpectMasked(f, follower))
+        {
+            Assert.DoesNotContain(f.Token, redacted, StringComparison.Ordinal);
+            Assert.StartsWith("see ***REDACTED***", redacted, StringComparison.Ordinal);
+        }
+        else
+        {
+            Assert.Equal(input, redacted);
+        }
+    }
+
+    [Theory]
+    [InlineData("ghp_", 36, "-backup")]
+    [InlineData("gho_", 36, "-backup")]
+    [InlineData("npm_", 36, "-old")]
+    [InlineData("rk_live_", 24, "-rotated")]
+    [InlineData("whsec_", 32, "-v1")]
+    public void Redact_masks_a_token_followed_by_a_hyphen_suffix(string prefix, int length, string suffix)
+    {
+        var redacted = SecretOutputRedactor.Redact(Pad(prefix, length, 'q') + suffix);
+
+        Assert.Equal("***REDACTED***" + suffix, redacted);
+    }
+
+    [Fact]
+    public void Redact_masks_an_aws_key_id_followed_by_a_hyphen_suffix()
+    {
+        var redacted = SecretOutputRedactor.Redact("key AKIA" + new string('A', 16) + "-old rotated");
+
+        Assert.Equal("key ***REDACTED***-old rotated", redacted);
+    }
+
+    // The token has to start at a word boundary: a longer identifier that merely ends in a
+    // prefix is not a credential.
+    [Theory]
+    [InlineData("task-1234567890abcdef")]
+    [InlineData("xghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    [InlineData("xAKIAAAAAAAAAAAAAAAAA")]
+    [InlineData("nonpm_nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn")]
+    public void Redact_requires_a_token_to_start_at_a_word_boundary(string input)
+    {
+        Assert.Equal(input, SecretOutputRedactor.Redact(input));
+    }
+
     [Fact]
     public void Redact_masks_the_xoxp_part_of_a_rotating_slack_token()
     {
@@ -247,6 +363,20 @@ public sealed class SecretOutputRedactorTests
         Assert.Contains("=***REDACTED***", redacted, StringComparison.Ordinal);
     }
 
+    // The value of a prefixed name ends at the first closing bracket or comma, so code around
+    // the assignment survives. A numeric value is still masked: PINs and numeric passwords are real.
+    [Theory]
+    [InlineData("connect(DB_PASSWORD=hunter2)", "connect(DB_PASSWORD=***REDACTED***)")]
+    [InlineData("f(a, db_password=hunter2, b)", "f(a, db_password=***REDACTED***, b)")]
+    [InlineData("[x, db_password=hunter2]", "[x, db_password=***REDACTED***]")]
+    [InlineData("{db_password=hunter2}", "{db_password=***REDACTED***}")]
+    [InlineData("DB_PASSWORD=123456", "DB_PASSWORD=***REDACTED***")]
+    [InlineData("foo(auth_token=other_token)", "foo(auth_token=***REDACTED***)")]
+    public void Redact_ends_a_prefixed_secret_value_at_a_closing_bracket_or_comma(string input, string expected)
+    {
+        Assert.Equal(expected, SecretOutputRedactor.Redact(input));
+    }
+
     // The secret word has to start a segment. Names that bury it inside a camel-case or
     // run-together word are a known gap; guessing there would redact too much.
     [Theory]
@@ -292,6 +422,12 @@ public sealed class SecretOutputRedactorTests
     [InlineData("device_token=\"$(echo \"$resp\" | jq -r '.token')\"")]
     [InlineData("EVAL_PROVIDER_API_KEY=\"\"")]
     [InlineData("""{"next_page_token": "CAESBwoF", "nextPageToken": "abc"}""")]
+    [InlineData("foo(auth_token=auth_token)")]
+    [InlineData("build(x, db_password=db_password)")]
+    [InlineData("is_token_valid=false")]
+    [InlineData("is_secret_set=True")]
+    [InlineData("num_password_attempts=3")]
+    [InlineData("MAX_PASSWORD_ATTEMPTS=5")]
     public void Redact_keeps_ordinary_settings_that_only_contain_a_secret_word(string input)
     {
         Assert.Equal(input, SecretOutputRedactor.Redact(input));
