@@ -2967,7 +2967,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         return Convert.ToHexString(bytes.AsSpan(0, 8)).ToLowerInvariant();
     }
 
-    private void FireLlmCall(string? recallQuery = null, bool forceNoTools = false)
+    private void FireLlmCall(string? recallQuery = null, bool forceNoTools = false, string? slashCommandSkillContent = null)
     {
         var compatibility = ModelInputCompatibility.Evaluate(_model.InputModalities, _state.History);
         if (!compatibility.IsCompatible)
@@ -3053,6 +3053,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                     workingContextGeneration,
                     forceNoTools,
                     _turnRestartNotice,
+                    slashCommandSkillContent,
                     _state.WorkingContext,
                     CurrentTurnAudience(),
                     _activeLlmCts.Token)
@@ -3141,7 +3142,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             State: _state,
             ContextLayers: _contextLayers,
             StartupContextInjected: _startupContextInjected,
-            SlashCommandSkillContent: _slashCommandSkillContent,
+            // The body is in the volatile block persisted before this call; Assemble does not emit it.
+            SlashCommandSkillContent: null,
             SessionPromptOverlay: _sessionPromptOverlay,
             TurnRestartNotice: _turnRestartNotice,
             SessionId: _sessionId,
@@ -3192,6 +3194,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         long generation,
         bool forceNoTools,
         string? turnRestartNotice,
+        string? slashCommandSkillContent,
         WorkingContext workingContext,
         TrustAudience audience,
         CancellationToken cancellationToken)
@@ -3202,7 +3205,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 workingContext,
                 audience,
                 cancellationToken).ConfigureAwait(false);
-            return new WorkingContextSnapshotReady(generation, forceNoTools, turnRestartNotice, snapshot);
+            return new WorkingContextSnapshotReady(generation, forceNoTools, turnRestartNotice, slashCommandSkillContent, snapshot);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -3214,6 +3217,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
                 generation,
                 forceNoTools,
                 turnRestartNotice,
+                slashCommandSkillContent,
                 workingContext,
                 ex);
         }
@@ -3239,6 +3243,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             message.Generation,
             message.ForceNoTools,
             message.TurnRestartNotice,
+            message.SlashCommandSkillContent,
             new WorkingContextSnapshot
             {
                 WorkingContext = message.WorkingContext,
@@ -3267,7 +3272,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             State: _state,
             ContextLayers: _contextLayers,
             StartupContextInjected: _startupContextInjected,
-            SlashCommandSkillContent: _slashCommandSkillContent,
+            SlashCommandSkillContent: message.SlashCommandSkillContent,
             SessionPromptOverlay: _sessionPromptOverlay,
             TurnRestartNotice: message.TurnRestartNotice,
             SessionId: _sessionId,
@@ -3505,9 +3510,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         TryReplyAck();
         _recallManager.ResetForNewTurn();
 
-        _slashCommandSkillContent = skillBody;
-        FireInitialTurnLlmCall(effectiveUserContent);
-        _slashCommandSkillContent = null;
+        FireInitialTurnLlmCall(effectiveUserContent, skillBody);
 
         TransitionTo(SessionPhase.Processing);
         return true;
@@ -3724,8 +3727,6 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         return updated;
     }
 
-    // Transient: skill body injected by slash-command dispatch for the current turn
-    private string? _slashCommandSkillContent;
     private string? _sessionPromptOverlay;
 
     private bool HasFileReadGranted()
@@ -5447,14 +5448,14 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _buffer.Clear();
     }
 
-    private void FireInitialTurnLlmCall(string? recallQuery)
+    private void FireInitialTurnLlmCall(string? recallQuery, string? slashCommandSkillContent = null)
     {
         _turnRestartNotice = _pendingRestartNotice;
         _pendingRestartNotice = null;
 
         try
         {
-            FireLlmCall(recallQuery);
+            FireLlmCall(recallQuery, slashCommandSkillContent: slashCommandSkillContent);
         }
         finally
         {

@@ -62,7 +62,7 @@ public sealed class MemoryCurationLlmDoctorCheck(NetclawPaths paths, TimeProvide
                     // classification obvious and robust to future marker names.
                     if (FailureMarkers.Any(line.Contains))
                         failures++;
-                    else if (line.Contains(SuccessMarker))
+                    else if (line.Contains(SuccessMarker, StringComparison.Ordinal))
                         successes++;
                 }
             }

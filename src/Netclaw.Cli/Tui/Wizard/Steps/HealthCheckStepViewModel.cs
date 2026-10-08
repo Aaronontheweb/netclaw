@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Update;
 using R3;
 
 namespace Netclaw.Cli.Tui.Wizard.Steps;
@@ -40,6 +41,9 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         _navigationState = navigationState;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
+
+    /// <summary>Test seam: the unit probe used by the daemon start; production uses the host's.</summary>
+    internal SystemdUserService? SystemdService { get; init; }
 
     public string StepId => WizardStepIds.HealthCheck;
     public string DisplayTitle => "Health Check";
@@ -335,7 +339,11 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
             // Nothing is running to reload the config, so start it. Guarded: under a
             // container supervisor Start defers (no spawn) and the supervisor starts it,
             // which we treat as success here and confirm via the readiness poll below.
-            var result = _daemonManager.Start();
+            // The same start `netclaw daemon start` uses: an installed unit starts the daemon
+            // itself, instead of a detached copy beside a unit that stays inactive.
+            var result = await UpdateCommand.StartDaemonAsync(
+                new UpdateCommand.DaemonProcessLifecycle(_daemonManager),
+                SystemdService ?? new SystemdUserService());
             if (!result.Success
                 && !result.Message.Contains("already running", StringComparison.OrdinalIgnoreCase)
                 && !result.Message.Contains("container supervisor", StringComparison.OrdinalIgnoreCase))

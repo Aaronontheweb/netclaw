@@ -415,7 +415,7 @@ public sealed class McpToolPermissionsPageTests : IDisposable
 
         return HeadlessTerminaFixture.Create<McpToolPermissionsPage, McpToolPermissionsViewModel>(
             "/mcp-tools",
-            () => new McpToolPermissionsPage(),
+            _ => new McpToolPermissionsPage(),
             () => new McpToolPermissionsViewModel(_paths, daemonApi),
             out input,
             width,

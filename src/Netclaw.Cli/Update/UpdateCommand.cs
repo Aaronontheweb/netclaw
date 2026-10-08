@@ -361,51 +361,84 @@ internal static class UpdateCommand
                 daemonStatus.Message);
         }
 
-        var systemdOwnership = await systemdService.GetOwnershipAsync();
-        switch (systemdOwnership.Kind)
+        return await StopDaemonAsync(manager, systemdService, "update");
+    }
+
+    /// <summary>
+    /// Stops this home's daemon so that nothing brings it back: the installed systemd user unit
+    /// first when it could (re)start a daemon for this home (its <c>Restart=always</c> would undo
+    /// a stop that went around it), then whatever daemon process is still alive.
+    /// </summary>
+    internal static async Task<UpdateDaemonStopResult> StopDaemonAsync(
+        IDaemonProcessLifecycle manager,
+        SystemdUserService systemdService,
+        string reason,
+        CancellationToken cancellationToken = default)
+    {
+        var systemdOwnership = await systemdService.GetStopOwnershipAsync(manager.GetStatus());
+        if (systemdOwnership.Kind == SystemdUserServiceOwnershipKind.Unknown)
         {
-            case SystemdUserServiceOwnershipKind.Unknown:
+            return UpdateDaemonStopResult.Failed(
+                UpdateDaemonOwner.None,
+                $"Could not determine whether systemd owns the daemon lifecycle: {systemdOwnership.Message}");
+        }
+
+        DaemonResult? unitStop = null;
+        if (systemdOwnership.Kind == SystemdUserServiceOwnershipKind.Managed)
+        {
+            unitStop = await systemdService.StopAsync();
+            if (!unitStop.Success)
+            {
                 return UpdateDaemonStopResult.Failed(
-                    UpdateDaemonOwner.None,
-                    $"Could not determine whether systemd owns the daemon lifecycle: {systemdOwnership.Message}");
-
-            case SystemdUserServiceOwnershipKind.Managed:
-            {
-                var systemdStop = await systemdService.StopAsync();
-                if (!systemdStop.Success)
-                {
-                    return UpdateDaemonStopResult.Failed(
-                        UpdateDaemonOwner.SystemdUserService,
-                        $"systemd stop failed: {systemdStop.Message}");
-                }
-
-                var remainingStatus = manager.GetStatus();
-                if (remainingStatus.IsRunning)
-                {
-                    var detachedStop = await manager.StopAsync("update", CancellationToken.None);
-                    if (!detachedStop.Success)
-                    {
-                        return UpdateDaemonStopResult.Failed(
-                            UpdateDaemonOwner.SystemdUserService,
-                            "systemd service stopped, but a detached daemon is still running and "
-                            + $"could not be stopped: {detachedStop.Message}");
-                    }
-                }
-
-                return UpdateDaemonStopResult.Succeeded(
                     UpdateDaemonOwner.SystemdUserService,
-                    systemdStop.Message);
-            }
-
-            case SystemdUserServiceOwnershipKind.Unmanaged:
-            default:
-            {
-                var detachedStop = await manager.StopAsync("update", CancellationToken.None);
-                return detachedStop.Success
-                    ? UpdateDaemonStopResult.Succeeded(UpdateDaemonOwner.DetachedProcess, detachedStop.Message)
-                    : UpdateDaemonStopResult.Failed(UpdateDaemonOwner.DetachedProcess, detachedStop.Message);
+                    $"systemd stop failed: {unitStop.Message}");
             }
         }
+
+        // Without a unit stop this also reports "Daemon is not running." when nothing runs.
+        if (unitStop is null || manager.GetStatus().IsRunning)
+        {
+            var processStop = await manager.StopAsync(reason, cancellationToken);
+            if (unitStop is null)
+            {
+                return processStop.Success
+                    ? UpdateDaemonStopResult.Succeeded(UpdateDaemonOwner.DetachedProcess, processStop.Message)
+                    : UpdateDaemonStopResult.Failed(UpdateDaemonOwner.DetachedProcess, processStop.Message);
+            }
+
+            return processStop.Success
+                ? UpdateDaemonStopResult.Succeeded(
+                    UpdateDaemonOwner.SystemdUserService, $"{unitStop.Message} {processStop.Message}")
+                : UpdateDaemonStopResult.Failed(
+                    UpdateDaemonOwner.SystemdUserService,
+                    "systemd service stopped, but a daemon process is still running and "
+                    + $"could not be stopped: {processStop.Message}");
+        }
+
+        return UpdateDaemonStopResult.Succeeded(UpdateDaemonOwner.SystemdUserService, unitStop.Message);
+    }
+
+    /// <summary>
+    /// Starts the daemon through whatever owns it. An installed systemd user unit starts the
+    /// daemon itself, so the CLI never spawns a second, detached copy beside it.
+    /// </summary>
+    internal static async Task<DaemonResult> StartDaemonAsync(
+        IDaemonProcessLifecycle manager,
+        SystemdUserService systemdService)
+    {
+        // A running daemon holds the home whoever started it: report it, and never queue a unit
+        // start whose daemon would only crash-loop on the singleton lock.
+        if (manager.GetStatus().IsRunning)
+            return manager.Start();
+
+        var systemdOwnership = await systemdService.GetStartOwnershipAsync();
+        return systemdOwnership.Kind switch
+        {
+            SystemdUserServiceOwnershipKind.Unknown => new DaemonResult(false,
+                $"Could not determine whether systemd owns the daemon lifecycle: {systemdOwnership.Message}"),
+            SystemdUserServiceOwnershipKind.Managed => await systemdService.StartAsync(),
+            _ => manager.Start()
+        };
     }
 
     internal static async Task<DaemonResult> StartDaemonAfterUpdateAsync(
@@ -434,7 +467,7 @@ internal static class UpdateCommand
             ?? new SystemdUserService();
     }
 
-    private sealed class DaemonProcessLifecycle(DaemonManager manager) : IDaemonProcessLifecycle
+    internal sealed class DaemonProcessLifecycle(DaemonManager manager) : IDaemonProcessLifecycle
     {
         public DaemonStatus GetStatus() => manager.GetStatus();
 
@@ -738,4 +771,6 @@ internal sealed record UpdateDaemonStopResult(
 
     public static UpdateDaemonStopResult Failed(UpdateDaemonOwner owner, string message) =>
         new(false, owner, message);
+
+    public DaemonResult ToDaemonResult() => new(Success, Message);
 }

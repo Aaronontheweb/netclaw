@@ -211,10 +211,35 @@ Start it with: netclaw daemon start
 
 `netclaw daemon start` spawns the daemon as a detached background process.
 The daemon writes its PID to `~/.netclaw/netclaw.pid` for lifecycle management.
+When an installed Linux systemd user unit owns the daemon, `start` runs
+`systemctl --user start netclaw.service` instead, and it reports "Daemon already
+running" without touching the unit when a detached daemon already holds the home
+(the unit's daemon would only loop on the singleton lock).
 
-`netclaw daemon stop` reads the PID file and sends SIGTERM for graceful
+`netclaw daemon stop` guarantees that, once it succeeds, nothing brings this
+home's daemon back. It stops the installed systemd user unit when the unit could
+(re)start a daemon for this home (`active`, `activating` including auto-restart,
+or `reloading`), then stops any daemon process still alive (a detached copy
+beside the unit, for example). A unit that is `inactive`, `failed` or
+`deactivating` is left alone: `deactivating` is the unit's own `ExecStop` calling
+back in. Otherwise `stop` reads the PID file and sends SIGTERM for graceful
 shutdown. The daemon handles SIGTERM by draining active sessions and stopping
-the actor system cleanly.
+the actor system cleanly. Under the container supervisor
+(`NETCLAW_CONTAINER_SUPERVISOR`) the stop still happens, exits 0, and prints that
+the supervisor will restart the daemon; this is how a containerised daemon is
+bounced from the CLI.
+
+The unit serves a home when it has a main process and that process's own
+`NETCLAW_HOME` (read from `/proc/<MainPID>/environ`, so it sees `Environment=` and
+`EnvironmentFile=` alike; absent means the default home) is that home, links
+resolved. If the environment cannot be read, a `MainPID` equal to the home's
+daemon PID counts. When the unit has no main process (the crash-loop window), the
+unit's `Environment` property decides: no `NETCLAW_HOME` means the default home.
+A unit whose `NETCLAW_HOME` comes only from an `EnvironmentFile`, sampled at an
+instant when it has no main process, is therefore treated as serving the default
+home. For a home the unit does not serve, `start` and `stop` act on that home's
+own daemon process and never on the unit. A stale PID file that names another
+home's live `netclawd` is still trusted by a direct `stop`, as in 0.27.1.
 
 The session journals each accepted input before it acknowledges the source.
 The record retains the text, media, source message ID, and original authority.
@@ -248,13 +273,18 @@ The CLI allows 45 seconds before forced termination. The generated systemd
 unit allows 60 seconds. A container should set
 `terminationGracePeriodSeconds` to at least 60 seconds.
 
-`netclaw daemon status` checks the PID file and verifies the process is alive.
-Reports: running/stopped, PID, uptime, port, number of active sessions.
+`netclaw daemon status` checks the PID file and verifies the process is alive,
+then probes `/api/health/ready` on this home's own daemon endpoint (the `Daemon`
+section of `netclaw.json`, not `NETCLAW_DAEMON_ENDPOINT` or a paired remote).
+It exits 1 when the process is not running or readiness does not answer, which
+the container `HEALTHCHECK` relies on. Reports: running/stopped, PID, uptime.
 
-`netclaw update` preserves the daemon's lifecycle owner. If the Linux systemd
-user unit is active or enabled, update stops and starts `netclaw.service` via
-`systemctl --user` instead of spawning a detached daemon. If no systemd user
-unit owns the daemon, update uses the direct detached process lifecycle.
+`netclaw update` preserves the daemon's lifecycle owner, using the same stop and
+start path as `netclaw daemon stop` and `start`. If the Linux systemd user unit
+is active or enabled (and the home is the default one), update stops and starts
+`netclaw.service` via `systemctl --user` instead of spawning a detached daemon.
+If no systemd user unit owns the daemon, update uses the direct detached process
+lifecycle.
 
 ### Crash interception and evidence
 

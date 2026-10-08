@@ -7,6 +7,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Tui;
+using Netclaw.Cli.Tui.Wizard.Steps;
 using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
 using Termina;
@@ -91,7 +92,7 @@ public sealed class IdentityRedoPageTests : IDisposable
         // skipped past the user-name field. Reaching saved with the local timezone
         // recorded proves the four submits mapped 1:1 to the four sub-steps.
         Assert.True(vm.IsSaved.Value);
-        Assert.Equal(TimeZoneInfo.Local.Id, vm.Step.UserTimezone);
+        Assert.Equal(IdentityStepViewModel.DefaultTimezone, vm.Step.UserTimezone);
     }
 
     [Fact]
@@ -353,7 +354,7 @@ public sealed class IdentityRedoPageTests : IDisposable
         CreateHeadlessApp(out VirtualInputSource input)
         => HeadlessTerminaFixture.Create<IdentityRedoPage, IdentityRedoViewModel>(
             "/identity-redo",
-            () => new IdentityRedoPage(),
+            _ => new IdentityRedoPage(),
             () => new IdentityRedoViewModel(_paths, new ChatNavigationState()),
             out input);
 }

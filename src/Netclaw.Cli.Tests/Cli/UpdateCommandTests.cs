@@ -68,9 +68,11 @@ public sealed class UpdateCommandTests : IDisposable
     public async Task StopDaemonForUpdateAsync_UsesSystemd_WhenServiceOwnsLifecycle()
     {
         var manager = new FakeDaemonUpdateProcessManager();
+        manager.EnqueueStatus(Running());
         manager.EnqueueStatus(NotRunning());
         var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+        runner.Enqueue(Active());
+        runner.Enqueue(MainPid("123\n"));
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
         var systemd = CreateSystemdService(runner);
 
@@ -80,7 +82,8 @@ public sealed class UpdateCommandTests : IDisposable
         Assert.Equal(UpdateDaemonOwner.SystemdUserService, result.Owner);
         Assert.Equal(
             [
-                ("systemctl", "--user is-active --quiet netclaw.service"),
+                ("systemctl", "--user is-active netclaw.service"),
+                ("systemctl", "--user show netclaw.service -p MainPID -p Environment"),
                 ("systemctl", "--user stop netclaw.service")
             ],
             runner.Commands);
@@ -93,8 +96,10 @@ public sealed class UpdateCommandTests : IDisposable
     {
         var manager = new FakeDaemonUpdateProcessManager();
         manager.EnqueueStatus(Running());
+        manager.EnqueueStatus(Running());
         var runner = new FakeSystemCommandRunner();
-        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+        runner.Enqueue(Active());
+        runner.Enqueue(MainPid("123\n"));
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
         var systemd = CreateSystemdService(runner);
 
@@ -104,7 +109,8 @@ public sealed class UpdateCommandTests : IDisposable
         Assert.Equal(UpdateDaemonOwner.SystemdUserService, result.Owner);
         Assert.Equal(
             [
-                ("systemctl", "--user is-active --quiet netclaw.service"),
+                ("systemctl", "--user is-active netclaw.service"),
+                ("systemctl", "--user show netclaw.service -p MainPID -p Environment"),
                 ("systemctl", "--user stop netclaw.service")
             ],
             runner.Commands);
@@ -116,9 +122,9 @@ public sealed class UpdateCommandTests : IDisposable
     public async Task StopDaemonForUpdateAsync_Fails_WhenSystemdOwnershipIsUnknown()
     {
         var manager = new FakeDaemonUpdateProcessManager();
+        manager.EnqueueStatus(Running());
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(new SystemCommandResult(1, "Failed to connect to bus"));
-        runner.Enqueue(new SystemCommandResult(1, string.Empty));
         var systemd = CreateSystemdService(runner);
 
         var result = await UpdateCommand.StopDaemonForUpdateAsync(manager, systemd, Running());
@@ -134,9 +140,9 @@ public sealed class UpdateCommandTests : IDisposable
     public async Task StopDaemonForUpdateAsync_UsesDetachedLifecycle_WhenSystemdDoesNotOwnDaemon()
     {
         var manager = new FakeDaemonUpdateProcessManager();
+        manager.EnqueueStatus(Running());
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(new SystemCommandResult(3, string.Empty));
-        runner.Enqueue(new SystemCommandResult(1, string.Empty));
         var systemd = CreateSystemdService(runner);
 
         var result = await UpdateCommand.StopDaemonForUpdateAsync(manager, systemd, Running());
@@ -146,6 +152,230 @@ public sealed class UpdateCommandTests : IDisposable
         Assert.DoesNotContain(("systemctl", "--user stop netclaw.service"), runner.Commands);
         Assert.Equal(1, manager.StopCalls);
         Assert.Equal("update", manager.StopReasons.Single());
+    }
+
+    [Fact]
+    public async Task StopDaemonAsync_ReportsNotRunning_WithoutTouchingTheUnit_WhenNoDaemonRunsForAHomeOtherThanTheDefault()
+    {
+        // The unit may be serving the default home; a scratch home with nothing running has nothing to stop.
+        var manager = new FakeDaemonUpdateProcessManager { StopResult = new DaemonResult(false, "Daemon is not running.") };
+        var runner = new FakeSystemCommandRunner();
+        var systemd = CreateSystemdService(runner, Path.Combine(_dir.Path, "scratch-home"));
+
+        var result = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop", TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Equal("Daemon is not running.", result.Message);
+        Assert.Empty(runner.Commands);
+    }
+
+    [Fact]
+    public async Task StopDaemonAsync_ReportsNotRunning_WhenTheDefaultHomesUnitIsInactiveAndNothingRuns()
+    {
+        var manager = new FakeDaemonUpdateProcessManager { StopResult = new DaemonResult(false, "Daemon is not running.") };
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(new SystemCommandResult(3, string.Empty, StandardOutput: "inactive\n"));
+
+        var result = await UpdateCommand.StopDaemonAsync(manager, CreateSystemdService(runner), "cli-stop", TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Equal("Daemon is not running.", result.Message);
+        Assert.DoesNotContain(runner.Commands, c => c.Arguments.Contains("stop netclaw.service"));
+    }
+
+    [Fact]
+    public async Task StopDaemonAsync_StopsTheUnit_WhenItCrashLoopsOnTheDefaultHomeWithNoDaemonRunning()
+    {
+        // F1: activating, MainPID=0, nothing running. "Daemon is not running." would leave the loop going
+        // (and a reset would then wipe the home under the next restart).
+        var manager = new FakeDaemonUpdateProcessManager();
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(Activating());
+        runner.Enqueue(MainPid("0\n"));
+        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+
+        var result = await UpdateCommand.StopDaemonAsync(manager, CreateSystemdService(runner), "cli-stop", TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.Equal(UpdateDaemonOwner.SystemdUserService, result.Owner);
+        Assert.Contains(("systemctl", "--user stop netclaw.service"), runner.Commands);
+        Assert.Equal(0, manager.StopCalls);
+    }
+
+    [Fact]
+    public async Task StopDaemonAsync_StopsTheUnitAndTheDetachedDaemon_WhenADetachedDaemonHoldsTheHomeAndTheUnitLoopsOnTheLock()
+    {
+        // F2: killing only the detached daemon lets the looping unit take the lock a few seconds later.
+        var manager = new FakeDaemonUpdateProcessManager();
+        manager.EnqueueStatus(Running());
+        manager.EnqueueStatus(Running());
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(Activating());
+        runner.Enqueue(MainPid("0\n"));
+        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+
+        var result = await UpdateCommand.StopDaemonAsync(manager, CreateSystemdService(runner), "cli-stop", TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.Equal(UpdateDaemonOwner.SystemdUserService, result.Owner);
+        Assert.Contains(("systemctl", "--user stop netclaw.service"), runner.Commands);
+        Assert.Equal(1, manager.StopCalls);
+        Assert.Contains("Stopped systemd user service.", result.Message, StringComparison.Ordinal);
+        Assert.Contains("detached stopped", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task StopDaemonAsync_Fails_AndSaysSo_WhenTheUnitStopsButTheDaemonProcessWillNotStop()
+    {
+        var manager = new FakeDaemonUpdateProcessManager { StopResult = new DaemonResult(false, "Timed out waiting for daemon PID 123 to exit.") };
+        manager.EnqueueStatus(Running());
+        manager.EnqueueStatus(Running());
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(Activating());
+        runner.Enqueue(MainPid("0\n"));
+        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+
+        var result = await UpdateCommand.StopDaemonAsync(manager, CreateSystemdService(runner), "cli-stop", TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("systemd service stopped", result.Message, StringComparison.Ordinal);
+        Assert.Contains("Timed out", result.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task StopDaemonAsync_Fails_WhenSystemdCannotStopTheUnit()
+    {
+        var manager = new FakeDaemonUpdateProcessManager();
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(Activating());
+        runner.Enqueue(MainPid("0\n"));
+        runner.Enqueue(new SystemCommandResult(1, "Access denied"));
+
+        var result = await UpdateCommand.StopDaemonAsync(manager, CreateSystemdService(runner), "cli-stop", TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("systemd stop failed", result.Message, StringComparison.Ordinal);
+        Assert.Equal(0, manager.StopCalls);
+    }
+
+    [Fact]
+    public async Task StopDaemonAsync_StopsTheProcessDirectly_WhenTheUnitIsAlreadyStopping()
+    {
+        // `systemctl --user stop` runs the unit's ExecStop (`netclaw daemon stop`). That inner
+        // call must not ask systemd to stop the unit again; it terminates the process.
+        var manager = new FakeDaemonUpdateProcessManager();
+        manager.EnqueueStatus(Running());
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(new SystemCommandResult(3, string.Empty, StandardOutput: "deactivating\n"));
+        var systemd = CreateSystemdService(runner);
+
+        var result = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop", TestContext.Current.CancellationToken);
+
+        Assert.True(result.Success);
+        Assert.Equal(UpdateDaemonOwner.DetachedProcess, result.Owner);
+        Assert.DoesNotContain(runner.Commands, c => c.Arguments.Contains("stop netclaw.service"));
+        Assert.Equal("cli-stop", manager.StopReasons.Single());
+    }
+
+    [Fact]
+    public async Task StopDaemonAsync_Fails_WhenSystemdOwnershipIsUnknown()
+    {
+        var manager = new FakeDaemonUpdateProcessManager();
+        manager.EnqueueStatus(Running());
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(new SystemCommandResult(1, "Failed to connect to bus"));
+        var systemd = CreateSystemdService(runner);
+
+        var result = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop", TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Equal(0, manager.StopCalls);
+    }
+
+    [Fact]
+    public async Task StopDaemonAsync_Fails_WithoutStoppingAnything_WhenTheBusIsUnreachableAndNothingRuns()
+    {
+        var manager = new FakeDaemonUpdateProcessManager();
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(new SystemCommandResult(1, "Failed to connect to bus"));
+
+        var result = await UpdateCommand.StopDaemonAsync(manager, CreateSystemdService(runner), "cli-stop", TestContext.Current.CancellationToken);
+
+        Assert.False(result.Success);
+        Assert.Contains("Could not determine", result.Message, StringComparison.Ordinal);
+        Assert.Equal(0, manager.StopCalls);
+    }
+
+    [Fact]
+    public async Task StartDaemonAsync_UsesSystemd_WhenServiceOwnsLifecycle()
+    {
+        var manager = new FakeDaemonUpdateProcessManager();
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(new SystemCommandResult(3, string.Empty));
+        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+        runner.Enqueue(new SystemCommandResult(0, string.Empty));
+        var systemd = CreateSystemdService(runner);
+
+        var result = await UpdateCommand.StartDaemonAsync(manager, systemd);
+
+        Assert.True(result.Success);
+        Assert.Equal("--user start netclaw.service", runner.Commands.Last().Arguments);
+        Assert.Equal(0, manager.StartCalls);
+    }
+
+    [Fact]
+    public async Task StartDaemonAsync_SpawnsDetachedDaemon_WhenNoUnitOwnsIt()
+    {
+        var manager = new FakeDaemonUpdateProcessManager();
+        var systemd = new SystemdUserService(
+            Path.Combine(_dir.Path, "missing.service"),
+            new FakeSystemCommandRunner(),
+            enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
+
+        var result = await UpdateCommand.StartDaemonAsync(manager, systemd);
+
+        Assert.True(result.Success);
+        Assert.Equal(1, manager.StartCalls);
+    }
+
+    [Fact]
+    public async Task StartDaemonAsync_ReportsTheRunningDaemon_AndDoesNotStartTheUnit_WhenADetachedDaemonHoldsTheHome()
+    {
+        // The unit's daemon would loop on "Another netclawd instance is already running".
+        var manager = new FakeDaemonUpdateProcessManager();
+        manager.EnqueueStatus(Running());
+        manager.StartResult = new DaemonResult(false, "Daemon already running (PID 4242).");
+        var runner = new FakeSystemCommandRunner();
+        var systemd = CreateSystemdService(runner);
+
+        var result = await UpdateCommand.StartDaemonAsync(manager, systemd);
+
+        Assert.False(result.Success);
+        Assert.Equal("Daemon already running (PID 4242).", result.Message);
+        Assert.Empty(runner.Commands);
+    }
+
+    [Fact]
+    public async Task StopAndStart_LeaveTheUnitAlone_ForAHomeOtherThanTheDefault()
+    {
+        // NETCLAW_HOME=<scratch> netclaw daemon stop|start must act on the scratch home's own
+        // daemon, never on the user's real unit, which only ever serves the default home.
+        var manager = new FakeDaemonUpdateProcessManager();
+        var runner = new FakeSystemCommandRunner();
+        var unitPath = Path.Combine(_dir.Path, "netclaw.service");
+        File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
+        var systemd = new SystemdUserService(
+            unitPath, runner, enabledOnThisPlatform: true, homePath: Path.Combine(_dir.Path, "scratch-home"));
+
+        var stop = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop", TestContext.Current.CancellationToken);
+        var start = await UpdateCommand.StartDaemonAsync(manager, systemd);
+
+        Assert.True(stop.Success);
+        Assert.Equal(UpdateDaemonOwner.DetachedProcess, stop.Owner);
+        Assert.True(start.Success);
+        Assert.Equal(1, manager.StopCalls);
+        Assert.Equal(1, manager.StartCalls);
+        Assert.Empty(runner.Commands);
     }
 
     [Fact]
@@ -529,15 +759,22 @@ public sealed class UpdateCommandTests : IDisposable
         };
     }
 
+    private static SystemCommandResult Active() => new(0, string.Empty, StandardOutput: "active\n");
+
+    private static SystemCommandResult Activating() => new(3, string.Empty, StandardOutput: "activating\n");
+
+    private static SystemCommandResult MainPid(string pid) =>
+        new(0, string.Empty, StandardOutput: $"MainPID={pid.Trim()}\nEnvironment=DOTNET_ENVIRONMENT=Production\n");
+
     private static DaemonStatus Running() => new(true, 123, "Daemon running.");
 
     private static DaemonStatus NotRunning() => new(false, null, "Daemon is not running.");
 
-    private SystemdUserService CreateSystemdService(FakeSystemCommandRunner runner)
+    private SystemdUserService CreateSystemdService(FakeSystemCommandRunner runner, string? homePath = null)
     {
         var unitPath = Path.Combine(_dir.Path, "netclaw.service");
         File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
-        return new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true);
+        return new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true, homePath: homePath ?? SystemdUserService.DefaultHomePath);
     }
 
     private sealed class FakeDaemonUpdateProcessManager : IDaemonProcessLifecycle

@@ -69,6 +69,7 @@ public sealed record ReminderDelivery : INetclawSerializableMessage
     /// <summary>
     /// How results are delivered.
     /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public DeliveryKind Kind { get; init; }
 
     /// <summary>
@@ -101,6 +102,7 @@ public sealed record ReminderDelivery : INetclawSerializableMessage
     /// Used to route DeliverTrustedSessionTurn to the correct gateway.
     /// Null for Channel and None.
     /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public Channels.ChannelType? OriginChannelType { get; init; }
 
     /// <summary>
@@ -127,6 +129,7 @@ public enum ReminderScheduleType
 /// </summary>
 public sealed record ReminderSchedule : INetclawSerializableMessage
 {
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public ReminderScheduleType Type { get; init; }
 
     /// <summary>
@@ -209,6 +212,7 @@ public sealed record ReminderDefinition
     /// Terminal result for a retained one-shot reminder.
     /// Null means that the reminder can still run.
     /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public ReminderTerminalOutcome? TerminalOutcome { get; set; }
 
     /// <summary>
@@ -223,6 +227,7 @@ public sealed record ReminderDefinition
     /// session/channel audience at mint time. Legacy documents missing this
     /// field are rejected at load and are never scheduled.
     /// </summary>
+    [JsonConverter(typeof(JsonStringEnumConverter))]
     public required TrustAudience Audience { get; init; }
 
     /// <summary>
