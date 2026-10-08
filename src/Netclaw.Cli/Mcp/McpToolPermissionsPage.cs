@@ -32,7 +32,7 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
         .NoWrap();
     private int _gridCursor;
     private bool _confirmingSave;
-    private bool _confirmingEnableAll;
+    private Action? _pendingGrantAll;
 
     private const int AudienceRow = 0;
     private const int ServerEnabledRow = 1;
@@ -280,22 +280,23 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
                 return _confirmSaveFooterNode;
             }
 
-            if (_confirmingEnableAll)
+            if (_pendingGrantAll is not null)
             {
-                return new TextNode(
-                        $"Grant all {ViewModel.DiscoveredTools.Count} tools on '{ViewModel.SelectedServer}' to {ViewModel.SelectedAudience.ToWireValue()}?  " +
-                        "[Enter/Y] Enable all  [N/Esc] Cancel")
+                return new TextNode(BuildGrantAllPrompt())
                     .WithForeground(Color.Yellow)
                     .Bold()
                     .NoWrap();
             }
 
-            var serverHint = ViewModel.IsServerAllowedForSelectedAudience() ? "[E] Disable" : "[E] Enable all";
+            // Enabling grants every tool only in an Allowlist profile, so only there is it "Enable all".
+            var serverHint = ViewModel.IsServerAllowedForSelectedAudience()
+                ? "[E] Disable"
+                : ViewModel.EnablingServerGrantsAllTools() ? "[E] Enable all" : "[E] Enable";
             var hints = ViewModel.CurrentState.Value switch
             {
                 ToolPermissionsState.ServerList => "[Enter] Select  [Esc] Quit  [Ctrl+Q] Quit",
                 ToolPermissionsState.ToolGrid =>
-                    $"[↑/↓] Navigate  [←/→] Change  [Space] Toggle  [A] All  {serverHint}  [Enter] Done  [Esc] Back",
+                    $"[↑↓] Move  [Space] Toggle  [A] All  {serverHint}  [Enter] Done  [Esc] Back",
                 _ => ""
             };
 
@@ -353,9 +354,9 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
             return;
         }
 
-        if (_confirmingEnableAll)
+        if (_pendingGrantAll is not null)
         {
-            HandleEnableAllConfirmation(keyInfo);
+            HandleGrantAllConfirmation(keyInfo);
             return;
         }
 
@@ -408,7 +409,7 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
 
                 case ConsoleKey.A:
                     if (ViewModel.IsServerAllowedForSelectedAudience())
-                        ViewModel.ToggleAll();
+                        RequestGrantAll(ViewModel.ToggleAllGrantsAllTools(), ViewModel.ToggleAll);
                     return;
 
                 case ConsoleKey.E:
@@ -484,33 +485,54 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
         }
     }
 
-    // Enabling an Allowlist server grants every tool on it. That replaces a trimmed grant list,
-    // so it waits for a yes. Disabling, and enabling in the All mode, grant nothing.
     private void RequestToggleServerAccess()
+        => RequestGrantAll(ViewModel.EnablingServerGrantsAllTools(), ViewModel.ToggleServerAccess);
+
+    // Granting every tool replaces a trimmed grant list, so it waits for a Y. Any other action
+    // runs at once.
+    private void RequestGrantAll(bool grantsEveryTool, Action apply)
     {
-        if (!ViewModel.EnablingServerGrantsAllTools())
+        if (!grantsEveryTool)
         {
-            ViewModel.ToggleServerAccess();
+            apply();
             return;
         }
 
-        _confirmingEnableAll = true;
+        _pendingGrantAll = apply;
         InvalidateAndRedraw();
     }
 
-    private void HandleEnableAllConfirmation(ConsoleKeyInfo keyInfo)
+    private const int PromptWidth = 80;
+
+    // The prompt must keep its choices on an 80-column screen, so it shortens the server name.
+    private string BuildGrantAllPrompt()
+    {
+        var audience = ViewModel.SelectedAudience.ToWireValue();
+        var count = ViewModel.DiscoveredTools.Count;
+        const string choices = "  [Y] Grant  [N/Esc] Cancel";
+        var fixedLength = $"Grant all {count} tools on '' to {audience}?{choices}".Length;
+        var server = Truncate(ViewModel.SelectedServer ?? "?", Math.Max(4, PromptWidth - fixedLength));
+        return $"Grant all {count} tools on '{server}' to {audience}?{choices}";
+    }
+
+    private static string Truncate(string value, int width)
+        => value.Length <= width ? value : string.Concat(value.AsSpan(0, Math.Max(0, width - 1)), "…");
+
+    private void HandleGrantAllConfirmation(ConsoleKeyInfo keyInfo)
     {
         switch (keyInfo.Key)
         {
-            case ConsoleKey.Enter:
             case ConsoleKey.Y:
-                _confirmingEnableAll = false;
-                ViewModel.ToggleServerAccess();
+                var apply = _pendingGrantAll;
+                _pendingGrantAll = null;
+                apply?.Invoke();
                 break;
 
+            // Enter cancels too: it is Done and Save everywhere else, so a burst of Enter must not grant.
             case ConsoleKey.N:
+            case ConsoleKey.Enter:
             case ConsoleKey.Escape:
-                _confirmingEnableAll = false;
+                _pendingGrantAll = null;
                 InvalidateAndRedraw();
                 break;
         }

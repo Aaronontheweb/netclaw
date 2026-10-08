@@ -103,18 +103,21 @@ configured. When the approval store cannot be read, the command changes nothing.
 
 Inside the TUI (`netclaw mcp permissions`):
 
-- `Enter` toggles the highlighted tool. In the `All` MCP server mode, the toggle sets
+- `Space` toggles the highlighted tool. In the `All` MCP server mode, the toggle sets
   `Deny` (disabled) or clears it (inherit the server default). In `Allowlist`
   mode, it adds or removes the tool from the grant list.
 - `A` toggles all tools on/off for the current audience
 - `E` enables or disables the whole server for the current audience. In `Allowlist` mode,
-  enabling grants every tool on the server and asks for confirmation first
-  (`Grant all N tools on '<server>' to <audience>?`); `Enter` or `Y` confirms, `N` or `Esc`
-  cancels. The footer shows `[E] Enable all` or `[E] Disable`. The `Space` and arrow keys on
-  the "Server enabled" row ask the same question.
+  enabling grants every tool on the server, so it asks first
+  (`Grant all N tools on '<server>' to <audience>?`). Only `Y` grants; `N`, `Esc` and `Enter`
+  cancel. The footer shows `[E] Enable all` in that case, `[E] Enable` where nothing new is
+  granted (`All` mode), and `[E] Disable` when the server is enabled. `Space` and the arrow
+  keys on the "Server enabled" row ask the same question.
+- `A` toggles all tools on/off for the current audience. Granting every tool (when none is
+  granted) asks the same question first
 - `M` cycles the **server default** approval mode (`Auto → Approval → Deny → Auto`)
 - `P` cycles the **highlighted tool's explicit override** (`inherit → Auto → Approval → Deny → inherit`) — `inherit` removes any explicit override so the tool inherits the server default
-- `S` saves pending changes to `netclaw.json`
+- `Enter` finishes: with unsaved changes it asks `Save changes?` (`Enter` or `Y` saves, `N` discards, `Esc` keeps editing)
 - `←/→` cycles the selected audience
 
 Approval-mode resolution precedence (for MCP tools):
@@ -139,9 +142,13 @@ Use `--grant` to remove a `Deny` override or enable a tool above a `Deny` defaul
 In `Allowlist` mode, `netclaw mcp tools <server> --grant <tools> --audience <name>` also adds
 the server to that audience's `AllowedMcpServers` when it is missing, and prints
 `Also allowed server '<server>' for <Audience>.` Without that entry the grant has no effect.
-When the server has no `McpServerToolGrants` entry yet, the command writes one with only the
-tools you named. `--revoke` never removes the server from `AllowedMcpServers`, even when it
-revokes the last granted tool.
+The result of a `--grant` that allows the server is exactly the tools named on the command line.
+Grants left from before the server was allowed are dropped, and the command prints their names.
+The command then prints `<Audience> can now call: <tool> (mode: <mode>)`, using the approval
+mode the authorizer will apply. A tool whose mode is `Deny` stays granted but cannot be called;
+the command says so and names `ApprovalPolicy.McpServerDefaults.<server>`. It never changes
+approval modes. `--revoke` never changes `AllowedMcpServers`: on a server the audience does not
+allow it changes nothing and exits 1, and revoking the last tool keeps the server in the list.
 
 ### MCP servers in old configurations
 

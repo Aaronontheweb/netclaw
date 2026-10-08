@@ -34,7 +34,7 @@ Wait+Screen@5s /\[✓\] record-tasks/
 Down
 Space
 Wait+Screen@5s /\[ \] Server enabled for personal/
-# Enabling an Allowlist server grants every tool, so it asks first. Escape grants nothing.
+# Enabling an Allowlist server grants every tool, so it asks first. Escape grants nothing and only Y grants.
 Up
 Right
 Wait+Screen@5s /Audience: .*team/
@@ -47,7 +47,7 @@ Escape
 Wait+Screen@5s /\[ \] Server enabled for team/
 Type "e"
 Wait+Screen@5s /Grant all 6 tools on 'smoke-math' to team\?/
-Enter
+Type "y"
 Wait+Screen@5s /\[✓\] Server enabled for team/
 Enter
 Wait+Screen@5s /Enter\/Y.*Save/
