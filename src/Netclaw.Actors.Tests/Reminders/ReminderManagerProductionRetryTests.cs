@@ -193,6 +193,90 @@ public sealed class ReminderManagerProductionRetryTests : TestKit
         Assert.True(definition.Enabled);
     }
 
+    [Fact]
+    public async Task Failed_count_includes_a_failing_one_minute_series_until_it_is_auto_disabled()
+    {
+        var id = await ScheduleIntervalReminderAsync("counted-1m", TimeSpan.FromMinutes(1));
+
+        var elapsedSeconds = -(int)FirstFireDelay.TotalSeconds;
+        foreach (var (attempt, offset) in new[] { 0, 60, 120, 180, 240 }.Select((o, i) => (i + 1, o)))
+        {
+            Advance(TimeSpan.FromSeconds(offset - elapsedSeconds));
+            elapsedSeconds = offset;
+            await AwaitSettledFailuresAsync(id, attempt);
+
+            var expectedFailed = attempt < ReminderManagerActor.FailurePauseThreshold ? 1 : 0;
+            Assert.Equal(expectedFailed, (await GetHealthAsync()).FailedCount);
+        }
+
+        Assert.False(_definitionStore.Get(id)!.Enabled);
+    }
+
+    [Fact]
+    public async Task Failing_oneshot_ends_failed_and_is_never_pruned()
+    {
+        var id = await ScheduleOneShotAsync("failing-oneshot");
+
+        // A one-shot has no delivery deadline, so Akka.Reminders keeps retrying
+        // (60, 120, 240 and 480 seconds apart) until the fifth failure disables it.
+        var elapsedSeconds = -(int)FirstFireDelay.TotalSeconds;
+        foreach (var (attempt, offset) in new[] { 0, 60, 180, 420, 900 }.Select((o, i) => (i + 1, o)))
+        {
+            Advance(TimeSpan.FromSeconds(offset - elapsedSeconds));
+            elapsedSeconds = offset;
+            await AwaitSettledFailuresAsync(id, attempt);
+        }
+
+        var definition = _definitionStore.Get(id);
+        Assert.NotNull(definition);
+        Assert.False(definition.Enabled);
+        Assert.Equal(ReminderTerminalOutcome.Failed, definition.TerminalOutcome);
+
+        // Well past the retention period, a prune keeps it.
+        Advance(ReminderManagerActor.TerminalRetention + TimeSpan.FromDays(1));
+        var manager = ActorRegistry.For(Sys).Get<ReminderManagerActorKey>();
+        manager.Tell(ReminderManagerActor.PruneTerminalReminders.Instance);
+        await GetHealthAsync(); // the manager handles messages one at a time, so the prune has finished
+
+        var kept = _definitionStore.Get(id);
+        Assert.NotNull(kept);
+        Assert.Equal(ReminderTerminalOutcome.Failed, kept.TerminalOutcome);
+    }
+
+    private async Task<ReminderId> ScheduleOneShotAsync(string id)
+    {
+        var now = _timeProvider.GetUtcNow();
+        var fireAt = now + FirstFireDelay;
+        var definition = new ReminderDefinition
+        {
+            Id = new ReminderId(id),
+            Title = id,
+            Instructions = "Check status",
+            Delivery = new ReminderDelivery { Kind = DeliveryKind.None },
+            Schedule = new ReminderSchedule { Type = ReminderScheduleType.OneShot, FireAt = fireAt },
+            Audience = TrustAudience.Team,
+            Boundary = TrustBoundary.Team,
+            Enabled = true,
+            CreatedBy = "test",
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+
+        var manager = ActorRegistry.For(Sys).Get<ReminderManagerActorKey>();
+        var saved = await manager.Ask<ReminderSavedResponse>(
+            new SaveReminderCommand(
+                definition,
+                Authorization: new ReminderAudienceAuthorizationContext(TrustAudience.Team, "test")),
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        Assert.True(saved.Success, saved.ErrorMessage);
+        return definition.Id;
+    }
+
+    private Task<ReminderHealthResponse> GetHealthAsync() =>
+        ActorRegistry.For(Sys).Get<ReminderManagerActorKey>().Ask<ReminderHealthResponse>(
+            GetReminderHealthQuery.Instance, TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+
     private async Task<ReminderId> ScheduleIntervalReminderAsync(string id, TimeSpan interval)
     {
         var now = _timeProvider.GetUtcNow();
