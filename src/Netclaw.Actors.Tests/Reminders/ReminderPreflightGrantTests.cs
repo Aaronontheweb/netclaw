@@ -218,7 +218,7 @@ public sealed class ReminderPreflightGrantTests : LlmSessionTestBase
 
     private string MarkerCommand => _environment.Grammar == ShellGrammar.PowerShell
         ? "Add-Content -NoNewline -Path launch-count.txt -Value x"
-        : "printf x >> launch-count.txt";
+        : "printf x | tee -a launch-count.txt";
 
     private string ScheduledPrompt() => $"Clean the cache folder with: {MarkerCommand}";
 

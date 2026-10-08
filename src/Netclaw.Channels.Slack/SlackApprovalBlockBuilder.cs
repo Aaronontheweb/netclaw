@@ -287,6 +287,16 @@ internal static class SlackApprovalBlockBuilder
         var verbs = ResolveDisplayVerbs(request);
         var location = ResolveHeaderLocation(request);
 
+        // A request with no candidate has its full command text as its one
+        // display verb. The request line already shows that text.
+        if (request.IsMessy
+            && request.Candidates.Count == 0
+            && verbs.Count == 1
+            && string.Equals(verbs[0], request.DisplayText, StringComparison.Ordinal))
+        {
+            return $"Approve this command in {location}?";
+        }
+
         return verbs.Count == 1
             ? $"Approve {ApprovalDisplayTextFormatter.Truncate(verbs[0], MaxHeaderVerbChars)} in {location}?"
             : $"Approve in {location}?";

@@ -63,7 +63,7 @@ public partial class DispatchingToolExecutorTests
             new TestToolExecutionContextOptions { Audience = TrustAudience.Personal, Boundary = TrustBoundary.Personal });
         var marker = Path.Combine(directory.Path, "must-not-exist.txt");
         var call = CreateToolCall("launch-revoked", ShellTool.ToolName,
-            ToolInput.Create("Command", "echo forbidden > must-not-exist.txt"));
+            ToolInput.Create("Command", "touch must-not-exist.txt"));
 
         await Assert.ThrowsAsync<ToolApprovalRequiredException>(async () =>
         {
@@ -102,7 +102,7 @@ public partial class DispatchingToolExecutorTests
         var context = TestToolExecutionContext.CreateBound("launch/exact", sessionDirectory,
             new TestToolExecutionContextOptions { Audience = TrustAudience.Personal, Boundary = TrustBoundary.Personal });
         var call = CreateToolCall("launch-exact", ShellTool.ToolName,
-            ToolInput.Create("Command", "echo once >> count.txt"));
+            ToolInput.Create("Command", "printf 'once\\n' | tee -a count.txt"));
         var launch = await executor.PrepareShellLaunchAsync(call, context, TestContext.Current.CancellationToken);
 
         call.Arguments!["Command"] = "echo changed > changed.txt";
@@ -147,7 +147,7 @@ public partial class DispatchingToolExecutorTests
         var context = TestToolExecutionContext.CreateBound("launch/one-time", directory.Path,
             new TestToolExecutionContextOptions { Audience = TrustAudience.Personal, Boundary = TrustBoundary.Personal });
         var call = CreateToolCall("launch-one-time", ShellTool.ToolName,
-            ToolInput.Create("Command", "echo approved > once.txt"));
+            ToolInput.Create("Command", "printf approved | tee once.txt"));
         var decision = await executor.EvaluateAuthorizationAsync(call, context, TestContext.Current.CancellationToken);
         var approval = Assert.IsType<ToolApprovalContext>(decision.ApprovalContext);
         context.Approval.SeedOneTimeConsent(new OneTimeConsent(ShellTool.ToolName, OneTimeApprovalKeys.Create(approval)));

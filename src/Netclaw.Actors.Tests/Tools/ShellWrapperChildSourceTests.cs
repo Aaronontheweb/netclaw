@@ -207,7 +207,7 @@ public sealed class ShellWrapperChildSourceTests(ShellApprovalMatrixFixture fixt
 
         Assert.Equal(ApprovalOutcome.RequiresApproval, interactive.Outcome);
         Assert.True(interactive.Prompt!.IsMessy);
-        Assert.Empty(interactive.Prompt.CandidateVerbs);
+        Assert.Equal([command], interactive.Prompt.CandidateVerbs);
         Assert.Equal(["approve_once", "deny"], interactive.Prompt.OptionKeys);
         Assert.Equal(ApprovalOutcome.Denied, unattended.Outcome);
         Assert.Equal(ToolAuthorizer.UnattendedApprovalRequired, unattended.DenyReason);

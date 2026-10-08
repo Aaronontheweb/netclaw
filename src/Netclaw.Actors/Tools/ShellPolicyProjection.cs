@@ -43,7 +43,10 @@ internal sealed record ShellPolicyCandidate(
     /// <summary>The directory that a causal list changed to before this diagnostic, or null.</summary>
     internal string? IntentDirectory { get; init; }
 
-    internal bool CanRequestStoredGrant => !ApprovalPatternMatching.IsPureSideEffect(Candidate);
+    // A command that runs no program needs no grant: the file rules judge its redirects.
+    internal bool CanRequestStoredGrant =>
+        !ApprovalPatternMatching.IsPureSideEffect(Candidate)
+        && !Candidate.RunsNoProgram;
 
     internal bool CanUseRealReviewedSafePolicy =>
         Role == ShellPolicyCandidateRole.Ordinary

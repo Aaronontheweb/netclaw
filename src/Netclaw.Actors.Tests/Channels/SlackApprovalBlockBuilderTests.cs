@@ -61,6 +61,21 @@ public sealed class SlackApprovalBlockBuilderTests
         Assert.DoesNotContain("• `git status`", text); // No redundant bullet for single-verb
     }
 
+    // A prompt with no candidate has the full command text as its one display
+    // verb. The request line shows that text, so the header does not repeat it.
+    [Fact]
+    public void Prompt_without_a_candidate_uses_a_short_header()
+    {
+        var request = Request("$cmd > out.txt", ["$cmd > out.txt"], "/home/user/repos/foo", MessyRow(), isMessy: true)
+            with { Patterns = [] };
+
+        var text = SlackApprovalBlockBuilder.BuildApprovalText(request);
+
+        Assert.Contains("`shell_execute`: `$cmd > out.txt`", text);
+        Assert.Contains("Approve this command in /home/user/repos/foo?", text);
+        Assert.DoesNotContain("Approve $cmd", text);
+    }
+
     [Fact]
     public void Multi_verb_uses_generic_header_with_bulleted_verbs()
     {

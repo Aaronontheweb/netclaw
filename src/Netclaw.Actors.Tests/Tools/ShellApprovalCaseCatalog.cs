@@ -202,12 +202,23 @@ internal sealed record ExpectedApproval(
             approvalChecks ?? (reason == ApprovalAllowReason.ReviewedSafePolicy ? 1 : 0),
             approvalMatches);
 
+    /// <summary>
+    /// The expected display candidate of a prompt that names no command: the
+    /// full command text (<see cref="ToolAuthorizer.ShowFullCommandText"/>).
+    /// </summary>
+    public const string FullCommandText = "<full command text>";
+
     public static ExpectedApproval Require(
         IReadOnlyList<string> candidates,
         bool isMessy = false,
         int approvalChecks = 1,
         params string[] approvalMatches)
-        => new(
+    {
+        // Owner decision (October 2026): a prompt always names what it asks for.
+        if (candidates.Count == 0)
+            throw new ArgumentException("A prompt with no displayable candidate is a defect. Use RequireFullText.", nameof(candidates));
+
+        return new(
             ApprovalOutcome.RequiresApproval,
             null,
             null,
@@ -215,6 +226,11 @@ internal sealed record ExpectedApproval(
             isMessy,
             approvalChecks,
             approvalMatches);
+    }
+
+    // A source with no proved command word: one "Once" prompt that shows the full command text.
+    public static ExpectedApproval RequireFullText(int approvalChecks = 0)
+        => Require([FullCommandText], isMessy: true, approvalChecks);
 
     // A correction asks the model for a different call. The call does not run.
     public static ExpectedApproval Correct(int approvalChecks = 1, params string[] approvalMatches)
@@ -615,11 +631,13 @@ public static class ShellApprovalCases
             Bash("ls src 2>/dev/null > listing.txt"),
             Approvals.None,
             ExpectedApproval.Require(["ls"])),
+        // Owner decision (October 2026): echo runs no program, so the file
+        // rules judge the redirect target. A Personal profile may write there.
         Case(
-            "echo-external-redirect-prompts",
+            "echo-external-redirect-runs-no-program",
             Bash($"echo x > {TemporaryFile("netclaw-approval-echo.txt")}"),
             Approvals.None,
-            ExpectedApproval.Require(["echo x"])),
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
         // On a POSIX host a backslash is a file-name character, not a separator.
         Case(
             "reviewed-backslash-pattern-allows",
@@ -814,7 +832,7 @@ public static class ShellApprovalCases
             "native-dynamic-file-reference-fails-closed",
             Bash("curl --data=@$REQUEST_FILE https://example.invalid/api"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "curl"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "local-glob-allows-safe-verb",
             Bash("ls *.txt"),
@@ -1115,7 +1133,7 @@ public static class ShellApprovalCases
             "powershell7-dynamic-command-fails-closed",
             PowerShell7("& $command"),
             Approvals.PersistentAnywhere("Get-ChildItem"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-treats-bash-payload-as-ordinary-argument",
             PowerShell7("bash -lc 'Remove-Item victim.txt'"),
@@ -1140,32 +1158,32 @@ public static class ShellApprovalCases
             "powershell7-subexpression-quoted-path-fails-closed",
             PowerShell7("Get-Content \"$(Get-Date)\""),
             Approvals.PersistentAnywhere("Get-Content", "Get-Date"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-subexpression-multiple-nested-fails-closed",
             PowerShell7("Get-Content \"$(Write-Output $(Get-Date))\" \"$(Get-Location)\""),
             Approvals.PersistentAnywhere("Get-Content", "Write-Output", "Get-Date", "Get-Location"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-subexpression-redirect-target-fails-closed",
             PowerShell7("Get-ChildItem > \"$(Write-Output output.txt)\""),
             Approvals.PersistentAnywhere("Get-ChildItem", "Write-Output"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-subexpression-state-propagates",
             PowerShell7(@"Get-Content ""$(Set-Location C:\temp; Get-Location)""; Get-Content .\after.txt"),
             Approvals.PersistentAnywhere("Get-Content", "Set-Location", "Get-Location"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-directory-change-does-not-create-causal-scope",
             PowerShell7(@"Set-Location C:\Temp; Get-Content result.log"),
             Approvals.PersistentAnywhere("Set-Location", "Get-Content"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-subexpression-call-operator-fails-closed",
             PowerShell7("& $(Write-Output Get-Date)"),
             Approvals.PersistentAnywhere("Write-Output", "Get-Date"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-subexpression-escaped-literal-allows",
             PowerShell7(@"Get-Content "".\`$(Remove-Item victim.txt)"""),
@@ -1175,7 +1193,7 @@ public static class ShellApprovalCases
             "powershell7-subexpression-malformed-fails-closed",
             PowerShell7("Get-Content \"$(Get-Date\""),
             Approvals.PersistentAnywhere("Get-Content", "Get-Date"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-direct-region-reuses-body-grant",
             PowerShell7(@"& { Remove-Item .\victim.txt }"),
@@ -1241,7 +1259,7 @@ public static class ShellApprovalCases
             Approvals.PersistentHere(
                 ApprovalDirectoryShape.Project,
                 "ForEach-Object"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         // #2306: the script block gives Unknown command words, so no grant covers ForEach-Object.
         Case(
             "powershell51-split-index-join-fallback-reuses-host-grant",
@@ -1256,14 +1274,14 @@ public static class ShellApprovalCases
             Approvals.PersistentHere(
                 ApprovalDirectoryShape.Project,
                 "ForEach-Object"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-method-expression-with-host-grant-stays-strict",
             PowerShell7("Get-ChildItem | ForEach-Object { $_.Delete() }"),
             Approvals.PersistentHere(
                 ApprovalDirectoryShape.Project,
                 "ForEach-Object"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-unknown-region-grants-do-not-cover-incomplete-receiver",
             PowerShell7(@"Invoke-Custom { Remove-Item .\victim.txt }"),
@@ -1271,7 +1289,7 @@ public static class ShellApprovalCases
                 ApprovalDirectoryShape.Project,
                 "Invoke-Custom",
                 "Remove-Item"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-alias-resolves-before-safe-verb-check",
             PowerShell7("gci"),
@@ -1291,12 +1309,12 @@ public static class ShellApprovalCases
             "powershell7-provider-drive-is-reviewed",
             PowerShell7(@"Get-Content Env:\Path"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-environment-provider-value-stays-strict",
             PowerShell7("Get-Content Env:SECRET"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-reviewed-gh-run-view-web-allows",
             // gh run view only reads; --web opens a browser and writes no data.
@@ -1333,12 +1351,12 @@ public static class ShellApprovalCases
             "powershell7-output-variable-execution-stays-strict",
             PowerShell7("Get-Date -OutVariable marker; & $marker"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-incomplete-pipeline-fails-closed",
             PowerShell7("Get-ChildItem |"),
             Approvals.PersistentAnywhere("Get-ChildItem"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         // #2306: reviewed-safe policy covers the read; the grant is not needed.
         Case(
             "powershell7-foreach-public-path-facts-reuse",
@@ -1349,27 +1367,27 @@ public static class ShellApprovalCases
             "powershell7-foreach-mutation-inherited-state-prompts",
             PowerShell7("foreach ($f in @('a.txt', 'b.txt')) { Remove-Item -LiteralPath $f }"),
             Approvals.PersistentAnywhere("Remove-Item"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-foreach-dynamic-identity-fails-closed",
             PowerShell7("foreach ($f in @('a.txt', 'b.txt')) { & $command $f }"),
             Approvals.PersistentAnywhere("Get-Content"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-foreach-child-unknown-state-prompts",
             PowerShell7("pwsh -NoProfile -NonInteractive -Command 'foreach ($f in @(\"a.txt\", \"b.txt\")) { Get-Content -LiteralPath $f }'"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-foreach-child-mutation-prompts",
             PowerShell7("pwsh -NoProfile -NonInteractive -Command 'foreach ($f in @(\"a.txt\", \"b.txt\")) { Remove-Item -LiteralPath $f }'"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-foreach-child-grant-does-not-cover-unknown-state",
             PowerShell7("pwsh -NoProfile -NonInteractive -Command 'foreach ($f in @(\"a.txt\", \"b.txt\")) { Remove-Item -LiteralPath $f }'"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "Remove-Item"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell7-foreach-child-unknown-state-hard-deny",
             PowerShell7("pwsh -NoProfile -NonInteractive -Command 'foreach ($f in @(\"a\", \"b\")) { Stop-Process -Name netclaw }'"),
@@ -1384,7 +1402,7 @@ public static class ShellApprovalCases
             "powershell51-directory-change-does-not-create-causal-scope",
             WindowsPowerShell51(@"Set-Location C:\Temp; Get-Content result.log"),
             Approvals.PersistentAnywhere("Set-Location", "Get-Content"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         // #2306: reviewed-safe policy covers the read; the grant is not needed.
         Case(
             "powershell51-foreach-public-path-facts-reuse",
@@ -1395,12 +1413,12 @@ public static class ShellApprovalCases
             "powershell51-foreach-child-grant-does-not-cover-unknown-state",
             WindowsPowerShell51("powershell.exe -NoProfile -NonInteractive -Command 'foreach ($f in @(\"a.txt\", \"b.txt\")) { Remove-Item -LiteralPath $f }'"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "Remove-Item"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell51-pipeline-chain-fails-closed",
             WindowsPowerShell51("Get-ChildItem && Get-Content .\\a.txt"),
             Approvals.PersistentAnywhere("Get-ChildItem", "Get-Content"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "powershell51-stop-process-hard-deny",
             WindowsPowerShell51("Stop-Process -Name netclaw"),
@@ -1516,17 +1534,17 @@ public static class ShellApprovalCases
             "bash-substitution-malformed-fails-closed",
             Bash("cat \"$(git status\""),
             Approvals.PersistentAnywhere("cat", "git status"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "dynamic-path-fails-closed",
             Bash("cat \"$FILE\""),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "dynamic-redirect-fails-closed",
             Bash("git status > \"$OUTPUT\""),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "fd-dup-redirect-safe-verb-allows",
             Bash("git status 2>&1"),
@@ -1571,7 +1589,7 @@ public static class ShellApprovalCases
             "dynamic-fd-redirect-fails-closed",
             Bash("git status 2>&$FD"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "background-list-prompts-for-mutating-tail",
             Bash("git status & git push"),
@@ -1581,7 +1599,7 @@ public static class ShellApprovalCases
             "unbalanced-quote-fails-closed",
             Bash("git push \"unterminated"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "multiline-argument-prompts",
             Bash("gh issue comment 123 --body \"first line\nsecond line\""),
@@ -1684,7 +1702,7 @@ public static class ShellApprovalCases
             "cd-dynamic-target-stays-one-time",
             Bash("cd \"$TARGET\" && inspect; cat *.md"),
             Approvals.PersistentAnywhere("cd", "inspect", "cat"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "cd-previous-directory-stays-one-time",
             Bash("cd - && inspect; cat *.md"),
@@ -1704,7 +1722,7 @@ public static class ShellApprovalCases
             "cd-in-function-stays-one-time",
             Bash("f() { cd /netclaw-approval-external/cd-list; }; f; cat *.md"),
             Approvals.PersistentAnywhere("f", "cd", "cat"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "side-effect-before-mutation-prompts",
             Bash("echo ready && git push"),
@@ -1724,7 +1742,7 @@ public static class ShellApprovalCases
             "dynamic-heredoc-cat-prompts",
             Bash("cat <<EOF\n$value\nEOF"),
             Approvals.PersistentAnywhere("cat"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "literal-here-string-cat-allows",
             Bash("cat <<< \"hello\""),
@@ -1734,7 +1752,7 @@ public static class ShellApprovalCases
             "dynamic-here-string-cat-prompts",
             Bash("cat <<< \"$value\""),
             Approvals.PersistentAnywhere("cat"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "here-string-cat-with-argument-prompts",
             Bash("cat -n <<< \"hello\""),
@@ -1920,15 +1938,16 @@ public static class ShellApprovalCases
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "rm"),
             ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:rm")),
         Case(
-            "workload-edit-printf-redirect-prompts",
+            "workload-edit-printf-redirect-runs-no-program",
             Bash("printf '%s\\n' \"text\" > reports/output.txt"),
             Approvals.None,
-            ExpectedApproval.Require(["printf text"])),
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        // A command that runs no program never asks for a grant.
         Case(
             "workload-edit-printf-redirect-grant-allows",
             Bash("printf '%s\\n' \"text\" > reports/output.txt"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "printf"),
-            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:printf text")),
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
         Case(
             "workload-edit-search-pipeline-redirect-in-project-prompts-for-writer",
             Bash("grep -R \"error\" logs | head -20 > reports/errors.txt"),
@@ -1966,22 +1985,22 @@ public static class ShellApprovalCases
             "workload-search-loop-child-unknown-state-prompts",
             Bash("bash --noprofile --norc -c 'for f in src/a.cs src/b.cs; do grep -n TODO \"$f\"; done'"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "workload-edit-loop-child-grant-does-not-cover-unknown-state",
             Bash("bash --noprofile --norc -c 'for f in src/a.txt src/b.txt; do rm -- \"$f\"; done'"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "rm"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "workload-search-dynamic-root-remains-complex",
             Bash("grep -R \"error\" \"$SEARCH_ROOT\""),
             Approvals.PersistentAnywhere("grep"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "workload-search-substitution-pipeline-redirect-remains-complex",
             Bash("pattern=$(printf '%s' error); grep -R \"$pattern\" src | head -20 > reports/errors.txt"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "grep", "head", "printf"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "workload-search-loop-substitution-pipeline-redirect-remains-complex",
             Bash("for f in logs/*.log; do grep -n \"$(printf '%s' error)\" \"$f\" | head -20 > \"reports/$f.txt\"; done"),
@@ -1999,10 +2018,210 @@ public static class ShellApprovalCases
             Approvals.None,
             ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
         Case(
-            "echo-redirect-prompts",
+            "echo-redirect-runs-no-program",
             Bash("echo hello > result.txt"),
             Approvals.None,
-            ExpectedApproval.Require(["echo hello"])),
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+
+        // Owner decision (October 2026): a command that runs no program gets no
+        // grant candidate and no prompt. The file rules of the audience judge
+        // each redirect target. A program, an unknown program word, or a target
+        // that is not one proved file keeps a prompt that shows its text.
+        Case(
+            "no-program-redirect-only-allows",
+            Bash52("> drafts.json"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-assignment-only-allows",
+            Bash52("x=1"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        // Without a proved fresh Bash state the parser rejects the assignment.
+        Case(
+            "no-program-assignment-unknown-state-shows-full-text",
+            Bash("x=1"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        Case(
+            "no-program-colon-redirect-allows",
+            Bash52(": > drafts.json"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-true-redirect-allows",
+            Bash52("true > drafts.json"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-printf-redirect-allows",
+            Bash52("printf 'a' > drafts.txt"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-echo-redirect-allows",
+            Bash52("echo hi > drafts.txt"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-redirect-only-unattended-allows",
+            Bash52("> drafts.json", interactive: false),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        // The real command from 0.27.1 asked "Approve : in .../drafts?".
+        Case(
+            "no-program-harvest-drafts-allows",
+            Bash52("printf 'a\\tb\\n' > drafts-harvest.tsv && : > drafts-harvest.json"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-assigned-colon-redirect-allows",
+            Bash52("x=1; : > drafts.json"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-outside-project-redirect-allows",
+            Bash52("printf a > ../outside/x"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-read-redirect-allows",
+            Bash52(": < notes.txt"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-secrets-redirect-denies",
+            Bash52(": > ~/.netclaw/config/secrets.json"),
+            Approvals.None,
+            ExpectedApproval.Deny("shell_references_protected_path")),
+        Case(
+            "no-program-read-redirect-of-secrets-denies",
+            Bash52(": < ~/.netclaw/config/secrets.json"),
+            Approvals.None,
+            ExpectedApproval.Deny("shell_references_protected_path")),
+        // The managed temporary directory advice replaces a prompt. A command
+        // that runs no program has no prompt, so both spellings run.
+        Case(
+            "no-program-temporary-root-redirect-allows",
+            Bash52(": > /tmp/netclaw-no-program.txt"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        // A source with no command at all: an empty case arm and an empty subshell.
+        Case(
+            "no-program-empty-case-allows",
+            Bash52("case x in x) ;; esac"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-case-substitution-still-prompts",
+            Bash52("case $(id) in x) ;; esac"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        // Limits: the parser gives no proved target or no parse for these
+        // forms, so they keep a prompt that shows their text. An unattended
+        // call denies them.
+        Case(
+            "no-program-limit-sequence-after-cd-prompts",
+            Bash52("cd sub; : > out.txt"),
+            Approvals.None,
+            ExpectedApproval.Require([": > out.txt"])),
+        Case(
+            "no-program-limit-subshell-after-cd-prompts",
+            Bash52("(cd sub; : > out.txt)"),
+            Approvals.None,
+            ExpectedApproval.Require([": > out.txt"])),
+        Case(
+            "no-program-limit-combined-operator-prompts",
+            Bash52(": >& out.txt"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        Case(
+            "no-program-limit-loop-target-prompts",
+            Bash52("for n in 1 2; do : > out$n.txt; done"),
+            Approvals.None,
+            ExpectedApproval.Require([": > out$n.txt"])),
+        Case(
+            "no-program-limit-clobber-operator-prompts",
+            Bash52(">| out.txt"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        Case(
+            "no-program-limit-read-write-operator-prompts",
+            Bash52(": <> out.txt"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        Case(
+            "no-program-limit-two-assignments-prompt",
+            Bash52("x=1 y=2"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        Case(
+            "no-program-limit-array-assignment-prompts",
+            Bash52("a=(1 2)"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        Case(
+            "no-program-limit-append-assignment-prompts",
+            Bash52("x+=1"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        Case(
+            "no-program-limit-sequence-after-cd-unattended-denies",
+            Bash52("cd sub; : > out.txt", interactive: false),
+            Approvals.None,
+            ExpectedApproval.DenyUnattended()),
+        // A substitution in an operand is its own command and keeps its prompt.
+        Case(
+            "no-program-substitution-still-prompts",
+            Bash52("echo $(rm -rf build) > drafts.txt"),
+            Approvals.None,
+            ExpectedApproval.Require(["rm"])),
+        Case(
+            "no-program-program-redirect-still-prompts",
+            Bash52("date > drafts.txt"),
+            Approvals.None,
+            ExpectedApproval.Require(["date"])),
+        // An operand that is not proved data, with an assignment, keeps the F3 digest.
+        Case(
+            "no-program-assigned-glob-operand-prompts",
+            Bash52("d=key; echo ../x/\"${d}s\"/* > drafts.txt"),
+            Approvals.None,
+            ExpectedApproval.Require(["echo"])),
+        Case(
+            "no-program-dynamic-program-shows-full-text",
+            Bash52("$cmd > drafts.txt"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        Case(
+            "no-program-eval-shows-full-text",
+            Bash52("eval x"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        Case(
+            "no-program-assignment-redirect-shows-full-text",
+            Bash52("x=1 > drafts.txt"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
+        Case(
+            "no-program-dynamic-target-shows-full-text",
+            Bash52(": > \"$f\""),
+            Approvals.None,
+            ExpectedApproval.Require([": > \"$f\""])),
+        Case(
+            "no-program-glob-target-shows-full-text",
+            Bash52(": > *.json"),
+            Approvals.None,
+            ExpectedApproval.Require([": > *.json"])),
+        Case(
+            "no-program-network-device-shows-full-text",
+            Bash52("printf x > /dev/tcp/127.0.0.1/9"),
+            Approvals.PersistentAnywhere("printf"),
+            ExpectedApproval.Require(["printf x > /dev/tcp/127.0.0.1/9"])),
+        Case(
+            "no-program-redirect-only-network-device-shows-full-text",
+            Bash52("> /dev/tcp/127.0.0.1/9"),
+            Approvals.None,
+            ExpectedApproval.RequireFullText()),
         Case(
             "echo-control-word-argument-allows",
             Bash("echo done"),
@@ -2018,14 +2237,13 @@ public static class ShellApprovalCases
             Bash("git push; echo $?"),
             Approvals.None,
             ExpectedApproval.Require(["git push"])),
-        // The ID keeps its old name. "$?" has a run-time value, so the model
-        // cannot write the word literally. The call gets a prompt, not
-        // a rewrite correction (owner, 2026-10-07: satisfiable corrections only).
+        // Owner decision (October 2026): echo runs no program, so it needs no
+        // command words and no grant. The file rules judge the redirect target.
         Case(
-            "unquoted-status-output-redirect-remains-complex",
+            "unquoted-status-output-redirect-runs-no-program",
             Bash($"echo $? > {TemporaryFile("marker")}"),
             Approvals.PersistentAnywhere("echo"),
-            ExpectedApproval.Require(["echo"])),
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
         // A file name from a glob loop is known only at run time, so the call
         // gets a one-time prompt, not a rewrite correction.
         Case(
@@ -2037,22 +2255,22 @@ public static class ShellApprovalCases
             "printf-variable-target-hidden-execution-fails-closed",
             Bash("printf -v'value[$(printf marker >&2)0]' '%s' data"),
             Approvals.PersistentAnywhere("printf"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "recursive-builtin-eval-fails-closed",
             Bash("command -p -- builtin -- eval 'printf marker >&2'"),
             Approvals.PersistentAnywhere("command", "builtin", "eval", "printf"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "process-substitution-fails-closed",
             Bash("cat <(git push)"),
             Approvals.PersistentAnywhere("cat", "git push"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "arithmetic-expansion-fails-closed",
             Bash("echo $(( $(id) + 1 ))"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         // ShellSyntaxTree 0.4.0-beta.18 parses a bounded $((...)). Its value is
         // data: never a path and never a command word. Bash evaluates the value
         // of a variable read as code, so a read without a proved integer value
@@ -2066,78 +2284,78 @@ public static class ShellApprovalCases
             "arithmetic-unproved-read-fails-closed",
             Bash("echo $((count + 1))"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "arithmetic-command-fails-closed",
             Bash("(( p = 0 ))"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "function-definition-fails-closed",
             Bash("deploy() { git push; }; deploy"),
             Approvals.PersistentAnywhere("git push"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "unknown-state-named-parameter-fails-closed",
             Bash("printf '%s' \"$value\""),
             Approvals.PersistentAnywhere("printf"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "nameref-deferred-execution-fails-closed",
             Bash("declare -a values; declare -n current='values[$(printf marker >&2)0]'; " +
                 "cat <<EOF\n${current}\nEOF"),
             Approvals.PersistentAnywhere("declare", "printf", "cat"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "source-builtin-payload-fails-closed",
             Bash("source ./bootstrap.sh"),
             Approvals.PersistentAnywhere("source"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "exec-command-resolution-mutation-fails-closed",
             Bash("exec git status"),
             Approvals.PersistentAnywhere("exec", "git status"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "hash-command-resolution-mutation-fails-closed",
             Bash("hash -p /usr/bin/git git && git status"),
             Approvals.PersistentAnywhere("hash", "git status"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "alias-command-resolution-mutation-fails-closed",
             Bash("alias inspect='git status'; inspect"),
             Approvals.PersistentAnywhere("alias", "inspect", "git status"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "shell-option-mutation-fails-closed",
             Bash("shopt -s expand_aliases && git status"),
             Approvals.PersistentAnywhere("shopt", "git status"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "builtin-enable-mutation-fails-closed",
             Bash("enable -n printf && git status"),
             Approvals.PersistentAnywhere("enable", "git status"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "time-reserved-form-fails-closed",
             Bash("time git status"),
             Approvals.PersistentAnywhere("git status"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "negation-reserved-form-fails-closed",
             Bash("! git status"),
             Approvals.PersistentAnywhere("git status"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "coprocess-reserved-form-fails-closed",
             Bash("coproc git status"),
             Approvals.PersistentAnywhere("git status"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "brace-group-reserved-form-fails-closed",
             Bash("{ git status; }"),
             Approvals.PersistentAnywhere("git status"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "inline-python-prompts-for-interpreter",
             Bash("python3 -c \"print('hello')\""),
@@ -2152,12 +2370,12 @@ public static class ShellApprovalCases
             "eval-prompts-for-interpreter",
             Bash("eval \"$CODE\""),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "eval-grant-does-not-cover-dynamic-payload",
             Bash("eval \"$CODE\""),
             Approvals.PersistentAnywhere("eval"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "inline-python-heredoc-fails-closed",
             Bash("python3 <<'PY'\nprint('hello')\nPY"),
@@ -2167,12 +2385,12 @@ public static class ShellApprovalCases
             "empty-command-fails-closed",
             Bash(string.Empty),
             Approvals.None,
-            ExpectedApproval.Require([], approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "whitespace-command-fails-closed",
             Bash("   "),
             Approvals.None,
-            ExpectedApproval.Require([], approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
 
         Case(
             "session-grant-allows",
@@ -2534,7 +2752,7 @@ public static class ShellApprovalCases
             "conditional-expression-environment-value-prompts",
             Bash52("[[ -n $FOO ]]"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "test-builtin-two-environment-values-prompts",
             Bash52("[ \"$a\" = \"$b\" ]"),
@@ -2754,7 +2972,7 @@ public static class ShellApprovalCases
             "unknown-program-word-with-glob-word-keeps-prompt",
             Bash52("$(date) rev-list HEAD...origin/$(git branch --show-current)"),
             Approvals.PersistentAnywhere("git rev-list", "git branch"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "glob-word-with-unknown-redirect-keeps-prompt",
             Bash52("f=$(date); git log origin/$f > \"$f\".log"),
@@ -2935,7 +3153,7 @@ public static class ShellApprovalCases
             "loop-program-word-gets-no-twin",
             Bash52("for p in /bin/rm; do $p x; done"),
             Approvals.PersistentAnywhere("rm", "/bin/rm"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         // A loop value in the verb slot gives each twin its own command words.
         Case(
             "loop-verb-twins-use-reviewed-safe-policy",
@@ -2991,7 +3209,7 @@ public static class ShellApprovalCases
             "allexport-assignment-fails-closed",
             Bash52("set -a; b=1; env"),
             Approvals.PersistentAnywhere("env"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         // The owner's traffic: the assignment stays in the shell, so only the
         // commands need coverage.
         Case(
@@ -3067,12 +3285,12 @@ public static class ShellApprovalCases
             "escaped-crlf-fails-closed",
             Bash52("echo a\\\r\ntouch x"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "bare-cr-before-hash-fails-closed",
             Bash52("echo a\r# ; touch x"),
             Approvals.None,
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         // Positive controls: a "#" that starts a word is a comment, and a
         // backslash-newline pair outside an expansion joins the words.
         Case(
@@ -3323,7 +3541,7 @@ public static class ShellApprovalCases
             "power-shell-option-value-expansion-before-glob-prompts-with-folder-grant",
             PowerShell7("dotnet build --output=$env:USERPROFILE\\*.x"),
             Approvals.PersistentHere(ApprovalDirectoryShape.Project, "dotnet build"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         // PowerShell: an expansion in the value gets the same rule, and a
         // value that is not a path adds no scope.
         Case(

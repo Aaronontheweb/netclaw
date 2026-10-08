@@ -27,12 +27,13 @@ public sealed class LongCommandCorrectionTests(ShellApprovalMatrixFixture fixtur
 
     private static CancellationToken Ct => TestContext.Current.CancellationToken;
 
-    // printf writes the note. The prompt shows the full command, so the length
-    // of the command is the length of the prompt text.
+    // tee writes the note, so the command runs a program and prompts. The
+    // prompt shows the full command, so the length of the command is the
+    // length of the prompt text.
     private static string WriteNote(int commandLength)
     {
         const string head = "printf '%s' '";
-        const string tail = "' > " + Note;
+        const string tail = "' | tee " + Note;
         return head + new string('b', commandLength - head.Length - tail.Length) + tail;
     }
 

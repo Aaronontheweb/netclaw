@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Collections.Immutable;
 using Netclaw.Configuration;
+using Netclaw.Security.Authorization.Filesystem;
 using Netclaw.Tools;
 using ShellSyntaxTree;
 
@@ -61,6 +62,7 @@ internal sealed class ShellCommandAnalyzer
         var knownRegionArguments = new HashSet<ClauseElement>(
             ReferenceEqualityComparer.Instance);
         var syntaxProofComplete = true;
+        var provesNoCommand = false;
         var failure = Analyze(
             command,
             workingDirectory,
@@ -69,7 +71,8 @@ internal sealed class ShellCommandAnalyzer
             commands,
             denyOnlyClauses,
             knownRegionArguments,
-            ref syntaxProofComplete);
+            ref syntaxProofComplete,
+            ref provesNoCommand);
         return new ShellCommandAnalysis(
             _environment,
             command,
@@ -81,6 +84,7 @@ internal sealed class ShellCommandAnalyzer
             syntaxProofComplete)
         {
             ManagedTemporary = temporary,
+            ProvesNoCommand = provesNoCommand,
             ScreenClauses = _screenState is null
                             && _environment.Grammar == ShellGrammar.Bash
                             && (failure != ShellAnalysisFailure.None || commands.Count == 0)
@@ -136,7 +140,8 @@ internal sealed class ShellCommandAnalyzer
         List<CommandOccurrence> commands,
         List<Clause> denyOnlyClauses,
         HashSet<ClauseElement> knownRegionArguments,
-        ref bool syntaxProofComplete)
+        ref bool syntaxProofComplete,
+        ref bool provesNoCommand)
     {
         if (depth > MaxWrapperDepth)
             return ShellAnalysisFailure.Unresolved;
@@ -171,7 +176,18 @@ internal sealed class ShellCommandAnalyzer
         }
 
         if (parsed.Commands.Count == 0)
+        {
+            // Owner decision (October 2026): a Bash source that parses with no
+            // command runs no program, for example an assignment (x=1) or a
+            // comment. The analysis stays unresolved for every other rule. Only
+            // the authorizer reads this fact. The caller of a wrapper child
+            // drops it. The hard-deny screen, PowerShell, and a blank source
+            // never get it.
+            provesNoCommand = _screenState is null
+                              && _environment.Grammar == ShellGrammar.Bash
+                              && !string.IsNullOrWhiteSpace(command);
             return ShellAnalysisFailure.Unresolved;
+        }
 
         if (_environment.Grammar == ShellGrammar.PowerShell)
         {
@@ -247,6 +263,7 @@ internal sealed class ShellCommandAnalyzer
             // SECURITY: the launcher sets the launch facts on the outer shell only. A child
             // shell can read startup files (bash -lc reads the login profile) that change
             // HOME or TMPDIR, so the child source gets no launch facts.
+            var childProvesNoCommand = false;
             var failure = Analyze(
                 exactSource.Source,
                 innerWorkingDirectory,
@@ -255,7 +272,8 @@ internal sealed class ShellCommandAnalyzer
                 commands,
                 denyOnlyClauses,
                 knownRegionArguments,
-                ref syntaxProofComplete);
+                ref syntaxProofComplete,
+                ref childProvesNoCommand);
             if (failure != ShellAnalysisFailure.None)
                 return failure;
 
@@ -563,6 +581,7 @@ public sealed record ShellCommandAnalysis
         var unresolvedParts = new Dictionary<CommandOccurrence, ShellUnresolvedPart>(
             ReferenceEqualityComparer.Instance);
         var expansionOnly = new HashSet<CommandOccurrence>(ReferenceEqualityComparer.Instance);
+        var runsNoProgram = new HashSet<CommandOccurrence>(ReferenceEqualityComparer.Instance);
         foreach (var command in Commands)
         {
             var part = ClassifyUnresolvedPart(command, knownRegionArguments);
@@ -577,10 +596,13 @@ public sealed record ShellCommandAnalysis
 
             if (part != ShellUnresolvedPart.None)
                 unresolvedParts[command] = part;
+            else if (RunsNoProgramWhenProved(command))
+                runsNoProgram.Add(command);
         }
 
         _unresolvedParts = unresolvedParts;
         _expansionOnly = expansionOnly;
+        _runsNoProgram = runsNoProgram;
         HasDynamicSyntax = !syntaxProofComplete || unresolvedParts.Count > 0;
         RequiresExactTreeApproval = ShellFileSystemTreeAccessPolicy.RequiresExactApproval(
             environment,
@@ -630,6 +652,34 @@ public sealed record ShellCommandAnalysis
         => _unresolvedParts.TryGetValue(command, out var part) ? part : ShellUnresolvedPart.None;
 
     private readonly IReadOnlySet<CommandOccurrence> _expansionOnly;
+
+    private readonly IReadOnlySet<CommandOccurrence> _runsNoProgram;
+
+    /// <summary>
+    /// True when the Bash source parsed completely and holds no command, for
+    /// example an assignment (<c>x=1</c>) or a comment. Such a call runs no
+    /// program. <see cref="IsResolved"/> stays false for every other rule.
+    /// </summary>
+    internal bool ProvesNoCommand { get; init; }
+
+    /// <summary>
+    /// Returns true when the parser proves that the command runs no program:
+    /// a command with only redirects (<c>&gt; file</c>), or a Bash data command
+    /// (<see cref="ShellVerbPolicyData.IsDataCommand"/>). Its only effects
+    /// outside the shell are its redirects, and each redirect target is one
+    /// proved file (see <see cref="HasPlainFileRedirects"/>).
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: owner decision (October 2026). Such a command gets no grant
+    /// candidate. The authorizer judges each redirect target with the file
+    /// rules of the audience, and never prompts for the command. A data
+    /// command that a shell-state assignment reaches qualifies only when its
+    /// operands are proved data, as for the approval exemption (F3). A
+    /// command substitution in an operand is its own occurrence and keeps its
+    /// own decision.
+    /// </remarks>
+    internal bool RunsNoProgram(CommandOccurrence command)
+        => _runsNoProgram.Contains(command);
 
     /// <summary>
     /// Returns true when the only cause that makes the command exact is a word
@@ -837,11 +887,33 @@ public sealed record ShellCommandAnalysis
         CommandOccurrence command,
         IReadOnlySet<ClauseElement> accountedRegionArguments)
     {
+        // ShellSyntaxTree marks a command with only redirects as incomplete,
+        // because it has no command word. Netclaw proves the rest of it here.
+        if (IsRedirectOnlyCommand(command))
+        {
+            return Environment.Grammar == ShellGrammar.Bash
+                   && HasPlainFileRedirects(command)
+                ? ShellUnresolvedPart.None
+                : ShellUnresolvedPart.Command;
+        }
+
         if (!HasKnownStructure(command)
             || HasUnsupportedWorkingDirectory(command.WorkingDirectory)
             || command.Clause.Verb.IsDynamic
             || HasDynamicProgramWord(command)
             || HasUnresolvedRedirect(command))
+        {
+            return ShellUnresolvedPart.Command;
+        }
+
+        // A data command runs no program, so the file rules judge its redirect
+        // targets (RunsNoProgram). A target that is not one proved file (a
+        // glob, a set of values, or a Bash special device) cannot get that
+        // judgment, so the command is exact: the prompt shows its full text.
+        if (Environment.Grammar == ShellGrammar.Bash
+            && command.Redirects.Count > 0
+            && IsBashDataCommand(command)
+            && !HasPlainFileRedirects(command))
         {
             return ShellUnresolvedPart.Command;
         }
@@ -885,12 +957,88 @@ public sealed record ShellCommandAnalysis
     /// </remarks>
     internal static bool HasKnownStructure(CommandOccurrence command)
         => command.IsComplete
-           && Enum.IsDefined(command.ImmediateRole)
+           && HasKnownRoleAndAncestors(command);
+
+    private static bool HasKnownRoleAndAncestors(CommandOccurrence command)
+        => Enum.IsDefined(command.ImmediateRole)
            && command.ImmediateRole != CommandOccurrenceRole.Unknown
            && !command.Ancestry.Any(static frame =>
                !IsKnownAncestor(frame.Ancestor)
                || !Enum.IsDefined(frame.Region)
                || frame.Region == CommandAncestryRegion.Unknown);
+
+    /// <summary>
+    /// Returns true when the command has no command word and no assignment:
+    /// each element is a redirect (<c>&gt; file</c>, <c>&lt; file</c>). Bash
+    /// opens each redirect target and runs no program.
+    /// </summary>
+    /// <remarks>
+    /// The rule composes general parser facts: no verb token, a verb that is
+    /// not dynamic, and the role of each element. The structure (role and
+    /// ancestors) must be known, as for <see cref="HasKnownStructure"/>.
+    /// </remarks>
+    internal static bool IsRedirectOnlyCommand(CommandOccurrence command)
+        => command.Clause.Verb.Tokens.Count == 0
+           && !command.Clause.Verb.IsDynamic
+           && command.Clause.Elements.Count > 0
+           && command.Clause.Elements.All(static element => element.Role == ClauseElementRole.Redirect)
+           && command.Assignments.Count == 0
+           && command.Arguments.Count == 0
+           && command.FileSystemTreeAccesses.Count == 0
+           && command.Redirects.Count > 0
+           && command.Redirects.Count == command.Clause.Redirects.Count
+           && HasKnownRoleAndAncestors(command);
+
+    // Owner decision (October 2026): a data command with redirects runs no
+    // program. ClassifyUnresolvedPart proved the whole command (part None),
+    // and with it each redirect target (HasPlainFileRedirects). The grammar
+    // check stays: PowerShell has an echo alias, and its redirects get no proof.
+    private bool RunsNoProgramWhenProved(CommandOccurrence command)
+        => Environment.Grammar == ShellGrammar.Bash
+           && (IsRedirectOnlyCommand(command)
+               || IsBashDataCommand(command)
+               && (command.Assignments.Count == 0
+                   || HasProvedDataOperands(command, isTestBuiltin: HasTestBuiltinVerb(command))));
+
+    /// <summary>
+    /// Returns true when each redirect of a Bash command is proved and each file
+    /// redirect target is one plain file: an exact absolute POSIX value. A
+    /// descriptor copy, move, or close (<c>2&gt;&amp;1</c>) opens no file.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: Bash gives some paths under <c>/dev/</c> a meaning that is not
+    /// a file: <c>/dev/tcp/host/port</c> and <c>/dev/udp/host/port</c> open a
+    /// network connection, and <c>/dev/fd/N</c> copies a descriptor. The file
+    /// rules cannot judge such a target, so <c>/dev/null</c> is the only path
+    /// below <c>/dev/</c> that qualifies. A here document or a here string is
+    /// never plain. The check reads the canonical form of the value, so
+    /// <c>/dev/./tcp</c> and <c>//dev/tcp</c> also fail. Bash gives a special
+    /// meaning only to a word that starts with the literal name; a <c>..</c>
+    /// that leaves <c>/dev/</c> puts the rest of the word in the port, which
+    /// Bash rejects.
+    /// </remarks>
+    private static bool HasPlainFileRedirects(CommandOccurrence command)
+        => command.Redirects.All(redirect =>
+               !HasUnresolvedRedirect(command, redirect)
+               && redirect switch
+               {
+                   FileRedirectAnalysis file => IsPlainFileTarget(file),
+                   DescriptorDuplicateRedirectAnalysis or DescriptorMoveRedirectAnalysis or DescriptorCloseRedirectAnalysis => true,
+                   _ => false
+               });
+
+    private static bool IsPlainFileTarget(FileRedirectAnalysis redirect)
+    {
+        if (redirect.Target is not ShellValueDomain.Exact { Value: { Length: > 0 } value }
+            || !value.StartsWith('/')
+            || !CanonicalPath.TryCreate(value, relativeBase: null, ShellPathStyle.Posix, out var path))
+        {
+            return false;
+        }
+
+        return path.Value == "/dev/null"
+               || !path.Value.StartsWith("/dev/", StringComparison.Ordinal);
+    }
 
     // ShellSyntaxTree 0.4.0-beta.17 gives no command words for a bracket
     // pattern in the program word, such as ["ci","build"], but it reports the

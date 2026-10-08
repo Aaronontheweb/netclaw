@@ -83,7 +83,7 @@ internal sealed class ToolAuthorizer
             ? await AuthorizeShellAsync(new ShellCall(this, tool, call, context), ct)
             : AuthorizationDecision.From(await DecideOtherAsync(new OtherCall(this, tool, call, context), ct), analysis: null);
         decision = DenyConsentWhenUnattended(decision, context);
-        return isShell ? CorrectCommandTooLongToShow(decision) : decision;
+        return isShell ? CorrectCommandTooLongToShow(ShowFullCommandText(decision)) : decision;
     }
 
     /// <summary>
@@ -111,6 +111,36 @@ internal sealed class ToolAuthorizer
                 + "audience (for example with /run-reminder), then run it again.",
                 consent.Trace)
             : decision;
+
+    // The operator must see what they approve. A shell consent request with no
+    // candidate and no pattern names nothing: the source did not parse, or no
+    // command has a proved program word. Owner decision (October 2026): such a request is
+    // never blank. Its one display candidate is the full command text, with
+    // only "Once" and "Deny". The one-time key reads the candidates and the
+    // patterns, not this display list, so a "Once" answer still matches the
+    // retry. A command that runs no program never reaches this rule: the file
+    // rules allow or deny it.
+    internal static AuthorizationDecision ShowFullCommandText(AuthorizationDecision decision)
+    {
+        // A request with patterns already shows them (a PowerShell statement list).
+        if (decision is not AuthorizationDecision.NeedsConsent
+            {
+                Request: { CandidateVerbs.Count: 0, Patterns.Count: 0 }
+            } consent)
+        {
+            return decision;
+        }
+
+        return consent with
+        {
+            Request = consent.Request with
+            {
+                CandidateVerbs = [consent.Request.DisplayText],
+                IsMessy = true,
+                Options = ToolAccessPolicy.OneShotApprovalOptions,
+            }
+        };
+    }
 
     // The operator must see the full command that they approve. A shell prompt
     // whose text does not fit on every channel becomes a correction: the call
@@ -182,11 +212,14 @@ internal sealed class ToolAuthorizer
         decision ??= LiteralTwinScreen(call);
         decision ??= TrustedRoot(call);
         decision ??= ApprovalModeDenial(call);
+        decision ??= await FileToolGrantsAsync(call, ct);
         decision ??= NativeToolAdvice(call);
         decision ??= AutomaticApprovalMode(call);
+        decision ??= NoCommand(call);
         decision ??= CallWithoutCommandText(call);
         decision ??= MissingProjection(call);
         decision ??= ProjectedTrustedRoot(call);
+        decision ??= NoProgramRedirects(call);
         decision ??= UnresolvedInput(call);
         decision ??= await CoveringGrantAsync(call, ct);
         return decision ?? UncoveredCandidates(call, ct);
@@ -251,6 +284,37 @@ internal sealed class ToolAuthorizer
     private static ToolAuthorizationDecision? ApprovalModeDenial(ShellCall call)
         => call.Finish(ToolAccessPolicy.ScreenApprovalModeDenial(call.Mode));
 
+    // Owner decision (October 2026): a source with no command (x=1, a comment)
+    // runs no program, so nothing can prompt. The screens above still apply.
+    // With no grant store, the rule does not apply, as for the exemption.
+    private ToolAuthorizationDecision? NoCommand(ShellCall call)
+        => _approvalService is not null && call.Analysis is { ProvesNoCommand: true }
+            ? call.Finish(ToolAuthorizationDecision.Allow(ToolAllowReason.ApprovalExemptShellCandidates))
+            : null;
+
+    // Consent: a redirect of a command that runs no program gets the decision
+    // of its file tool, with the stored grants of that tool. This rule only
+    // records which file tool calls a grant covers. It never decides.
+    private async Task<ToolAuthorizationDecision?> FileToolGrantsAsync(ShellCall call, CancellationToken ct)
+    {
+        if (_approvalService is null || call.CommandApproval is not { } approval)
+            return null;
+
+        foreach (var fileCall in _policy.GetRedirectsThatNeedConsent(approval, call.Context))
+        {
+            var check = await StoredGrantCheck.RunAsync(
+                _approvalService,
+                new ToolName(fileCall.Tool),
+                _policy.BuildFileToolConsentRequest(fileCall, call.Context),
+                call.Context,
+                ct);
+            if (check.AllCovered)
+                call.GrantedFileToolCalls.Add(fileCall);
+        }
+
+        return null;
+    }
+
     // Advice: a native tool replaces the shell call. Shell consent cannot authorize that replacement.
     private static ToolAuthorizationDecision? NativeToolAdvice(ShellCall call)
         => call.Corrections?.Items.Any(static correction => correction is ToolCorrection.NativeToolSuggested) == true
@@ -302,6 +366,14 @@ internal sealed class ToolAuthorizer
                 .ToArray(),
             call.CandidateAnalyses,
             call.Context.Invocation));
+
+    // Filesystem authority and admission for each redirect of a command that
+    // runs no program: a proved target, the file_read rules for an input
+    // redirect, and no Deny mode of the file tool.
+    private ToolAuthorizationDecision? NoProgramRedirects(ShellCall call)
+        => call.Finish(_policy.ScreenNoProgramRedirects(
+            call.Evaluation.CandidateStates.Select(static state => (state.Candidate.Candidate, state.PathFacts)),
+            call.Context));
 
     // Unresolved input: syntax without reusable candidates gets one exact retry, advice, or a Once-only prompt.
     private static ToolAuthorizationDecision? UnresolvedInput(ShellCall call)
@@ -472,9 +544,17 @@ internal sealed class ToolAuthorizer
         /// <summary>
         /// The consent candidates: from the directory proof when one applies,
         /// else one candidate set for each command, with the candidates of the
-        /// literal twins in place of their source command.
+        /// literal twins in place of their source command. A command that
+        /// runs no program keeps a prompt when its file tool needs consent.
         /// </summary>
-        internal ShellApprovalAnalysis? Approval => DirectoryProof is { } proof
+        internal ShellApprovalAnalysis? Approval => CommandApproval is { } approval
+            ? authorizer._policy.WithFileToolConsent(approval, context, GrantedFileToolCalls)
+            : null;
+
+        /// <summary>The file tool calls of redirects that a stored grant of the file tool covers.</summary>
+        internal HashSet<FileToolCall> GrantedFileToolCalls { get; } = [];
+
+        internal ShellApprovalAnalysis? CommandApproval => DirectoryProof is { } proof
             ? ToolAccessPolicy.WithDirectoryScopes(ParsedApproval!, proof)
             : ParsedApproval is { } parsed
                 ? WithLiteralTwins(ToolAccessPolicy.WithCommandCandidates(parsed))

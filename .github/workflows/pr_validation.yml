@@ -167,7 +167,7 @@ jobs:
           - group: verb-chain-and-reminder
             gates: exact-verb-chain reminder-execution literal-twin
           - group: approval-and-authorization
-            gates: tool-authorization approval-directory skill-manage-guard
+            gates: tool-authorization approval-directory skill-manage-guard no-program
 
     steps:
       - name: "Checkout"

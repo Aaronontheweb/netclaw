@@ -22,7 +22,9 @@ internal abstract record Coverage
     }
 
     /// <summary>
-    /// An approval-exempt side effect, for example <c>echo</c> or <c>true</c>.
+    /// An approval-exempt side effect, for example <c>echo</c> or <c>true</c>,
+    /// or a command that runs no program (<c>&gt; file</c>,
+    /// <c>printf a &gt; file</c>) after the file rules judged its redirects.
     /// </summary>
     public sealed record Exempt : Coverage
     {

@@ -656,6 +656,46 @@
       "to": "RequiresApproval",
       "reason": "Owner rule: send a correction only when a rewrite that the agent can make removes the cause. A file name from a glob loop is known only at run time, so the agent cannot write it literally. The call gets the normal one-time prompt for 'cat \"$f\"'; the 'cat' grant still does not cover it.",
       "approvedBy": "owner (2026-10-07, satisfiable corrections only)"
+    },
+    {
+      "section": "Fresh Personal approval matrix",
+      "id": "echo-redirect-runs-no-program",
+      "renamedFrom": "echo-redirect-prompts",
+      "from": "RequiresApproval",
+      "to": "Allowed",
+      "reason": "Owner decision (2026-10-07): echo runs no program, so its only effect is the redirect. The file rules of the audience allow the write in the project, so the call needs no grant and no prompt. A program with a write redirect still prompts.",
+      "negativeControl": "workload-edit-search-pipeline-redirect-in-project-prompts-for-writer",
+      "approvedBy": "owner (2026-10-07, no prompt when nothing runs)"
+    },
+    {
+      "section": "Fresh Personal approval matrix",
+      "id": "echo-external-redirect-runs-no-program",
+      "renamedFrom": "echo-external-redirect-prompts",
+      "from": "RequiresApproval",
+      "to": "Allowed",
+      "reason": "Owner decision (2026-10-07): echo runs no program. The Personal profile may write the redirect target outside the project, so the file rules allow the call with no prompt. A protected or unwritable target is denied.",
+      "negativeControl": "workload-edit-search-pipeline-redirect-in-project-prompts-for-writer",
+      "approvedBy": "owner (2026-10-07, no prompt when nothing runs)"
+    },
+    {
+      "section": "Fresh Personal approval matrix",
+      "id": "workload-edit-printf-redirect-runs-no-program",
+      "renamedFrom": "workload-edit-printf-redirect-prompts",
+      "from": "RequiresApproval",
+      "to": "Allowed",
+      "reason": "Owner decision (2026-10-07): printf runs no program, so its only effect is the redirect into the project. The file rules allow it with no grant and no prompt.",
+      "negativeControl": "workload-edit-search-pipeline-redirect-in-project-prompts-for-writer",
+      "approvedBy": "owner (2026-10-07, no prompt when nothing runs)"
+    },
+    {
+      "section": "Fresh Personal approval matrix",
+      "id": "unquoted-status-output-redirect-runs-no-program",
+      "renamedFrom": "unquoted-status-output-redirect-remains-complex",
+      "from": "RequiresApproval",
+      "to": "Allowed",
+      "reason": "Owner decision (2026-10-07): echo runs no program, so it needs no command words and no grant. The file rules allow the write with no prompt. A program with a write redirect still prompts.",
+      "negativeControl": "workload-edit-search-pipeline-redirect-in-project-prompts-for-writer",
+      "approvedBy": "owner (2026-10-07, no prompt when nothing runs)"
     }
   ]
 }

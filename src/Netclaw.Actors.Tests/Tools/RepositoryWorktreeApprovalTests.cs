@@ -601,9 +601,11 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
             ? $"$mode = '{value}'; {CreatePathCommand(path)}"
             : $"mode='{value}' {CreatePathCommand(path)}";
 
+    // The Bash form runs a program: a data command with a redirect runs no
+    // program and gets no candidate (owner decision, October 2026).
     private static string CreateRedirectCommand(string path) => OperatingSystem.IsWindows()
         ? $"Write-Output done > '{path.Replace("'", "''", StringComparison.Ordinal)}'"
-        : $"echo done > '{path.Replace("'", "'\"'\"'", StringComparison.Ordinal)}'";
+        : $"date > '{path.Replace("'", "'\"'\"'", StringComparison.Ordinal)}'";
 
     private static void RunGit(string directory, params string[] arguments)
     {

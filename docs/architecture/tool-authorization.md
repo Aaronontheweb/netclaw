@@ -177,9 +177,13 @@ shell rules, in order:
 4. Filesystem authority: the working directory and the known paths must be in
    a trusted root of the audience profile. A protected path stays denied.
 5. Admission: a Deny consent mode.
-6. Advice: a native tool, then Auto mode with its directory advice.
-7. A call without command text, the projected trusted-root check, and unresolved
-   input: one-time consent or a Once-only request. Since approval taxonomy
+6. Advice: a native tool, then Auto mode with its directory advice. Then a
+   Bash source with no command is allowed: it runs no program (owner decision,
+   October 2026, below). Before the advice, the authorizer asks the grant store
+   for the file tool grants of the redirects that need consent.
+7. A call without command text, the projected trusted-root check, the
+   redirect checks of a command that runs no program, and unresolved input:
+   one-time consent or a Once-only request. Since approval taxonomy
    PR 5, a Bash call splits an unresolved source into commands: each
    unresolved command is one exact candidate, and the other commands go to
    rule 8 with their own candidates. Decision D1 lets a safe phrase or a grant
@@ -190,8 +194,9 @@ shell rules, in order:
    Owner decision F1 (0.27.2): when the parser gives the literal twins of a
    command, the twin candidates replace the candidates of that command (see
    "Literal twins" below).
-8. Consent: a covering grant (stored grant, side-effect exemption, reviewed-safe
-   policy), then the uncovered candidates.
+8. Consent: a covering grant (stored grant, the exemption of a side effect
+   and of a command that runs no program, reviewed-safe policy), then the
+   uncovered candidates.
 
 Literal twins (owner decision F1, October 2026). ShellSyntaxTree
 0.4.0-beta.23 writes each Bash command whose changeable words have a proved
@@ -271,6 +276,103 @@ for `git fetch` runs with no prompt. Negative example: with `GIT_DIR` in the
 daemon environment, `GIT_DIR=/tmp/x; git status` keeps its digest, so a plain
 `git status` grant does not cover it.
 
+Commands that run no program (owner decision, October 2026). Approval of `:`
+means nothing, because no program runs. The only effect of such a command
+outside the shell is its redirects, and the file rules own that question.
+
+A command occurrence runs no program when the parser proves one of these
+shapes (`ShellCommandAnalysis.RunsNoProgram`, `ProvesNoCommand`):
+
+- a Bash source that parses with no command: an assignment (`x=1`), a
+  comment, an empty `case` (`case x in x) ;; esac`), or an empty subshell
+  (`()`);
+- a command with only redirects (`> file`, `< file`), with no assignment;
+- a Bash data command from the existing policy data
+  (`ShellVerbPolicyData.IsDataCommand`). When a shell-state assignment reaches
+  it, each operand must be proved data, as for the approval exemption (F3).
+
+Each redirect must be a proved file redirect with one exact absolute target,
+or a descriptor copy, move, or close (`2>&1`). Bash gives `/dev/tcp/...`,
+`/dev/udp/...`, and `/dev/fd/N` a meaning that is not a file, so below `/dev/`
+only `/dev/null` qualifies. A data command with another target is exact: its
+prompt shows its full text. The rule composes general shell facts. It adds no
+program grammar.
+
+```text
+schematic: the rules for a command that runs no program
+source has no command (x=1)                    -> rule 6: Allowed
+mark each candidate of such a command          # ShellApprovalMatcher, call-local
+file tool of a redirect has mode Approval,
+  and no grant of that tool covers the path    -> the candidate becomes exact:
+                                                  "write <file>", "read <file>"
+screen as usual: hard deny, protected text, trust zone (write rules)  # rules 2 to 4, 7
+for each redirect of a marked candidate:       # rule 7
+    target not proved                          -> Denied shell_redirect_unproved
+    input redirect and the read rules refuse   -> Denied shell_redirect_read_denied
+    file tool has mode Deny or is not admitted -> Denied shell_redirect_file_tool_denied
+cover each marked candidate that is not exact  # rule 8, Coverage.Exempt
+all covered -> Allowed; else prompt for the other candidates only
+```
+
+- Owners: `ShellCommandAnalysis` proves the shape. `ShellApprovalMatcher`
+  marks the candidate. `ToolAccessPolicy` judges the targets
+  (`ScreenNoProgramRedirects`, `WithFileToolConsent`) with
+  `PathAccessPolicy` and the consent mode of the file tool. `ToolAuthorizer`
+  owns the order. Each fact is call-local. Such a command never creates a
+  grant.
+- A redirect gets the decision of the file tool for the audience and the
+  path. A write target gets the path rules of `file_write` (the shell trust
+  zone) and the consent mode of `file_write`. An input target gets the trust
+  zone, the path rules of `file_read`, and the consent mode of `file_read`.
+  Mode `Auto` runs with no prompt. Mode `Deny` denies. With mode `Approval`,
+  a stored grant of the file tool covers the redirect, as it covers the tool
+  (`StoredGrantCheck` with the consent request of the tool). With no such
+  grant, one prompt names each write and read that needs consent, with `Once`
+  and `Deny`. That prompt cannot save a grant: answer a `file_write` prompt
+  with a saved choice, or set the mode to `Auto`, to stop it. Each redirect of
+  the command gets every check before the prompt, so one denied redirect
+  denies the call.
+- The managed temporary directory advice replaces a prompt. A command that
+  runs no program has no prompt, so it gets no such advice: `: > /tmp/x` and
+  `cd /tmp && : > x` both run when the rules allow the path.
+- An attended and an unattended call get the same result. An unattended call
+  denies each case that keeps a prompt.
+- Example: `printf 'a\n' > drafts/h.tsv && : > drafts/h.json` runs with no
+  prompt and no grant. `x=1; : > drafts/y` runs too.
+- Negative example: `: > ~/.netclaw/config/secrets.json` is denied. A bounded
+  write profile denies `printf a > ../outside/x`, and a bounded read profile
+  denies `: < /etc/passwd`.
+- Negative example: a program still prompts. `date > out.txt` prompts for
+  `date`, and `echo $(rm -rf x) > f` prompts for `rm`.
+
+Limits: these forms run no program but keep a prompt that shows their text,
+because the parser gives no proved target or no parse for them.
+
+- `cd dir; : > f` and `(cd dir; : > f)`: after a `cd` that can fail, the
+  target has no exact value. `cd dir && : > f` runs.
+- A redirect target with a loop variable (`for n in 1 2; do : > f$n; done`),
+  a glob, or another unproved value.
+- The operators `>|`, `>&`, and `<>`.
+- Several assignments in one statement (`x=1 y=2`), an array assignment, and
+  `x+=1`.
+- A target behind a link. On macOS, `/var` and the default `TMPDIR` are
+  behind a link. The platform temporary alias (`/tmp`) is not a limit.
+- A data command with an assignment whose operand is not proved data
+  (`d=key; echo ../x/"${d}s"/* > out.txt`).
+- With mode `Approval`, the redirect gets no managed temporary directory
+  advice, but the file tool does.
+
+A prompt never names nothing. When a shell consent request has no candidate
+and no pattern (a source that does not parse, `$cmd > x`, `eval x`,
+`x=1 > f`), `ToolAuthorizer.ShowFullCommandText` makes the full command text
+its one display candidate, with only `Once` and `Deny`. A request with
+patterns (a PowerShell statement list) keeps them. Slack and Discord show the
+command in the request line, so their header for such a request is "Approve
+this command in <folder>?". The one-time key reads the
+candidates and the patterns, not the display list, so a "Once" answer still
+matches the retry. The 900-character rule below applies after it. The test
+harness fails each test that observes a prompt with no display candidate.
+
 Decision D2 (October 2026): an attended and an unattended call use the same
 rules above. The file reach of an unattended call is the reach of its audience
 profile, as in a chat. The one difference comes after rule 8: when nobody can
@@ -338,7 +440,8 @@ Leaks today:
   rule. That rule and the headless denial of a causal list stay until the
   owner changes the outcomes that they protect. The side-effect exemption
   (`echo`, `printf`, `:`, `true`, `false`) applies in a causal list too: the
-  exempt command has no directory, so the list role does not change it.
+  exempt command has no directory, so the list role does not change it. The
+  exemption of a command that runs no program does not read the role either.
   After a directory change that can fail, the directory of a later command is
   not known, and an unresolved call makes that command exact. A data command
   with no redirect and proved data operands is the exception (0.27.1): it has
@@ -1157,6 +1260,7 @@ and the approval tooling is in
 | A shell grant never authorizes `file_read`. | No test yet. Consolidation PR 1b adds it. |
 | `ToolAuthorizer` gives the same decision as the gate on `dev`. | The corpus differential ([TOOLING.md § Authorization Corpus Differential](../../TOOLING.md#authorization-corpus-differential)) |
 | One denied literal twin denies the call, and every twin candidate needs coverage (F1). | `LiteralTwinApprovalTests`; catalog `loop-twin*` rows; the literal twin mutation gate |
+| A command that runs no program gets the decision of the file tool for each redirect. A prompt always names what it asks for. | `ShellNoProgramAuthorizationTests`; catalog `no-program-*` rows; the harness check in `ShellApprovalHarness.ObservePrompt`; the no program mutation gate ([TOOLING.md § No Program Gate](../../TOOLING.md#no-program-gate)) |
 | No `ToolAuthorizer` rule can move ahead of an earlier rule. | The tool authorizer order mutation gate ([TOOLING.md § Tool Authorizer Order Gate](../../TOOLING.md#tool-authorizer-order-gate)) |
 
 Model guidance (which tool the model should choose, and how it should declare

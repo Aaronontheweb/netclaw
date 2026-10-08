@@ -69,7 +69,7 @@ read -r operand_start operand_end < <(
 read -r redirect_start redirect_end < <(
   find_range 'var read = readOnly' ': ShellPathRead.None;' "$policy")
 read -r relax_start relax_end < <(
-  find_range '=> _pathAccessPolicy.EvaluateShellPath(access.Path, context)' 'EvaluateShellReadPath(access.Path, context, access.Read == ShellPathRead.Operand)' "$policy")
+  find_range '=> _pathAccessPolicy.EvaluateShellPath(access.Path, context, PathAccessPolicy.FileOperation.Write)' 'EvaluateShellReadPath(access.Path, context, access.Read == ShellPathRead.Operand)' "$policy")
 access="$repo_root/src/Netclaw.Actors/Tools/PathAccessPolicy.cs"
 read -r gate_start gate_end < <(
   find_range 'if (!path.IsHostStyle || !_fileSystem.IsProtected' 'PathOperation.Write))' "$access")
