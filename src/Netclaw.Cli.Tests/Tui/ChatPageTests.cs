@@ -317,6 +317,92 @@ public sealed class ChatPageTests
         Assert.Equal("Last request failed. Ready to retry.", vm.StatusMessage.Value);
     }
 
+    // What web_fetch hands back for a large page: a multi-line summary whose
+    // preview carries converted markdown and, for raw fetches, HTML.
+    private const string WebFetchSummary =
+        "Fetched: http://example.test/weather\n" +
+        "Title: Seattle Weather Forecast\n" +
+        "Saved to: /data/web/example_test_weather.md (40,194 chars, 612 lines)\n" +
+        "\n" +
+        "Preview (first lines):\n" +
+        "# Seattle, WA\n" +
+        "Today: **71°F** and sunny\n" +
+        "<!DOCTYPE html><html><body><table><tr><td>raw markup</td></tr></table></body></html>\n" +
+        "... (597 more lines — use file_read or grep to search)";
+
+    [Fact]
+    public async Task MultiLineToolResult_RendersOnOneRowAndNextOutputStartsOnNewRow()
+    {
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch"),
+            ToolResult("web_fetch", WebFetchSummary),
+            new TextDeltaOutput("Done fetching") { SessionId = new SessionId("tui/test") },
+            new TurnCompleted { SessionId = new SessionId("tui/test"), TurnNumber = new TurnNumber(1) });
+
+        var rows = ChatRows(screen);
+        var toolRow = Assert.Single(rows, r => r.Contains("✓ web_fetch", StringComparison.Ordinal));
+        var replyRow = Assert.Single(rows, r => r.Contains("Netclaw: Done fetching", StringComparison.Ordinal));
+
+        // The tool line used to carry the raw newlines of the result and was
+        // never terminated, so the reply was appended to the end of it.
+        Assert.NotEqual(toolRow, replyRow);
+        Assert.Contains("Fetched: http://example.test/weather Title: Seattle Weather Forecast", toolRow, StringComparison.Ordinal);
+        Assert.DoesNotContain(rows, r => r.StartsWith("Title:", StringComparison.Ordinal)
+            || r.StartsWith("Preview (first lines):", StringComparison.Ordinal)
+            || r.Contains("<table>", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ConsecutiveToolCalls_RenderOnSeparateRows()
+    {
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch", "call-1"),
+            ToolResult("web_fetch", "Fetched: http://example.test/a", "call-1"),
+            ToolCall("web_search", "call-2"));
+
+        var rows = ChatRows(screen);
+        var fetchRow = Assert.Single(rows, r => r.Contains("web_fetch", StringComparison.Ordinal));
+        Assert.DoesNotContain("web_search", fetchRow, StringComparison.Ordinal);
+        Assert.Single(rows, r => r.Contains("web_search", StringComparison.Ordinal));
+    }
+
+    private static ToolCallOutput ToolCall(string toolName, string callId = "call-1") => new()
+    {
+        SessionId = new SessionId("tui/test"),
+        CallId = new Netclaw.Tools.ToolCallId(callId),
+        ToolName = new Netclaw.Tools.ToolName(toolName),
+        ArgumentsJson = "{\"url\":\"http://example.test/weather\"}"
+    };
+
+    private static ToolResultOutput ToolResult(string toolName, string result, string callId = "call-1") => new()
+    {
+        SessionId = new SessionId("tui/test"),
+        CallId = new Netclaw.Tools.ToolCallId(callId),
+        ToolName = new Netclaw.Tools.ToolName(toolName),
+        Result = result
+    };
+
+    /// <summary>
+    /// Runs the chat page headlessly with <paramref name="outputs"/> replayed
+    /// as if the daemon had sent them, then quits and returns the final frame.
+    /// </summary>
+    private static async Task<string> RenderSessionOutputsAsync(params SessionOutput[] outputs)
+    {
+        var (terminal, app, _) = CreateHeadlessApp(null, out var input, replay: outputs);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+        return terminal.ToString();
+    }
+
+    /// <summary>The text inside the chat history border, one entry per terminal row.</summary>
+    private static string[] ChatRows(string screen) =>
+        screen.Split('\n')
+            .Where(l => l.StartsWith('│'))
+            .Select(l => l.Trim('│').TrimEnd())
+            .ToArray();
+
     [Fact]
     public async Task NarrowTerminal_PreservesCtrlOHint()
     {
@@ -610,7 +696,8 @@ public sealed class ChatPageTests
         CreateHeadlessApp(ToolInteractionRequest? seed, out VirtualInputSource input,
             int width = 120, int height = 40,
             IReadOnlyList<ToolInteractionOption>? options = null,
-            bool startGenerating = false)
+            bool startGenerating = false,
+            IReadOnlyList<SessionOutput>? replay = null)
     {
         var terminal = new VirtualTerminal(width, height);
         var virtualInput = new VirtualInputSource();
@@ -633,7 +720,7 @@ public sealed class ChatPageTests
                         : options is null
                             ? seed
                             : seed with { Options = options };
-                    capturedVm = new TestChatViewModel(effectiveSeed, startGenerating);
+                    capturedVm = new TestChatViewModel(effectiveSeed, startGenerating, replay);
                     return capturedVm;
                 });
         });
@@ -655,6 +742,7 @@ public sealed class ChatPageTests
     {
         private readonly ToolInteractionRequest? _seed;
         private readonly bool _startGenerating;
+        private readonly IReadOnlyList<SessionOutput>? _replay;
 
         /// <summary>
         /// Set when the page routes Escape to app shutdown (the pre-#1757
@@ -678,7 +766,8 @@ public sealed class ChatPageTests
         /// </summary>
         public string? LastSubmittedInteractionKey { get; private set; }
 
-        public TestChatViewModel(ToolInteractionRequest? seed, bool startGenerating = false)
+        public TestChatViewModel(ToolInteractionRequest? seed, bool startGenerating = false,
+            IReadOnlyList<SessionOutput>? replay = null)
             : base(
                 // 127.0.0.1:1 is never dialed: InitializeSessionAsync is
                 // overridden to no-op, so the underlying HubConnection stays
@@ -692,9 +781,15 @@ public sealed class ChatPageTests
         {
             _seed = seed;
             _startGenerating = startGenerating;
+            _replay = replay;
         }
 
-        protected override Task InitializeSessionAsync() => Task.CompletedTask;
+        protected override Task InitializeSessionAsync()
+        {
+            foreach (var output in _replay ?? [])
+                ProcessOutputForTesting(output);
+            return Task.CompletedTask;
+        }
 
         public override void OnActivated()
         {

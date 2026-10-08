@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text;
+using System.Text.RegularExpressions;
 using Netclaw.Actors.Protocol;
 using R3;
 using Termina.Components.Streaming;
@@ -432,7 +433,8 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                         new SpinnerSegment(Termina.Components.Streaming.SpinnerStyle.Dots, Color.Yellow, intervalMs: 80),
                         new StaticTextSegment($" {msg.ToolName}({TruncateArgs(msg.ArgumentsJson)})",
                             Color.Yellow),
-                        _toolTimer));
+                        _toolTimer,
+                        new StaticTextSegment("\n", TextStyle.Default)));
                 break;
 
             case ToolResultOutput msg:
@@ -447,7 +449,7 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
 
                     _chatHistory.Replace(_thinkingSegmentId,
                         new StaticTextSegment(
-                            $"  \u2713 {msg.ToolName} \u2192 {Truncate(msg.Result, 80)}{elapsed}",
+                            $"  \u2713 {msg.ToolName} \u2192 {Truncate(msg.Result, 80)}{elapsed}\n",
                             Color.Green),
                         keepTracked: false);
                     _thinkingSegmentId = default;
@@ -526,11 +528,19 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
         }
     }
 
+    private static readonly Regex WhitespaceRun = new(@"\s+", RegexOptions.Compiled);
+
     private static string TruncateArgs(string? json) =>
         json is null or "" ? "" : Truncate(json, 60);
 
-    private static string Truncate(string text, int maxLength) =>
-        text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength - 3), "...");
+    // Tracked segments carry no line break of their own, and tool output (a
+    // web_fetch summary is a dozen lines) must stay on the one row the tool
+    // line owns, so whitespace runs and newlines collapse before truncation.
+    private static string Truncate(string text, int maxLength)
+    {
+        text = WhitespaceRun.Replace(text, " ").Trim();
+        return text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength - 3), "...");
+    }
 
     private static string FormatElapsed(TimeSpan elapsed) =>
         elapsed.TotalSeconds < 60
