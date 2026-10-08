@@ -18,6 +18,7 @@ public sealed class ConfigWatcherServiceTests : IDisposable
     private readonly NetclawPaths _paths;
     private readonly FakeRestartCoordinator _restartCoordinator;
     private readonly FakeTimeProvider _time = new();
+    private readonly RejectedConfigState _rejectedConfig = new();
     private readonly ConfigWatcherService _sut;
 
     public ConfigWatcherServiceTests()
@@ -31,6 +32,7 @@ public sealed class ConfigWatcherServiceTests : IDisposable
             _paths,
             _time,
             _restartCoordinator,
+            _rejectedConfig,
             NullLogger<ConfigWatcherService>.Instance);
     }
 
@@ -42,6 +44,50 @@ public sealed class ConfigWatcherServiceTests : IDisposable
         await _sut.ApplyReloadAsync(CancellationToken.None);
 
         Assert.Equal(1, _restartCoordinator.RequestCount);
+    }
+
+    [Theory]
+    [InlineData("""{ "Models": { "Main": { "Provider": "p", "ModelId": "m" }, "Roles": { "Main": "d" } } }""")]
+    [InlineData("""{ "Models": { "Definitions": { "d": { "Provider": "p", "ModelId": "m" } } } }""")]
+    [InlineData("""{ "Models": { "Definitions": { "d": { "Provider": "p", "ModelId": "m" } }, "Roles": { "Main": "nope" } } }""")]
+    // Valid for the resolver, rejected by the rest of the startup check.
+    [InlineData("""{ "Models": { "Definitions": { "d": { "Provider": "p", "ModelId": "m", "ContextWindow": 100 } }, "Roles": { "Main": "d" } } }""")]
+    [InlineData("""{ "Providers": { "p": { "Type": "ollama" } }, "Models": { "Definitions": { "d": { "Provider": "p", "ModelId": "m" }, "f": { "Provider": "zzz", "ModelId": "m" } }, "Roles": { "Main": "d", "Fallback": "f" } } }""")]
+    public async Task InvalidModelsSection_DoesNotTriggerRestartAndIsReported(string config)
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, config);
+
+        await _sut.ApplyReloadAsync(CancellationToken.None);
+
+        Assert.Equal(0, _restartCoordinator.RequestCount);
+        Assert.NotNull(_rejectedConfig.Reason);
+    }
+
+    [Fact]
+    public async Task ValidEditAfterAnInvalidOne_IsAppliedAndClearsTheRejection()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "Models": { "Roles": { "Main": "d" } } }""");
+        await _sut.ApplyReloadAsync(CancellationToken.None);
+        Assert.NotNull(_rejectedConfig.Reason);
+
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "Providers": { "p": { "Type": "ollama" } }, "Models": { "Definitions": { "d": { "Provider": "p", "ModelId": "m" } }, "Roles": { "Main": "d" } } }""");
+        await _sut.ApplyReloadAsync(CancellationToken.None);
+
+        Assert.Null(_rejectedConfig.Reason);
+        Assert.Equal(1, _restartCoordinator.RequestCount);
+    }
+
+    [Theory]
+    [InlineData("""{ "Models": { "Main": { "Provider": "p", "ModelId": "m" } } }""")]
+    [InlineData("""{ "Models": { "Definitions": { "d": { "Provider": "p", "ModelId": "m" } }, "Roles": { "Main": "d" } } }""")]
+    public async Task ValidModelsSection_TriggersRestart(string config)
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, config);
+
+        await _sut.ApplyReloadAsync(CancellationToken.None);
+
+        Assert.Equal(1, _restartCoordinator.RequestCount);
+        Assert.Null(_rejectedConfig.Reason);
     }
 
     [Theory]

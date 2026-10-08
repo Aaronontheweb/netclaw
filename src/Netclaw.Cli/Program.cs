@@ -1730,6 +1730,12 @@ static void WriteSessionsHelp()
 static void WriteStatusResult(DaemonRuntimeStatus.Response status, string endpoint, StatusUpdateResult? cliUpdate = null)
 {
     Console.WriteLine($"overall: {status.Overall}");
+    if (!string.IsNullOrWhiteSpace(status.ConfigNotApplied))
+    {
+        Console.WriteLine($"config on disk not applied: {status.ConfigNotApplied}");
+        Console.WriteLine("  The daemon is still running the previous configuration. No change from netclaw.json is applied until this is fixed.");
+    }
+
     Console.WriteLine($"version: {status.Build.Version} (commit {status.Build.CommitHash}, built {status.Build.BuildTimestamp})");
     Console.WriteLine($"daemon: PID {status.Process.Pid}, uptime {FormatUptime(status.Process.UptimeSeconds)}, endpoint {endpoint}");
     Console.WriteLine($"persistence: {status.Persistence.Provider}");

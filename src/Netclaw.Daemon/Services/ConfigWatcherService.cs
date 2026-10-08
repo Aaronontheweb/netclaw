@@ -4,9 +4,11 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Configuration;
 
 namespace Netclaw.Daemon.Services;
 
@@ -33,6 +35,7 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
     private readonly NetclawPaths _paths;
     private readonly TimeProvider _timeProvider;
     private readonly IDaemonRestartCoordinator _restartCoordinator;
+    private readonly RejectedConfigState _rejectedConfig;
     private readonly ILogger<ConfigWatcherService> _logger;
 
     private FileSystemWatcher? _watcher;
@@ -57,8 +60,10 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         NetclawPaths paths,
         TimeProvider timeProvider,
         IDaemonRestartCoordinator restartCoordinator,
+        RejectedConfigState rejectedConfig,
         ILogger<ConfigWatcherService> logger)
     {
+        _rejectedConfig = rejectedConfig;
         _paths = paths;
         _timeProvider = timeProvider;
         _restartCoordinator = restartCoordinator;
@@ -206,12 +211,26 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
                 _timeProvider.GetUtcNow());
 
             // Validate JSON structure of the watched config file before triggering restart.
-            // Full semantic validation happens during the next startup cycle.
             if (!ValidateConfigJson(_paths.NetclawConfigPath))
             {
                 _logger.LogWarning("Config validation failed. Keeping current config — no restart.");
                 return;
             }
+
+            // The same check startup runs on the Models section. A restart into a section it
+            // rejects would stop the daemon, so the running daemon keeps its configuration.
+            var modelCheck = ModelConfigurationValidation.Check(
+                new ConfigurationBuilder().AddNetclawDaemonSources(_paths).Build());
+            if (modelCheck.Error is not null)
+            {
+                _logger.LogWarning(
+                    "Config validation failed. {ModelsError} Keeping the running config: no change from netclaw.json is applied until the Models section is fixed.",
+                    modelCheck.Error);
+                _rejectedConfig.Reject(modelCheck.Error);
+                return;
+            }
+
+            _rejectedConfig.Clear();
 
             // Every valid config change — including Daemon-section settings (bind
             // address, exposure mode) — is applied via the coordinated in-process

@@ -176,6 +176,31 @@ public sealed class ContextWindowDoctorCheckTests : IDisposable
     }
 
     [Fact]
+    public async Task InvalidContextWindow_NamedShape_NamesTheDefinitionKey()
+    {
+        WriteConfig(new
+        {
+            configVersion = 1,
+            Providers = ProviderConfig("local-ollama", "ollama"),
+            Models = new
+            {
+                Definitions = new Dictionary<string, object>
+                {
+                    ["Fast"] = new { Provider = "local-ollama", ModelId = "test-model", ContextWindow = -1 }
+                },
+                Roles = new { Main = "fast" }
+            }
+        });
+        var check = CreateCheck(CreateOfflineDaemonApi());
+
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Error, result.Severity);
+        Assert.Contains("Models.Definitions.Fast.ContextWindow must be a positive integer", result.Message);
+        Assert.Contains("Set Models.Definitions.Fast.ContextWindow", result.Remediation);
+    }
+
+    [Fact]
     public async Task InvalidContextWindow_ReturnsError()
     {
         WriteConfig(new

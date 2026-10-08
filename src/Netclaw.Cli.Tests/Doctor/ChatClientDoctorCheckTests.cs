@@ -317,6 +317,80 @@ public sealed class ChatClientDoctorCheckTests : IDisposable
     }
 
     [Fact]
+    public async Task ReturnsError_WhenDefinitionProviderValueIsNotString()
+    {
+        var paths = CreatePathsWithConfig("""
+            {
+              "configVersion": 1,
+              "Providers": {
+                "local-ollama": { "Type": "ollama" }
+              },
+              "Models": {
+                "Definitions": { "fast": { "Provider": 123, "ModelId": "qwen3:30b" } },
+                "Roles": { "Main": "fast" }
+              }
+            }
+            """);
+
+        var check = CreateCheck(paths);
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Error, result.Severity);
+        Assert.Contains("Models.Definitions.fast.Provider", result.Message);
+        Assert.Contains("must be a string", result.Message);
+    }
+
+    [Fact]
+    public async Task ReturnsError_NamingTheConflictAndSayingTheDaemonWillNotStart_WhenModelsMixShapes()
+    {
+        var paths = CreatePathsWithConfig("""
+            {
+              "configVersion": 1,
+              "Providers": {
+                "local-ollama": { "Type": "ollama" }
+              },
+              "Models": {
+                "Main": { "Provider": "local-ollama", "ModelId": "qwen3:30b" },
+                "Definitions": { "fast": { "Provider": "local-ollama", "ModelId": "qwen3:30b" } },
+                "Roles": { "Main": "fast" }
+              }
+            }
+            """);
+
+        var check = CreateCheck(paths);
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Error, result.Severity);
+        Assert.Contains("mixes legacy inline roles (Models:Main)", result.Message);
+        Assert.Contains("The daemon will not start with this configuration. A running daemon keeps using its previous configuration", result.Message);
+        Assert.DoesNotContain("configuration banner", result.Message);
+        Assert.DoesNotContain("doctor --fix", result.Message + result.Remediation);
+    }
+
+    [Fact]
+    public async Task ReturnsError_WhenARoleBoundContextWindowIsBelowTheStartupMinimum()
+    {
+        var paths = CreatePathsWithConfig("""
+            {
+              "configVersion": 1,
+              "Providers": {
+                "local-ollama": { "Type": "ollama" }
+              },
+              "Models": {
+                "Definitions": { "fast": { "Provider": "local-ollama", "ModelId": "qwen3:30b", "ContextWindow": 100 } },
+                "Roles": { "Main": "fast" }
+              }
+            }
+            """);
+
+        var check = CreateCheck(paths);
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Error, result.Severity);
+        Assert.Contains("Models:Definitions:fast:ContextWindow (100) is below minimum", result.Message);
+    }
+
+    [Fact]
     public async Task ReturnsError_WhenModelProviderValueIsNotString()
     {
         var paths = CreatePathsWithConfig("""

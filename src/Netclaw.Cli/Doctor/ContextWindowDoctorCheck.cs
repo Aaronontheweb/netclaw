@@ -72,12 +72,13 @@ public sealed class ContextWindowDoctorCheck : IDoctorCheck
             return DoctorCheckResult.Warning(
                 "Context Window",
                 "No Models.Main section in config. Context window cannot be resolved until a model is selected.",
-                "Run `netclaw init` to configure a provider and main model, or add Models.Main to netclaw.json.");
+                "Run `netclaw init` to configure a provider and main model, or `netclaw model set main <provider> <model>`.");
         }
 
+        var contextWindowKey = MainContextWindowKey(root);
         if (main.ContextWindow is null)
         {
-            return await ResolveEffectiveContextWindowAsync(main.ModelId, main.Provider, cancellationToken);
+            return await ResolveEffectiveContextWindowAsync(main.ModelId, main.Provider, contextWindowKey, cancellationToken);
         }
 
         if (main.ContextWindow is > 0 and var cw)
@@ -92,7 +93,7 @@ public sealed class ContextWindowDoctorCheck : IDoctorCheck
                     "Context Window",
                     $"Pinned to {cw:N0} tokens, but the running daemon reports {live:N0} tokens, " +
                     "which takes precedence at runtime.",
-                    $"Update Models.Main.ContextWindow to {live:N0}, or restart the daemon on the pinned model.");
+                    $"Update {contextWindowKey} to {live:N0}, or restart the daemon on the pinned model.");
             }
 
             return DoctorCheckResult.Pass(
@@ -102,8 +103,8 @@ public sealed class ContextWindowDoctorCheck : IDoctorCheck
 
         return DoctorCheckResult.Error(
             "Context Window",
-            "Models.Main.ContextWindow must be a positive integer.",
-            "Set Models.Main.ContextWindow to the effective runtime context window size in tokens.");
+            $"{contextWindowKey} must be a positive integer.",
+            $"Set {contextWindowKey} to the effective runtime context window size in tokens.");
     }
 
     private ProviderRuntimeValidation ValidateRuntimeConfiguration(JsonObject root)
@@ -158,8 +159,24 @@ public sealed class ContextWindowDoctorCheck : IDoctorCheck
             : "Run `netclaw model` to pick one of the configured providers and a main model, then rerun `netclaw doctor`.";
     }
 
+    // The current shape keeps the window on the definition that Models.Roles.Main names.
+    private static string MainContextWindowKey(JsonObject root)
+    {
+        if (root["Models"]?["Roles"]?["Main"] is JsonValue role
+            && role.TryGetValue<string>(out var definitionName)
+            && !string.IsNullOrWhiteSpace(definitionName))
+        {
+            var key = (root["Models"]?["Definitions"] as JsonObject)?
+                .Select(definition => definition.Key)
+                .FirstOrDefault(name => string.Equals(name, definitionName, StringComparison.OrdinalIgnoreCase));
+            return $"Models.Definitions.{key ?? definitionName}.ContextWindow";
+        }
+
+        return "Models.Main.ContextWindow";
+    }
+
     private async Task<DoctorCheckResult> ResolveEffectiveContextWindowAsync(
-        string modelId, string providerName, CancellationToken ct)
+        string modelId, string providerName, string contextWindowKey, CancellationToken ct)
     {
         string? daemonError = null;
         try
@@ -203,6 +220,6 @@ public sealed class ContextWindowDoctorCheck : IDoctorCheck
             "Context Window",
             $"Could not detect context window for {modelId} ({string.Join("; ", reasons)}). " +
             "At runtime, the daemon will attempt auto-detection from the provider.",
-            "Set Models.Main.ContextWindow in netclaw.json to pin a specific value.");
+            $"Set {contextWindowKey} in netclaw.json to pin a specific value.");
     }
 }

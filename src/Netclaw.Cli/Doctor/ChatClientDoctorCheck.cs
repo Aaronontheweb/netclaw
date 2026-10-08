@@ -68,10 +68,21 @@ public sealed class ChatClientDoctorCheck : IDoctorCheck
             runtimeConfiguration = root is not null
                 ? ProviderRuntimeConfiguration.FromJson(root)
                 : ProviderRuntimeConfiguration.FromConfiguration(_configuration);
+            if (ModelConfigurationValidation.ValidateSelection(_configuration, models) is { } selectionError)
+                throw new ModelConfigurationException(selectionError);
+
             validation = ProviderRuntimeValidation.Evaluate(
                 providers,
                 models,
                 runtimeConfiguration);
+        }
+        catch (ModelConfigurationException ex)
+        {
+            return Task.FromResult(DoctorCheckResult.Error(
+                CheckName,
+                $"Invalid model configuration: {ex.Message} " +
+                "The daemon will not start with this configuration. A running daemon keeps using its previous configuration, and applies no change from netclaw.json, until the Models section is fixed.",
+                "Edit the Models section of `netclaw.json` as described, then rerun `netclaw doctor`."));
         }
         catch (Exception ex) when (ex is InvalidOperationException or FormatException)
         {
@@ -225,22 +236,27 @@ public sealed class ChatClientDoctorCheck : IDoctorCheck
 
         if (root?["Models"] is JsonObject models)
         {
-            foreach (var role in new[] { "Main", "Fallback", "Compaction" })
+            // Inline roles (legacy shape) and named definitions (current shape) carry the same fields.
+            var entries = new[] { "Main", "Fallback", "Compaction" }
+                .Select(role => (Path: $"Models.{role}", Entry: models[role]))
+                .Concat((models["Definitions"] as JsonObject ?? [])
+                    .Select(definition => (Path: $"Models.Definitions.{definition.Key}", Entry: definition.Value)));
+            foreach (var (entryPath, entry) in entries)
             {
-                if (models[role] is not JsonObject model)
+                if (entry is not JsonObject model)
                     continue;
 
                 if (TryGetProperty(model, nameof(ModelReference.Provider), out var provider)
                     && IsPresentNonString(provider))
                 {
-                    path = $"Models.{role}.Provider";
+                    path = $"{entryPath}.Provider";
                     return true;
                 }
 
                 if (TryGetProperty(model, nameof(ModelReference.ModelId), out var modelId)
                     && IsPresentNonString(modelId))
                 {
-                    path = $"Models.{role}.ModelId";
+                    path = $"{entryPath}.ModelId";
                     return true;
                 }
             }
