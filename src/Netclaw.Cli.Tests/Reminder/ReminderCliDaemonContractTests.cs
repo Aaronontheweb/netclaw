@@ -148,6 +148,75 @@ public sealed class ReminderCliDaemonContractTests : IAsyncDisposable
             row.IndexOf("session-1", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task List_prints_a_table_with_one_row_per_reminder()
+    {
+        await using var app = await StartDaemonAsync();
+        await ImportAsync(app, WriteFile("definition.json", NamedEnumDefinition));
+        _manager.Saved[new ReminderId("a-much-longer-reminder-id")] = _manager.Saved[new ReminderId("import-e2e")] with
+        {
+            Id = new ReminderId("a-much-longer-reminder-id"),
+            Title = "Failed one",
+            Enabled = false,
+            ConsecutiveFailures = 5,
+            TerminalOutcome = ReminderTerminalOutcome.Failed
+        };
+
+        var result = await RunAsync(app, "reminder", "list");
+
+        Assert.True(result.ExitCode == 0, result.Stderr);
+        var lines = result.Stdout.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal(4, lines.Length);
+        Assert.StartsWith("id ", lines[0], StringComparison.Ordinal);
+        Assert.EndsWith("title", lines[0], StringComparison.Ordinal);
+        var imported = lines.Single(l => l.StartsWith("import-e2e", StringComparison.Ordinal));
+        var failed = lines.Single(l => l.StartsWith("a-much-longer-reminder-id", StringComparison.Ordinal));
+        Assert.Contains("enabled", imported, StringComparison.Ordinal);
+        Assert.EndsWith("Import end to end", imported, StringComparison.Ordinal);
+        Assert.Contains("failed", failed, StringComparison.Ordinal);
+        // Columns are sized from the longest id, so every row's status column starts at the same offset.
+        Assert.Equal(
+            lines[0].IndexOf("status", StringComparison.Ordinal),
+            imported.IndexOf("enabled", StringComparison.Ordinal));
+        Assert.Equal(
+            lines[0].IndexOf("status", StringComparison.Ordinal),
+            failed.IndexOf("failed", StringComparison.Ordinal));
+        Assert.DoesNotContain("\"id\"", result.Stdout, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task List_json_prints_exactly_what_the_command_printed_before_the_table()
+    {
+        await using var app = await StartDaemonAsync();
+        await ImportAsync(app, WriteFile("definition.json", NamedEnumDefinition));
+
+        var result = await RunAsync(app, "reminder", "list", "--json");
+
+        using var raw = await app.Api.ListRemindersAsync(TestContext.Current.CancellationToken);
+        var body = await raw.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+        var previousOutput = System.Text.Json.JsonSerializer.Serialize(
+            System.Text.Json.JsonSerializer.Deserialize<System.Text.Json.JsonElement>(body),
+            new System.Text.Json.JsonSerializerOptions(System.Text.Json.JsonSerializerDefaults.Web) { WriteIndented = true });
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(previousOutput, result.Stdout);
+        Assert.StartsWith("[", result.Stdout, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(false, "No reminders.")]
+    [InlineData(true, "No active reminders.")]
+    public async Task List_with_no_reminders_exits_zero_and_says_so(bool json, string expected)
+    {
+        await using var app = await StartDaemonAsync();
+
+        var result = json
+            ? await RunAsync(app, "reminder", "list", "--json")
+            : await RunAsync(app, "reminder", "list");
+
+        Assert.Equal(0, result.ExitCode);
+        Assert.Equal(expected, result.Stdout);
+    }
+
     private static async Task ImportAsync(DaemonHost host, string file)
     {
         var result = await RunAsync(host, "reminder", "import", file);
@@ -245,6 +314,12 @@ public sealed class ReminderCliDaemonContractTests : IAsyncDisposable
                         d.Schedule, null, d.Enabled, null, d.Audience)
                     : null));
             });
+
+            Receive<ListRemindersCommand>(_ =>
+                Sender.Tell(new ReminderListResponse(state.Saved.Values.Select(d => new ReminderInfo(
+                    d.Id, d.Title, d.Instructions, d.Delivery, d.DeliveryRequired, d.DeliveryInstructions,
+                    d.Schedule, d.Schedule.FireAt, d.Enabled, null, d.Audience,
+                    ConsecutiveFailures: d.ConsecutiveFailures, TerminalOutcome: d.TerminalOutcome)).ToList())));
 
             Receive<GetReminderHistoryQuery>(query =>
                 Sender.Tell(new ReminderHistoryResponse(query.Id, state.Saved.ContainsKey(query.Id), state.History)));
