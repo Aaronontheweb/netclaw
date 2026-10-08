@@ -31,7 +31,7 @@ namespace Netclaw.Actors.Tests.Reminders;
 /// endpoint is not available.
 /// </summary>
 [Collection(ReminderActorTestCollection.Name)]
-public sealed class ReminderManagerProductionRetryTests : TestKit
+public sealed class ReminderManagerProductionRetryTests : TestKit, IAsyncDisposable
 {
     private static readonly TimeSpan FirstFireDelay = TimeSpan.FromSeconds(10);
 
@@ -49,11 +49,13 @@ public sealed class ReminderManagerProductionRetryTests : TestKit
 
     public ReminderManagerProductionRetryTests(ITestOutputHelper output) : base(output: output) { }
 
-    protected override async Task AfterAllAsync()
+    // TestKit stops the actor system only after AfterAllAsync returns. Delete the directory
+    // after TestKit has disposed, and not in AfterAllAsync.
+    async ValueTask IAsyncDisposable.DisposeAsync()
     {
         try
         {
-            await base.AfterAllAsync();
+            await base.DisposeAsync();
         }
         finally
         {

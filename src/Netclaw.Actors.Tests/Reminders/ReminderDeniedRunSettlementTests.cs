@@ -29,7 +29,7 @@ namespace Netclaw.Actors.Tests.Reminders;
 /// auto-disables, and alerts once per distinct denial until the reminder next records an ok run.
 /// </summary>
 [Collection(ReminderActorTestCollection.Name)]
-public sealed class ReminderDeniedRunSettlementTests : TestKit
+public sealed class ReminderDeniedRunSettlementTests : TestKit, IAsyncDisposable
 {
     private const string DeniedText = "Tool access denied: shell_execute needs approval, and nobody can answer a prompt in an unattended run.";
 
@@ -45,11 +45,13 @@ public sealed class ReminderDeniedRunSettlementTests : TestKit
 
     public ReminderDeniedRunSettlementTests(ITestOutputHelper output) : base(output: output) { }
 
-    protected override async Task AfterAllAsync()
+    // TestKit stops the actor system only after AfterAllAsync returns. Delete the directory
+    // after TestKit has disposed, and not in AfterAllAsync.
+    async ValueTask IAsyncDisposable.DisposeAsync()
     {
         try
         {
-            await base.AfterAllAsync();
+            await base.DisposeAsync();
         }
         finally
         {
