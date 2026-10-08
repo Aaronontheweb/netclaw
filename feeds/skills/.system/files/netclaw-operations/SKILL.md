@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.106.0"
+  version: "2.107.0"
 ---
 
 # Netclaw Operations
@@ -230,14 +230,19 @@ This failure does not prove that the turn exhausted its tool budget.
 
 ## Large tool output
 
-Tool output is bounded to a small inline budget
-(`Session.Tuning.MaxInlineToolResultChars`, default 2000 chars) so it never floods
-the context window. When a tool's output exceeds that budget you get a head+tail
-view inline plus a pointer to the full output — not the whole thing:
+Netclaw bounds each tool result to an inline budget
+(`Session.Tuning.MaxInlineToolResultChars`, default 12,000 characters;
+`shell_execute` uses 2,000). A longer result gives you its first part and its
+last part, not the whole text:
 
-- **`shell_execute`** retains the full redacted output inside the current session.
-  Use `tool_output_read` with the returned `CallId`, `Start`, and `Limit` values.
+- **Each tool, also `skill_load`, `skill_read_resource`, and MCP tools**: Netclaw
+  keeps the full redacted result inside the current session. The last line of the
+  result names `tool_output_read` and a `CallId`. Use `tool_output_read` with that
+  `CallId` and a `Start`/`Limit` window to read the middle.
   Do not request a path or rerun the source tool to read more.
+  If the last line says that Netclaw did not keep the full output, the middle is
+  not available: narrow the call if the tool has a bound, or read one specific
+  resource with `skill_read_resource`.
 - **`file_read`** on a large file returns the head and steers you to read a
   specific range with `StartLine`/`Limit` or `grep` (`StartLine` is a 1-based line
   number — line 1 is the first line). Don't `cat` a huge file through

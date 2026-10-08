@@ -8,9 +8,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Tools;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Gateway;
 using Netclaw.Daemon.Services;
+using Netclaw.Security;
+using Netclaw.Tests.Utilities;
 using Netclaw.Tools;
 using Xunit;
 
@@ -305,6 +308,53 @@ public sealed class SessionStorageResolverTests : IDisposable
             Assert.False(File.Exists(Path.Combine(resolved.SessionDirectory.Value, "notes.txt")));
             var warning = Assert.Single(log.Warnings);
             Assert.Contains("does not exist yet", warning, StringComparison.Ordinal);
+        }
+        finally
+        {
+            SqliteTestPools.Clear(oldPaths);
+            if (Directory.Exists(oldHome))
+                Directory.Delete(oldHome, recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Spill_after_a_home_move_uses_the_session_folder_of_the_current_home()
+    {
+        // The spill writer creates the session folder when it is missing. It must
+        // create the folder that the resolver gives for the current home, which is
+        // the folder that the shell launcher and tool_output_read also use.
+        var oldHome = Path.Combine(Path.GetTempPath(), $"netclaw-old-{Guid.NewGuid():N}");
+        var oldPaths = new NetclawPaths(oldHome);
+        oldPaths.EnsureDirectoriesExist();
+        var currentPaths = CreatePaths();
+        try
+        {
+            await MigrateAsync(oldPaths, oldPaths.SqliteDbPath);
+            var sessionId = new SessionId("signalr/moved-spill");
+            var original = new SqliteSessionStorageResolver(oldPaths, new FakeTimeProvider()).Resolve(sessionId);
+            SqliteTestPools.Clear(oldPaths);
+            File.Copy(oldPaths.SqliteDbPath, currentPaths.SqliteDbPath);
+            var resolved = new SqliteSessionStorageResolver(currentPaths, new FakeTimeProvider()).Resolve(sessionId);
+            Assert.False(Directory.Exists(resolved.SessionDirectory.Value));
+            var options = new TestToolExecutionContextOptions { Audience = TrustAudience.Personal };
+
+            var result = await ToolOutputSpill.BoundAndSpillAsync(
+                new string('H', 200) + new string('M', 200) + new string('T', 200),
+                "call_moved",
+                budget: 100,
+                TestToolExecutionContext.CreateBoundWithStorage(sessionId.Value, resolved, options).Invocation,
+                NullLogger.Instance,
+                TestContext.Current.CancellationToken);
+            var continuation = await new ToolOutputReadTool().ExecuteAsync(
+                ToolInput.Create("CallId", "call_moved", "Start", 200, "Limit", 200),
+                TestToolExecutionContext.CreateBoundWithStorage(sessionId.Value, resolved, options),
+                TestContext.Current.CancellationToken);
+
+            Assert.Contains("CallId='call_moved'", result, StringComparison.Ordinal);
+            Assert.StartsWith(new string('M', 100), continuation, StringComparison.Ordinal);
+            Assert.StartsWith(currentPaths.SessionsDirectory, resolved.SessionDirectory.Value, StringComparison.Ordinal);
+            Assert.True(Directory.Exists(Path.Combine(resolved.SessionDirectory.Value, "tool-calls")));
+            Assert.False(Directory.Exists(original.SessionDirectory.Value));
         }
         finally
         {

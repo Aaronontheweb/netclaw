@@ -233,7 +233,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
             // to a session file and steer the model to read a slice. Tools only
             // bound their own capture for memory safety; they do not window or spill.
             result = await ToolOutputSpill.BoundAndSpillAsync(
-                modelFacing, redacted, toolCall.CallId, ResolveInlineBudget(tool, context), context.Invocation, ct);
+                modelFacing, redacted, toolCall.CallId, ResolveInlineBudget(tool, context), context.Invocation, _logger, ct);
 
             sw.Stop();
             _logger.LogInformation(
@@ -353,7 +353,7 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
                     var redacted = SecretOutputRedactor.Redact(completed.Result);
                     var modelResult = tool.SuppressOutputRedaction ? completed.Result : redacted;
                     modelResult = await ToolOutputSpill.BoundAndSpillAsync(
-                        modelResult, redacted, toolCall.CallId, ResolveInlineBudget(tool, context), context.Invocation, ct);
+                        modelResult, redacted, toolCall.CallId, ResolveInlineBudget(tool, context), context.Invocation, _logger, ct);
                     _logger.LogInformation(
                         "Tool executed: {ToolName} ({Duration}ms, {ResultLength} chars) " +
                         "authorizationAttemptId={AuthorizationAttemptId} sessionId={SessionId} callId={CallId}",
