@@ -501,16 +501,7 @@ public sealed partial class DaemonManager
 
     private bool TryGetRunningPid(out int pid)
     {
-        // The lock is the singleton proof, so it decides first: a PID file without a held lock is
-        // stale, however alive the process it names (a recycled PID, or another home's daemon).
-        if (!IsLockFileHeld())
-        {
-            CleanupPidFile();
-            pid = 0;
-            return false;
-        }
-
-        // PID file: identifies the lock holder when it names a netclawd process.
+        // Tier 1: PID file (fast path — covers normal operation)
         if (TryReadPid(out pid))
         {
             try
@@ -527,11 +518,17 @@ public sealed partial class DaemonManager
             }
         }
 
-        // A daemon holds the lock but we have no (valid) PID file.
-        // Signal to callers via pid == 0 that we know a daemon exists
-        // but can't identify its PID.
-        pid = 0;
-        return true;
+        // Tier 2: Lock file probe (fast, OS-backed — covers PID file loss)
+        if (IsLockFileHeld())
+        {
+            // A daemon holds the lock but we have no (valid) PID file.
+            // Signal to callers via pid == 0 that we know a daemon exists
+            // but can't identify its PID.
+            pid = 0;
+            return true;
+        }
+
+        return false;
     }
 
     /// <summary>
@@ -551,8 +548,10 @@ public sealed partial class DaemonManager
                 bufferSize: 1);
             return false;
         }
-        catch (IOException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
+            // IOException: held by the daemon. UnauthorizedAccessException: we cannot open the
+            // file (daemon owned by another user, read-only home), so we cannot tell: same answer.
             return true;
         }
     }

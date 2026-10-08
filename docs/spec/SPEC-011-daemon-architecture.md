@@ -229,12 +229,16 @@ the actor system cleanly. Under the container supervisor
 the supervisor will restart the daemon; this is how a containerised daemon is
 bounced from the CLI.
 
-The unit serves a home when its `MainPID` is that home's daemon, or when that
-home is the default home (`~/.netclaw`, links resolved) and the unit is not given
-a different `NETCLAW_HOME`. With any other `NETCLAW_HOME` that does not match the
-unit's `MainPID`, `start` and `stop` act on that home's own daemon process and
-never on the unit. A PID file counts as this home's daemon only while this
-home's lock file is held.
+The unit serves a home when it has a main process and that process's own
+`NETCLAW_HOME` (read from `/proc/<MainPID>/environ`, so it sees `Environment=` and
+`EnvironmentFile=` alike; absent means the default home) is that home, links
+resolved. If the environment cannot be read, a `MainPID` equal to the home's
+daemon PID counts. When the unit has no main process (the crash-loop window), the
+unit's `Environment` property decides: no `NETCLAW_HOME` means the default home.
+A unit whose `NETCLAW_HOME` comes only from an `EnvironmentFile`, sampled at an
+instant when it has no main process, is therefore treated as serving the default
+home. For a home the unit does not serve, `start` and `stop` act on that home's
+own daemon process and never on the unit.
 
 The session journals each accepted input before it acknowledges the source.
 The record retains the text, media, source message ID, and original authority.

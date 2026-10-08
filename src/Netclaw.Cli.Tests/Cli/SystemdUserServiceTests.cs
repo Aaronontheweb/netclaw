@@ -17,8 +17,12 @@ public sealed class SystemdUserServiceTests : IDisposable
 
     private static DaemonStatus RunningAs(int pid) => new(true, pid, $"Daemon running (PID {pid}).");
 
-    private SystemdUserService ServiceFor(FakeSystemCommandRunner runner, string homePath)
-        => new(WriteUnit(), runner, enabledOnThisPlatform: true, homePath: homePath);
+    // environ == null means the process environment is unreadable. Never reads the real /proc.
+    private SystemdUserService ServiceFor(FakeSystemCommandRunner runner, string homePath, string? environ = null)
+        => new(WriteUnit(), runner, enabledOnThisPlatform: true, homePath: homePath, environReader: _ => environ);
+
+    private static string Environ(string? netclawHome) =>
+        "PATH=/usr/bin\0" + (netclawHome is null ? string.Empty : $"NETCLAW_HOME={netclawHome}\0") + "LANG=C\0";
 
     private string ScratchHome => Path.Combine(_dir.Path, "scratch-home");
 
@@ -60,6 +64,74 @@ public sealed class SystemdUserServiceTests : IDisposable
 
             AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, home).GetStopOwnershipAsync(RunningAs(4242)));
         }
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsUnmanaged_WhenMainPidMatchesButTheProcessServesAnotherHome()
+    {
+        // A stale pid file in the scratch home names the default home's unit daemon.
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("active"));
+        runner.Enqueue(MainPid("4242"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged,
+            await ServiceFor(runner, ScratchHome, Environ(DefaultHome)).GetStopOwnershipAsync(RunningAs(4242)));
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsManaged_WhenMainPidMatchesAndTheProcessServesThisHome()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("active"));
+        runner.Enqueue(MainPid("4242"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Managed,
+            await ServiceFor(runner, ScratchHome, Environ(ScratchHome + "/")).GetStopOwnershipAsync(RunningAs(4242)));
+    }
+
+    [Fact]
+    public async Task Stop_ReturnsManaged_WhenTheProcessHasNoNetclawHome_ForTheDefaultHome()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("active"));
+        runner.Enqueue(MainPid("4242"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Managed,
+            await ServiceFor(runner, DefaultHome, Environ(null)).GetStopOwnershipAsync(RunningAs(4242)));
+    }
+
+    [Fact]
+    public async Task Stop_DoesNotStopTheUnit_ForTheDefaultHomeWhenItsProcessServesAnotherHomeViaAnEnvironmentFile()
+    {
+        // `systemctl show -p Environment` has no NETCLAW_HOME here: only the process environment knows.
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("active"));
+        runner.Enqueue(MainPid("4242"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Unmanaged,
+            await ServiceFor(runner, DefaultHome, Environ("/home/op/alt")).GetStopOwnershipAsync(NotRunning));
+    }
+
+    [Fact]
+    public async Task Stop_FallsBackToTheMainPidMatch_WhenTheProcessEnvironmentIsUnreadable()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("active"));
+        runner.Enqueue(MainPid("4242"));
+
+        AssertKind(SystemdUserServiceOwnershipKind.Managed,
+            await ServiceFor(runner, ScratchHome, environ: null).GetStopOwnershipAsync(RunningAs(4242)));
+    }
+
+    [Fact]
+    public async Task Stop_IgnoresAnEnvironmentVariableWhoseNameMerelyEndsInNetclawHome()
+    {
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(State("activating"));
+        runner.Enqueue(MainPid("0", "XNETCLAW_HOME=/home/op/data"));
+
+        // Not NETCLAW_HOME: the unit still starts the default home.
+        AssertKind(SystemdUserServiceOwnershipKind.Managed, await ServiceFor(runner, DefaultHome).GetStopOwnershipAsync(NotRunning));
     }
 
     [Fact]

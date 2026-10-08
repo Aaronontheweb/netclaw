@@ -34,13 +34,16 @@ internal sealed class SystemdUserService(
     string? unitFilePath = null,
     ISystemCommandRunner? commandRunner = null,
     bool? enabledOnThisPlatform = null,
-    string? homePath = null)
+    string? homePath = null,
+    Func<int, string?>? environReader = null)
 {
     private const string ServiceName = "netclaw.service";
 
     private readonly string _unitFilePath = unitFilePath ?? DaemonManager.SystemdUserUnitFilePath;
     private readonly ISystemCommandRunner _commandRunner = commandRunner ?? ProcessSystemCommandRunner.Instance;
     private readonly bool _enabledOnThisPlatform = enabledOnThisPlatform ?? OperatingSystem.IsLinux();
+
+    private readonly Func<int, string?> _readEnviron = environReader ?? ReadProcEnviron;
 
     private readonly string _homePath = homePath ?? new NetclawPaths().BasePath;
 
@@ -72,10 +75,19 @@ internal sealed class SystemdUserService(
         var show = await _commandRunner.RunAsync("systemctl", $"--user show {ServiceName} -p MainPID -p Environment");
         var mainPid = ShowValue(show, "MainPID") is { } text && int.TryParse(text, out var parsed) ? parsed : 0;
 
-        if (mainPid != 0 && daemonStatus.Pid == mainPid)
-            return SystemdUserServiceOwnership.Managed($"netclaw.service runs this home's daemon (PID {mainPid}).");
+        if (mainPid != 0)
+        {
+            // The process's real environment is the truth, whatever its source (Environment=,
+            // EnvironmentFile=). If it cannot be read, a PID match with the daemon is the best proof left.
+            var serves = ProcessServesHome(mainPid, _homePath) ?? (daemonStatus.Pid == mainPid ? true : null);
+            if (serves is { } known)
+                return known
+                    ? SystemdUserServiceOwnership.Managed($"netclaw.service runs this home's daemon (PID {mainPid}).")
+                    : SystemdUserServiceOwnership.Unmanaged(
+                        $"netclaw.service does not serve {_homePath} (main PID {mainPid}).");
+        }
 
-        // Mid-restart (or mid-crash) the unit has no daemon to point at, so its configuration says
+        // No main process to inspect (mid-restart or mid-crash): the unit's configuration says
         // which home it will start. Without a NETCLAW_HOME of its own it starts the default home.
         var unitHome = EnvironmentValue(ShowValue(show, "Environment"), "NETCLAW_HOME") ?? DefaultHomePath;
         if (IsDefaultHome(_homePath) && IsDefaultHome(unitHome))
@@ -114,6 +126,35 @@ internal sealed class SystemdUserService(
 
         return StateCheckFailed(active, enabled) ?? SystemdUserServiceOwnership.Unmanaged(
             "netclaw.service is installed but neither active nor enabled.");
+    }
+
+    /// <summary>
+    /// Whether the process <paramref name="pid"/> serves <paramref name="homePath"/>, from its
+    /// NETCLAW_HOME (absent means the default home). <c>null</c> when its environment cannot be read.
+    /// </summary>
+    private bool? ProcessServesHome(int pid, string homePath)
+    {
+        if (_readEnviron(pid) is not { } environ)
+            return null;
+
+        var processHome = environ.Split('\0')
+            .FirstOrDefault(entry => entry.StartsWith("NETCLAW_HOME=", StringComparison.Ordinal))
+            ?["NETCLAW_HOME=".Length..];
+
+        var servedHome = string.IsNullOrEmpty(processHome) ? DefaultHomePath : processHome;
+        return string.Equals(ResolveLinks(servedHome), ResolveLinks(homePath), StringComparison.Ordinal);
+    }
+
+    private static string? ReadProcEnviron(int pid)
+    {
+        try
+        {
+            return File.ReadAllText($"/proc/{pid}/environ");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
     }
 
     private static string? ShowValue(SystemCommandResult show, string property) =>

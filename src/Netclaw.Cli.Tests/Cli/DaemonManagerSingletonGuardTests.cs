@@ -155,36 +155,31 @@ public sealed class DaemonManagerSingletonGuardTests : IDisposable
 
     [SlopwatchSuppress("SW001", "Uses a copy of /bin/sleep as the stand-in daemon process.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "Uses a copy of /bin/sleep as the stand-in daemon process.")]
-    public void GetStatus_TreatsAPidFileAsStale_WhenThisHomesLockIsFree_EvenIfTheProcessIsAlive()
+    public void GetStatus_KeepsThePidFile_WhenTheLockProbeSaysFree_ButTheProcessIsAlive()
     {
-        // F4: another home's pid file can name the unit's live daemon. Without this home's lock
-        // held, that pid is not this home's daemon.
+        // Where file locking is unsupported or disabled the probe always says "free". A status
+        // call must not delete the pid file of a live daemon (its watchdog would shut it down).
         var daemon = StartFakeDaemon();
         File.WriteAllText(_paths.PidFilePath, daemon.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
-
-        var status = _sut.GetStatus();
-
-        Assert.False(status.IsRunning);
-        Assert.Null(status.Pid);
-        Assert.False(File.Exists(_paths.PidFilePath));
-    }
-
-    [SlopwatchSuppress("SW001", "Uses a copy of /bin/sleep as the stand-in daemon process.")]
-    [Fact(SkipUnless = nameof(IsLinux), Skip = "Uses a copy of /bin/sleep as the stand-in daemon process.")]
-    public void GetStatus_ReportsThePidFilesProcess_WhenThisHomesLockIsHeld()
-    {
-        var daemon = StartFakeDaemon();
-        File.WriteAllText(_paths.PidFilePath, daemon.Id.ToString(System.Globalization.CultureInfo.InvariantCulture));
-        using var holder = new FileStream(
-            _paths.LockFilePath,
-            FileMode.OpenOrCreate,
-            FileAccess.ReadWrite,
-            FileShare.None);
 
         var status = _sut.GetStatus();
 
         Assert.True(status.IsRunning);
         Assert.Equal(daemon.Id, status.Pid);
+        Assert.True(File.Exists(_paths.PidFilePath));
+    }
+
+    [Fact]
+    public void IsLockFileHeld_DoesNotThrow_WhenTheLockFileCannotBeOpened()
+    {
+        // A directory at the lock path makes the open throw UnauthorizedAccessException, as a
+        // file owned by another user or a read-only home does.
+        Directory.CreateDirectory(_paths.LockFilePath);
+
+        var status = _sut.GetStatus();
+
+        Assert.True(_sut.IsLockFileHeld());
+        Assert.True(status.IsRunning);
     }
 
     public static bool IsLinux => OperatingSystem.IsLinux();
