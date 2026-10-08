@@ -2168,6 +2168,45 @@ assert_complex_large_shell_output_spill() {
         && stdout_response_contains '872671849'
 }
 
+# True when the result of a call in the headless log has the continuation line
+# for that same call. A result ends at the next timestamped log record.
+# Args: tool name, call id.
+headless_log_result_has_spill_steer() {
+    local headless_log
+    headless_log=$(stdout_json_headless_log_path) || return 1
+    awk -v start="TOOL_RESULT: $1 call_id=$2 " -v steer="tool_output_read using CallId='$2'" '
+        /^\[[0-9][0-9][0-9][0-9]-/ { in_result = index($0, start) > 0 }
+        in_result && index($0, steer) > 0 { found = 1 }
+        END { exit found ? 0 : 1 }
+    ' "$headless_log"
+}
+
+# A session gets its workspace folder on first use. Before the fix, only a
+# shell launch created it, so an oversized result of another tool had no
+# continuation line and no retained text in a session with no shell call.
+# This case is one turn with no shell call. The fixture skill is longer than
+# the inline budget, and its phrase is in the part that the window removes.
+# Evidence: the skill_load result names tool_output_read with its own call id,
+# the agent reads more through that call id, and the response has the phrase.
+# A read of the physical skill file is a failure: it goes around the spill.
+assert_complex_skill_spill_steer_single_turn() {
+    local load_call_id
+    stdout_json_envelope_valid || return 1
+    load_call_id=$(jq -r '
+        first(.toolCalls[]?
+            | select(.toolName == "skill_load")
+            | select((.argumentsJson // "") | ascii_downcase | contains("eval-spill-probe"))
+            | .callId) // empty' "$STDOUT_FILE" 2>/dev/null)
+    [[ -n "$load_call_id" ]] || return 1
+    headless_log_result_has_spill_steer 'skill_load' "$load_call_id" || return 1
+    jq -e --arg id "$load_call_id" '
+        any(.toolCalls[]?; .toolName == "tool_output_read" and ((.argumentsJson // "") | contains($id)))
+        and (any(.toolCalls[]?;
+            (.toolName != "skill_load") and ((.argumentsJson // "") | test("eval-spill-probe|SKILL\\.md"))) | not)
+    ' "$STDOUT_FILE" >/dev/null 2>&1 || return 1
+    stdout_response_contains 'cobalt-heron-4471'
+}
+
 # Large FILE: a pre-seeded ~314 KB file (>256 KB, so file_read returns a bounded
 # sample + steer). The prompt asks for a small line WINDOW around 5000 rather than
 # exactly line 5000: the model pages correctly with file_read StartLine/Limit (the
@@ -3355,6 +3394,12 @@ run_all() {
     run_case --json complex_large_shell_output_spill "retrieves a deep line from oversized shell output unaided" \
         "Run this exact command once with shell_execute, without modifying, piping, filtering, redirecting, or shortening it: $LARGE_OUTPUT_EVAL_COMMAND. Then tell me the number it prints on line 200." \
         "Using one shell_execute call, run this command exactly as written, with no added pipe, filter, redirect, or argument: $LARGE_OUTPUT_EVAL_COMMAND. Then tell me which number is printed on the 200th line of its output."
+
+    # One turn with no shell call. The prompt names the skill and the goal, not
+    # the continuation tool.
+    run_case --json complex_skill_spill_steer_single_turn "reads the middle of an oversized skill in a session with no shell call" \
+        "Load the eval-spill-probe skill. One of its records holds a verification phrase. Tell me the exact phrase." \
+        "Use the eval-spill-probe skill. Which exact verification phrase does one of its records hold?"
 
     # bounded-tool-output: oversized FILE. The prompt states only the goal — read
     # a deep line of a named large file. How to cope with it being too large for
