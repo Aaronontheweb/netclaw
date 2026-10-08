@@ -20,8 +20,8 @@ public sealed class ModelConfigurationValidationTests
         var check = ModelConfigurationValidation.Check(Build(modelsJson));
 
         Assert.Null(check.Error);
-        Assert.Equal(ProviderRuntimeStatus.Valid, check.Validation.Status);
-        Assert.Equal("m1", check.Models.Main.ModelId);
+        Assert.Equal(ProviderRuntimeStatus.Valid, check.Valid!.Validation.Status);
+        Assert.Equal("m1", check.Valid!.Models.Main.ModelId);
     }
 
     [Theory]
@@ -32,7 +32,7 @@ public sealed class ModelConfigurationValidationTests
         var check = ModelConfigurationValidation.Check(Build(modelsJson));
 
         Assert.Null(check.Error);
-        Assert.Equal(ProviderRuntimeStatus.NoProviderConfigured, check.Validation.Status);
+        Assert.Equal(ProviderRuntimeStatus.NoProviderConfigured, check.Valid!.Validation.Status);
     }
 
     [Theory]
@@ -60,11 +60,28 @@ public sealed class ModelConfigurationValidationTests
     }
 
     [Fact]
-    public void Require_ReturnsTheCheck_WhenValid()
+    public void Require_ReturnsTheValidConfiguration()
     {
-        var check = ModelConfigurationValidation.Require(Build("""{"Main":{"Provider":"p","ModelId":"m1"}}"""));
+        var valid = ModelConfigurationValidation.Require(Build("""{"Main":{"Provider":"p","ModelId":"m1"}}"""));
 
-        Assert.Equal("m1", check.Models.Main.ModelId);
+        Assert.Equal("m1", valid.Models.Main.ModelId);
+    }
+
+    // The binder or the VendorOptions check rejects these. The error names the provider.
+    [Theory]
+    [InlineData("""{"Type":"ollama","AuthMethod":"banana"}""")]
+    [InlineData("""{"Type":"ollama","VendorOptions":"x"}""")]
+    [InlineData("""{"Type":"ollama","OAuthTokenExpiry":"garbage"}""")]
+    public void ProviderThatCannotBeLoaded_IsAnErrorNamingTheProvider(string provider)
+    {
+        var check = ModelConfigurationValidation.Check(new ConfigurationBuilder()
+            .AddJsonStream(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(
+                "{\"Providers\":{\"p\":" + provider + "},\"Models\":{\"Main\":{\"Provider\":\"p\",\"ModelId\":\"m1\"}}}")))
+            .Build());
+
+        Assert.NotNull(check.Error);
+        Assert.Contains("Providers:p is invalid", check.Error);
+        Assert.DoesNotContain("   at ", check.Error);
     }
 
     private static IConfiguration Build(string? modelsJson)

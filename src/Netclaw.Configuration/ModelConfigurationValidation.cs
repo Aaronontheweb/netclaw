@@ -7,15 +7,16 @@ using Microsoft.Extensions.Configuration;
 
 namespace Netclaw.Configuration;
 
-/// <summary>
-/// Outcome of <see cref="ModelConfigurationValidation.Check"/>. When <see cref="Error"/> is set,
-/// the other members hold empty defaults and must not be used.
-/// </summary>
-public sealed record ModelConfigurationCheck(
-    string? Error,
+/// <summary>The providers and models that passed <see cref="ModelConfigurationValidation.Check"/>.</summary>
+public sealed record ValidModelConfiguration(
     Dictionary<string, ProviderEntry> Providers,
     ModelSelection Models,
     ProviderRuntimeValidation Validation);
+
+/// <summary>
+/// Outcome of <see cref="ModelConfigurationValidation.Check"/>: the error text, or the valid configuration.
+/// </summary>
+public sealed record ModelConfigurationCheck(string? Error, ValidModelConfiguration? Valid);
 
 /// <summary>
 /// The one validation of the Models section that the daemon runs at startup and that the config
@@ -25,34 +26,41 @@ public sealed record ModelConfigurationCheck(
 /// </summary>
 public static class ModelConfigurationValidation
 {
-    /// <summary>Startup entry point: returns the check, or throws its error as a <see cref="ModelConfigurationException"/>.</summary>
-    public static ModelConfigurationCheck Require(IConfiguration configuration)
+    /// <summary>Startup entry point: returns the valid configuration, or throws the error as a <see cref="ModelConfigurationException"/>.</summary>
+    public static ValidModelConfiguration Require(IConfiguration configuration)
     {
         var check = Check(configuration);
-        return check.Error is null ? check : throw new ModelConfigurationException(check.Error);
+        return check.Valid ?? throw new ModelConfigurationException(check.Error!);
     }
 
     public static ModelConfigurationCheck Check(IConfiguration configuration)
     {
-        var providers = ProviderConfigurationLoader.Load(configuration.GetSection("Providers"));
+        Dictionary<string, ProviderEntry> providers;
+        try
+        {
+            providers = ProviderConfigurationLoader.Load(configuration.GetSection("Providers"));
+        }
+        catch (ModelConfigurationException ex)
+        {
+            return Failed($"Invalid model configuration: {ex.Message} Fix the Providers section of netclaw.json.");
+        }
 
         if (!ModelConfigurationResolver.TryResolve(configuration, out var resolution, out var error))
-            return Failed(providers, error);
+            return Failed(error);
 
         var models = resolution.Selection;
         if (ValidateSelection(configuration, models) is { } selectionError)
-            return Failed(providers, selectionError);
+            return Failed(selectionError);
 
         var validation = ProviderRuntimeValidation.Evaluate(
             providers, models, ProviderRuntimeConfiguration.FromConfiguration(configuration));
         if (validation.Status == ProviderRuntimeStatus.Invalid)
         {
             return Failed(
-                providers,
                 $"Invalid model configuration: {validation.Reason}. Fix the Providers or Models section of netclaw.json.");
         }
 
-        return new ModelConfigurationCheck(null, providers, models, validation);
+        return new ModelConfigurationCheck(null, new ValidModelConfiguration(providers, models, validation));
     }
 
     /// <summary>
@@ -80,10 +88,5 @@ public static class ModelConfigurationValidation
         }));
     }
 
-    private static ModelConfigurationCheck Failed(Dictionary<string, ProviderEntry> providers, string error)
-        => new(
-            error,
-            providers,
-            new ModelSelection(),
-            new ProviderRuntimeValidation(ProviderRuntimeStatus.Invalid, error, providers.Keys.ToList()));
+    private static ModelConfigurationCheck Failed(string error) => new(error, null);
 }

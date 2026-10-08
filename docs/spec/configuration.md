@@ -163,15 +163,22 @@ daemon. It rejects these cases:
 - a role that names an unknown definition
 - a definition with a value that cannot be read (for example `InputModalities: "banana"`)
 - a role-bound `ContextWindow` below 4,096
-- a Fallback or Compaction model whose provider is not configured, or a provider without `Type`
+- a Fallback or Compaction model whose provider is not configured
+- a provider that a role uses and that cannot be built: an unknown `Type`, a missing credential for
+  `openai` or `anthropic`, an `openai-compatible` provider without `Endpoint`, or a `Providers` entry
+  with a value that cannot be read (`AuthMethod`, `VendorOptions`, `OAuthTokenExpiry`). The check builds
+  each role's client once and discards it; this makes no network call.
+- a `netclaw.json` or `secrets.json` that the configuration source cannot read: invalid JSON, or a
+  key written twice (`Models` and `models`)
 
 At startup the daemon stops with exit code 1. It prints one `error:` line to stderr and writes the
 same text to `daemon.log`. It writes no stack trace and no crash log. The message names the keys and
 says what to remove or run. A missing Main model is not an error: it selects the No-Op chat client.
 
-When the watcher finds the file invalid, it logs one warning and does not restart the daemon. The
-daemon keeps its previous configuration and applies no change from `netclaw.json` until the Models
-section is fixed. `netclaw status` shows `config on disk not applied: <reason>` and reports
+When the watcher finds the file invalid (any of the cases above, or invalid JSON), it logs one
+warning per distinct reason and file content and does not restart the daemon. The
+daemon keeps its previous configuration and applies no change from `netclaw.json` until the file is
+fixed. `netclaw status` shows `config on disk not applied: <reason>` and reports
 `overall: degraded`. `netclaw doctor` reports the same message.
 
 ### Session

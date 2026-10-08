@@ -39,7 +39,7 @@ public static class ModelConfigurationResolver
 
     /// <summary>
     /// Resolves the section. Returns false with the <see cref="ModelConfigurationException"/> text
-    /// when the section cannot be resolved, so a host can treat it like a missing section.
+    /// when the section cannot be resolved.
     /// </summary>
     public static bool TryResolve(
         IConfiguration configuration,

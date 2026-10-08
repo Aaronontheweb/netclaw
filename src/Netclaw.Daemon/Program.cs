@@ -133,6 +133,16 @@ catch (ModelConfigurationException ex)
     StartupConfigurationFailure.Report(bootstrapPaths, ex.Message, Console.Error);
     Environment.ExitCode = 1;
 }
+catch (InvalidDataException ex)
+{
+    // netclaw.json or secrets.json that the configuration source cannot read (invalid JSON, a
+    // duplicate key such as Models and models): also an operator error.
+    StartupConfigurationFailure.Report(
+        bootstrapPaths,
+        $"Cannot read netclaw.json or secrets.json: {ex.InnerException?.Message ?? ex.Message}",
+        Console.Error);
+    Environment.ExitCode = 1;
+}
 catch (Exception ex)
 {
     crashMonitor.RecordTopLevelException(ex);
@@ -239,6 +249,10 @@ static async Task RunDaemonAsync(
     builder.Services.AddSingleton<IDaemonRestartCoordinator>(sp => sp.GetRequiredService<DaemonRestartCoordinator>());
 
     var app = builder.Build();
+
+    // Part of the same Models check as ConfigureConfigServices: the plugin and its credentials.
+    if (app.Services.GetService<ProviderPluginFactory>()?.Validate(models) is { } providerError)
+        throw new ModelConfigurationException(providerError);
     crashMonitor.AttachServices(app.Services);
 
     var startupLogger = app.Services
@@ -426,9 +440,7 @@ static (NetclawPaths Paths, ModelSelection Models) ConfigureConfigServices(
     // the NoProviderConfigured outcome and the host registers NoOpChatClientProvider.
     // The same check gates the config watcher's restart. An invalid Models section is an operator
     // error: startup stops with the message and no crash log (see the catch in the main try block).
-    var modelCheck = ModelConfigurationValidation.Require(configuration);
-
-    var (providers, models, validation) = (modelCheck.Providers, modelCheck.Models, modelCheck.Validation);
+    var (providers, models, validation) = ModelConfigurationValidation.Require(configuration);
 
     // The transport RetryingChatClient is the single owner of LLM transient-failure
     // retry, so it uses the configured streaming-retry budget.
@@ -481,9 +493,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
             options.Main = resolvedModels.Main;
             options.Fallback = resolvedModels.Fallback;
             options.Compaction = resolvedModels.Compaction;
-        })
-        .ValidateOnStart();
-    services.AddSingleton<IValidateOptions<ModelSelection>, ModelSelectionValidator>();
+        });
     var sqlitePath = paths.SqliteDbPath;
 
     services.Configure<HostOptions>(options =>

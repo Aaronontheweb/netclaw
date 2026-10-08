@@ -597,6 +597,33 @@ public sealed class DaemonCommandWiringTests : IDisposable
         Assert.Contains($"http://127.0.0.1:{localPort}/api/health/ready did not answer", output);
     }
 
+    // ── status ──────────────────────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Status_PrintsTheRejectedConfigReasonOnlyWhenTheDaemonReportsOne(bool rejected)
+    {
+        var port = FreePort();
+        WriteDaemonConfig(ScratchHome, port);
+        var reason = rejected
+            ? ",\"configNotApplied\":\"Models:Roles:Main references unknown definition 'nope'.\""
+            : string.Empty;
+        using var daemon = Listen(port, _ => (200,
+            "{\"overall\":\"" + (rejected ? "degraded" : "healthy") + "\"" + reason
+            + ",\"build\":{\"version\":\"1\",\"commitHash\":\"c\",\"buildTimestamp\":\"t\"}"
+            + ",\"process\":{\"pid\":1,\"startedAtUtc\":\"2030-01-01T00:00:00+00:00\",\"uptimeSeconds\":5}"
+            + ",\"connectors\":[],\"persistence\":{\"provider\":\"Sqlite\"},\"telemetry\":{\"enabled\":false}}"));
+
+        var (_, output) = await RunAsync(ScratchHome, ["status"]);
+
+        Assert.Contains("overall: " + (rejected ? "degraded" : "healthy"), output);
+        if (rejected)
+            Assert.Contains("config on disk not applied: Models:Roles:Main references unknown definition 'nope'.", output);
+        else
+            Assert.DoesNotContain("config on disk not applied", output);
+    }
+
     // ── daemon pair ─────────────────────────────────────────────────────────
 
     [Theory]

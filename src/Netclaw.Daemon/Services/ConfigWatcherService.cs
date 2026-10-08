@@ -9,6 +9,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Configuration;
+using Netclaw.Providers;
 
 namespace Netclaw.Daemon.Services;
 
@@ -36,6 +37,8 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
     private readonly TimeProvider _timeProvider;
     private readonly IDaemonRestartCoordinator _restartCoordinator;
     private readonly RejectedConfigState _rejectedConfig;
+    private readonly IReadOnlyList<ILlmProviderPlugin> _plugins;
+    private (string Reason, string Content)? _lastRejection;
     private readonly ILogger<ConfigWatcherService> _logger;
 
     private FileSystemWatcher? _watcher;
@@ -61,9 +64,11 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         TimeProvider timeProvider,
         IDaemonRestartCoordinator restartCoordinator,
         RejectedConfigState rejectedConfig,
+        IEnumerable<ILlmProviderPlugin> plugins,
         ILogger<ConfigWatcherService> logger)
     {
         _rejectedConfig = rejectedConfig;
+        _plugins = plugins.ToList();
         _paths = paths;
         _timeProvider = timeProvider;
         _restartCoordinator = restartCoordinator;
@@ -210,27 +215,27 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
                 "[{Timestamp:o}] Config change detected, validating before restart...",
                 _timeProvider.GetUtcNow());
 
-            // Validate JSON structure of the watched config file before triggering restart.
-            if (!ValidateConfigJson(_paths.NetclawConfigPath))
+            // A restart into a configuration that startup rejects would stop the daemon, so the
+            // running daemon keeps its configuration and `netclaw status` says why.
+            string? reason;
+            try
             {
-                _logger.LogWarning("Config validation failed. Keeping current config — no restart.");
-                return;
+                reason = FindRejection();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Config check threw");
+                reason = $"netclaw.json could not be checked: {FirstLine(ex.Message)}";
             }
 
-            // The same check startup runs on the Models section. A restart into a section it
-            // rejects would stop the daemon, so the running daemon keeps its configuration.
-            var modelCheck = ModelConfigurationValidation.Check(
-                new ConfigurationBuilder().AddNetclawDaemonSources(_paths).Build());
-            if (modelCheck.Error is not null)
+            if (reason is not null)
             {
-                _logger.LogWarning(
-                    "Config validation failed. {ModelsError} Keeping the running config: no change from netclaw.json is applied until the Models section is fixed.",
-                    modelCheck.Error);
-                _rejectedConfig.Reject(modelCheck.Error);
+                Reject(reason);
                 return;
             }
 
             _rejectedConfig.Clear();
+            _lastRejection = null;
 
             // Every valid config change — including Daemon-section settings (bind
             // address, exposure mode) — is applied via the coordinated in-process
@@ -245,8 +250,72 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         }
     }
 
-    private bool ValidateConfigJson(string path)
+    // The same checks startup makes, in the same order: the JSON syntax, the configuration
+    // sources, the Models and Providers sections, and the provider plugins.
+    private string? FindRejection()
     {
+        if (!ValidateConfigJson(_paths.NetclawConfigPath, out var jsonError))
+            return $"netclaw.json is not valid JSON: {FirstLine(jsonError)}";
+
+        IConfigurationRoot configuration;
+        try
+        {
+            configuration = new ConfigurationBuilder().AddNetclawDaemonSources(_paths).Build();
+        }
+        catch (InvalidDataException ex)
+        {
+            return $"Cannot read netclaw.json or secrets.json: {FirstLine(ex.InnerException?.Message ?? ex.Message)}";
+        }
+
+        var check = ModelConfigurationValidation.Check(configuration);
+        if (check.Valid is not { } valid)
+            return check.Error;
+
+        return valid.Validation.Status == ProviderRuntimeStatus.Valid
+            ? new ProviderPluginFactory(valid.Providers, _plugins).Validate(valid.Models)
+            : null;
+    }
+
+    private void Reject(string reason)
+    {
+        _rejectedConfig.Reject(reason);
+
+        // An unchanged invalid file raises many file events (an editor save, a touch). Warn once
+        // per reason and file content.
+        var rejection = (reason, ContentFingerprint());
+        if (rejection == _lastRejection)
+        {
+            _logger.LogDebug("Config is still rejected: {Reason}", reason);
+            return;
+        }
+
+        _lastRejection = rejection;
+        _logger.LogWarning(
+            "Config validation failed. {Reason} Keeping the running config: no change from netclaw.json is applied until it is fixed.",
+            reason);
+    }
+
+    private string ContentFingerprint()
+    {
+        try
+        {
+            return Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(_paths.NetclawConfigPath)));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return string.Empty;
+        }
+    }
+
+    private static string FirstLine(string text)
+    {
+        var end = text.IndexOfAny(['\r', '\n']);
+        return end < 0 ? text : text[..end];
+    }
+
+    private static bool ValidateConfigJson(string path, out string error)
+    {
+        error = string.Empty;
         if (!File.Exists(path))
             return true; // Missing files are OK — they're optional in the config chain
 
@@ -259,7 +328,7 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning("Invalid JSON in {ConfigFile}: {Error}", path, ex.Message);
+            error = ex.Message;
             return false;
         }
     }
