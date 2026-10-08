@@ -27,6 +27,43 @@ public sealed class ConfigEditorSessionTests : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
+    // `netclaw config` and the redo flow save through this writer.
+    [Fact]
+    public void Save_keeps_the_mode_of_an_owner_only_config()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // file modes are a POSIX concept
+
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "configVersion": 1 }""");
+        File.SetUnixFileMode(_paths.NetclawConfigPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        var session = new ConfigEditorSession(_paths);
+        session.Apply(new SectionContribution([new SectionFieldAction("Daemon.Port", SectionFieldActionKind.Set, 5299)]));
+        session.Save();
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(_paths.NetclawConfigPath));
+    }
+
+    [Fact]
+    public void Save_writes_into_the_key_spelling_the_file_already_has()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "daemon": { "port": 5000, "Host": "10.0.0.5" } }""");
+
+        var session = new ConfigEditorSession(_paths);
+        session.Apply(new SectionContribution(
+        [
+            new SectionFieldAction("Daemon.Port", SectionFieldActionKind.Set, 5299),
+            new SectionFieldAction("Daemon.Host", SectionFieldActionKind.Delete)
+        ]));
+        session.Save();
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(_paths.NetclawConfigPath));
+        var daemon = Assert.Single(doc.RootElement.EnumerateObject(), p => p.Name.Equals("daemon", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("daemon", daemon.Name);
+        Assert.Equal(5299, daemon.Value.GetProperty("port").GetInt32());
+        Assert.False(daemon.Value.TryGetProperty("Host", out _));
+    }
+
     [Fact]
     public void Save_AppliesFieldActionsAndPreservesSiblings()
     {

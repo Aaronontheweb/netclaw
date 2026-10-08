@@ -47,7 +47,9 @@ internal static class ChatOnboarding
 
     public static string BuildTrigger(NetclawPaths paths)
     {
-        var config = ConfigFileHelper.LoadJsonDictOrNull(paths.NetclawConfigPath);
+        // The daemon and plain `netclaw chat` accept a netclaw.json with comments or trailing
+        // commas. This reader does not, so such a file gives the wizard defaults, not a crash.
+        var config = ConfigFileHelper.TryLoadJsonDictOrNull(paths.NetclawConfigPath, out _);
         return IdentityStepViewModel.BuildOnboardingTrigger(
             paths,
             ReadString(config, "Identity.UserName"),

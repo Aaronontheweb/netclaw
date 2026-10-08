@@ -42,7 +42,7 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
             Paths = paths,
             Registry = new ProviderDescriptorRegistry([]),
             RequestRedraw = RequestRedraw,
-            ExistingConfig = ConfigFileHelper.LoadJsonDictOrNull(paths.NetclawConfigPath),
+            ExistingConfig = ConfigFileHelper.TryLoadJsonDictOrNull(paths.NetclawConfigPath, out _),
         };
         _orchestrator = new WizardOrchestrator([_step], _context, singleStepMode: true);
     }
@@ -72,14 +72,15 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         // untouched so a redo never clobbers customized agent definitions.
         try
         {
-            _step.WriteIdentityFiles(_paths);
-
             // Persist the Identity.* fields through the editor session `netclaw config` uses:
             // it changes only those keys, so `netclaw chat --onboarding` and the daemon read the
-            // redone values instead of the ones the first wizard run saved.
+            // redone values instead of the ones the first wizard run saved. This goes first: a
+            // netclaw.json that cannot be read or written fails before SOUL.md changes.
             var session = new ConfigEditorSession(_paths);
             session.Apply(_step.BuildContribution(_step));
             session.Save();
+
+            _step.WriteIdentityFiles(_paths);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -100,6 +101,9 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
     // lead with the file name and a short reason.
     private string DescribeWriteFailure(Exception ex)
     {
+        if (ex is JsonException)
+            return "Couldn't read netclaw.json: it has comments or is not valid JSON. Fix it and press Enter to retry.";
+
         var reason = ex is UnauthorizedAccessException ? "permission denied" : "write failed";
         var failed = new[] { _paths.SoulPath, _paths.ToolingPath, _paths.AgentsPath, _paths.NetclawConfigPath }
             .FirstOrDefault(path => ex.Message.Contains(path, StringComparison.Ordinal));

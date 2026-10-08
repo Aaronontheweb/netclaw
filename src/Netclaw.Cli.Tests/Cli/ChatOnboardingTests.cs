@@ -52,6 +52,18 @@ public sealed class ChatOnboardingTests : IDisposable
         Assert.Equal(step.BuildOnboardingTrigger(_paths), ChatOnboarding.BuildTrigger(_paths));
     }
 
+    // Plain `netclaw chat` and the daemon open a netclaw.json with comments and trailing commas.
+    [Fact]
+    public void BuildTrigger_on_a_config_with_comments_uses_the_wizard_defaults()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath,
+            "{\n  // my notes\n  \"Identity\": { \"UserName\": \"Pat\", },\n}");
+
+        using var step = new IdentityStepViewModel();
+
+        Assert.Equal(step.BuildOnboardingTrigger(_paths), ChatOnboarding.BuildTrigger(_paths));
+    }
+
     [Fact]
     public void Trigger_has_the_paths_and_asks_for_confirmation_before_writing()
     {
