@@ -1775,7 +1775,7 @@ public static class ShellApprovalCases
             "heredoc-expanding-body-stays-strict",
             Bash("python3 - <<EOF\n$HOME\nEOF"),
             Approvals.PersistentAnywhere("python3"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "heredoc-unquoted-literal-body-stays-strict",
             Bash("python3 - <<EOF\nprint(1)\nEOF"),
@@ -1785,7 +1785,7 @@ public static class ShellApprovalCases
             "here-string-variable-word-stays-strict",
             Bash("python3 - <<< \"$CODE\""),
             Approvals.PersistentAnywhere("python3"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "heredoc-protected-redirect-denies",
             Bash("python3 - <<'EOF' > ~/.netclaw/config/secrets.json\nprint(1)\nEOF"),
@@ -1844,12 +1844,12 @@ public static class ShellApprovalCases
             "heredoc-pipe-after-operator-keeps-exact-prompt",
             Bash("python3 - <<'EOF' | head -5\nprint(1)\nEOF"),
             Approvals.PersistentAnywhere("python3", "head"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "heredoc-redirect-after-operator-keeps-exact-prompt",
             Bash("cat <<'EOF' > out.txt\nx\nEOF"),
             Approvals.PersistentAnywhere("cat"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+            ExpectedApproval.RequireFullText()),
         Case(
             "heredoc-redirect-before-operator-uses-grant",
             Bash("python3 - 2>&1 <<'EOF'\nprint(1)\nEOF"),
@@ -1901,6 +1901,49 @@ public static class ShellApprovalCases
             Bash("grep 'run bash now' <<'EOF'\nx\nEOF"),
             Approvals.PersistentAnywhere("grep"),
             ExpectedApproval.Require(["grep 'run bash now' <<'EOF'"])),
+        // A data command runs no program (owner decision, October 2026). Fixed
+        // text on stdin opens no file, so such a command still needs no prompt,
+        // and the file rules judge each file redirect.
+        Case(
+            "no-program-colon-heredoc-needs-no-prompt",
+            Bash(": <<'EOF'\nnote\nEOF"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-true-heredoc-needs-no-prompt",
+            Bash("true <<'EOF'\nnote\nEOF"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-echo-here-string-needs-no-prompt",
+            Bash("echo x <<< 'y'"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-echo-here-string-with-file-redirect-uses-file-rules",
+            Bash($"echo x > {TemporaryFile("netclaw-approval-echo-stdin.txt")} <<< 'y'"),
+            Approvals.None,
+            ExpectedApproval.Allow(ApprovalAllowReason.ApprovalExemptShellCandidates)),
+        Case(
+            "no-program-heredoc-with-protected-redirect-denies",
+            Bash("echo x > ~/.netclaw/config/secrets.json <<'EOF'\ny\nEOF"),
+            Approvals.None,
+            ExpectedApproval.Deny("shell_references_protected_path")),
+        Case(
+            "no-program-expanding-heredoc-stays-exact",
+            Bash(": <<EOF\nnote\nEOF"),
+            Approvals.None,
+            ExpectedApproval.Require([": <<EOF"])),
+        Case(
+            "heredoc-program-with-write-redirect-prompts-for-program",
+            Bash("python3 - > out.txt <<'EOF'\nprint(1)\nEOF"),
+            Approvals.None,
+            ExpectedApproval.Require(["python3"])),
+        Case(
+            "heredoc-cat-with-write-redirect-prompts-for-writer",
+            Bash("cat > out.txt <<'EOF'\nx\nEOF"),
+            Approvals.None,
+            ExpectedApproval.Require(["cat"])),
         .. HeredocParityCases(),
 
         // These synthetic cases represent the dominant search, pipeline, and

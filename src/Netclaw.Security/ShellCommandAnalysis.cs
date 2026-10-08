@@ -1011,7 +1011,10 @@ public sealed record ShellCommandAnalysis
     /// network connection, and <c>/dev/fd/N</c> copies a descriptor. The file
     /// rules cannot judge such a target, so <c>/dev/null</c> is the only path
     /// below <c>/dev/</c> that qualifies. A here document or a here string is
-    /// never plain. The check reads the canonical form of the value, so
+    /// not a file redirect. It passes only as fixed text on stdin
+    /// (<see cref="HasFixedTextStdin(CommandOccurrence, HereDocumentRedirectAnalysis)"/>),
+    /// which opens no file, as a descriptor copy opens none. Each other here
+    /// document or here string fails the proof check. The check reads the canonical form of the value, so
     /// <c>/dev/./tcp</c> and <c>//dev/tcp</c> also fail. Bash gives a special
     /// meaning only to a word that starts with the literal name; a <c>..</c>
     /// that leaves <c>/dev/</c> puts the rest of the word in the port, which
@@ -1024,6 +1027,7 @@ public sealed record ShellCommandAnalysis
                {
                    FileRedirectAnalysis file => IsPlainFileTarget(file),
                    DescriptorDuplicateRedirectAnalysis or DescriptorMoveRedirectAnalysis or DescriptorCloseRedirectAnalysis => true,
+                   HereDocumentRedirectAnalysis or HereStringRedirectAnalysis => true,
                    _ => false
                });
 

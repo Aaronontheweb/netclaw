@@ -584,6 +584,8 @@ public sealed class ShellCommandAnalysisTests
     [InlineData("python3 - <<'EOF'\nprint(1)\nEOF", typeof(HereDocumentRedirectAnalysis))]
     [InlineData("python3 - <<< 'print(1)'", typeof(HereStringRedirectAnalysis))]
     [InlineData("grep x <<\"EOF\"\nx\nEOF", typeof(HereDocumentRedirectAnalysis))]
+    [InlineData(": <<'EOF'\nnote\nEOF", typeof(HereDocumentRedirectAnalysis))]
+    [InlineData("echo x <<< 'y'", typeof(HereStringRedirectAnalysis))]
     public void Bounded_data_only_stdin_is_not_dynamic(
         string command,
         Type expectedType)
