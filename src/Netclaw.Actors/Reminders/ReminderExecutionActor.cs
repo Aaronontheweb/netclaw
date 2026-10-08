@@ -535,14 +535,15 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
                     var notifyFailureMessage = _accumulator.BuildNotifyFailureMessage(
                         _definition.Delivery.Kind == DeliveryKind.Channel,
                         _definition.DeliveryRequired);
-                    // A denied tool call outranks a delivery failure: it is the likelier root cause.
+                    // A denial is not a failure: it is deterministic, so a retry cannot help, and the model may
+                    // have finished another way. A delivery failure still is one, and is retried as before.
                     var deniedMessage = _accumulator.DeniedCallMessage;
-                    var failureMessage = deniedMessage ?? notifyFailureMessage;
-                    var success = failureMessage is null;
+                    var success = notifyFailureMessage is null;
+                    var failureMessage = success ? deniedMessage : notifyFailureMessage;
                     _log.Info(
                         $"ReminderExecution Completed: execution_id={_executionId} reminder_id={_definition.Id} title={_definition.Title} success={success} tool_denied={deniedMessage is not null} output_length={result.Length} notify_attempted={_accumulator.NotifyAttempted} notify_failed={_accumulator.NotifyFailed} dispatched_at={_dispatchedAt} completed_at={_timeProvider.GetUtcNow()}");
 
-                    ReportOutcome(success, failureMessage, toolDenied: deniedMessage is not null);
+                    ReportOutcome(success, failureMessage, toolDenied: success && deniedMessage is not null);
                     break;
                 }
 
@@ -607,16 +608,21 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
         var durationMs = (long)(_timeProvider.GetUtcNow() - _dispatchedAt).TotalMilliseconds;
         var history = new HistoryRecord(
             FiredAt: _dispatchedAt,
-            Success: success,
+            Success: success && !toolDenied,
             DurationMs: durationMs,
             SessionId: _sessionIdValue ?? $"reminder/{_definition.Id}/unknown",
             ErrorMessage: errorMessage,
             ToolDenied: toolDenied);
 
-        if (!success)
+        if (toolDenied)
         {
             _log.Warning(
-                $"ReminderExecution ReportFailed: execution_id={_executionId} reminder_id={_definition.Id} title={_definition.Title} success=false tool_denied={toolDenied} error_message={errorMessage}");
+                $"ReminderExecution ReportDenied: execution_id={_executionId} reminder_id={_definition.Id} title={_definition.Title} status=denied error_message={errorMessage}");
+        }
+        else if (!success)
+        {
+            _log.Warning(
+                $"ReminderExecution ReportFailed: execution_id={_executionId} reminder_id={_definition.Id} title={_definition.Title} success=false error_message={errorMessage}");
         }
 
         Context.Parent.Tell(new ReminderExecutionCompleted(

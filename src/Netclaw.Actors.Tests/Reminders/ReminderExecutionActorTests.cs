@@ -183,7 +183,9 @@ public class ReminderExecutionActorTests : TestKit, IAsyncDisposable
 
         var completed = await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
 
-        Assert.False(completed.Success);
+        // Settled as a completed run (acked, not retried), recorded as denied rather than ok.
+        Assert.True(completed.Success);
+        Assert.False(completed.History.Success);
         Assert.True(completed.History.ToolDenied);
         Assert.Equal("denied", completed.History.Status);
         Assert.Contains("Tool call denied (shell_execute)", completed.ErrorMessage);
@@ -221,8 +223,37 @@ public class ReminderExecutionActorTests : TestKit, IAsyncDisposable
 
         var completed = await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
 
-        Assert.False(completed.Success);
+        Assert.True(completed.Success);
         Assert.True(completed.History.ToolDenied);
+    }
+
+    [Fact]
+    public async Task Execution_with_a_denied_call_and_a_failed_delivery_is_still_a_failure()
+    {
+        var pipeline = new ScriptedSessionPipeline(sessionId =>
+        [
+            new ToolResultOutput
+            {
+                SessionId = sessionId,
+                CallId = new Netclaw.Tools.ToolCallId("call-d"),
+                ToolName = new Netclaw.Tools.ToolName("shell_execute"),
+                Result = "Tool access denied: approval_required_unattended",
+                FailureCode = ToolResultOutput.AccessDeniedFailureCode
+            },
+            new TurnCompleted { SessionId = sessionId, TurnNumber = new Netclaw.Actors.Protocol.TurnNumber(1) }
+        ]);
+
+        var definition = CreateDefinition("denied-and-undelivered");
+        var probe = CreateTestProbe();
+        Sys.ActorOf(
+            Props.Create(() => new ParentProxy(probe.Ref, definition, pipeline, _historyStore)),
+            "exec-denied-undelivered");
+
+        var completed = await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.False(completed.Success);
+        Assert.False(completed.History.ToolDenied);
+        Assert.Contains("no notification tool was invoked", completed.ErrorMessage);
     }
 
     [Fact]
@@ -536,7 +567,7 @@ public class ReminderExecutionActorTests : TestKit, IAsyncDisposable
             Task.FromResult<ISessionResponse>(CommandAck.For(feedback.SessionId));
     }
 
-    private sealed class ScriptedSessionPipeline(
+    internal sealed class ScriptedSessionPipeline(
         Func<SessionId, IReadOnlyList<SessionOutput>> outputFactory,
         bool keepOutputOpen = false) : ISessionPipeline
     {
@@ -545,6 +576,9 @@ public class ReminderExecutionActorTests : TestKit, IAsyncDisposable
         private readonly TaskCompletionSource _inputCompleted =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+        private int _invocationCount;
+
+        public int InvocationCount => Volatile.Read(ref _invocationCount);
         public SessionPipelineOptions? CapturedOptions { get; private set; }
         public Task<ChannelInput> InputCaptured => _inputCaptured.Task;
         public Task InputCompleted => _inputCompleted.Task;
@@ -556,6 +590,7 @@ public class ReminderExecutionActorTests : TestKit, IAsyncDisposable
             CancellationToken cancellationToken = default)
         {
             CapturedOptions = options;
+            Interlocked.Increment(ref _invocationCount);
 
             var killSwitch = KillSwitches.Shared($"scripted-{sessionId.Value}");
 

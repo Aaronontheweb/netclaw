@@ -177,6 +177,10 @@ public sealed class ReminderPreflightGrantTests : LlmSessionTestBase
         Assert.True(fired.ToolDenied);
         Assert.Equal("denied", fired.Status);
         Assert.Contains("needs approval", fired.ErrorMessage, StringComparison.Ordinal);
+        // A denial is not a failure: the count stays at zero and the reminder is not disabled.
+        var stored = Host.Services.GetRequiredService<ReminderDefinitionStore>().Get(new ReminderId(ReminderName))!;
+        Assert.Equal(0, stored.ConsecutiveFailures);
+        Assert.True(stored.Enabled);
         Assert.False(File.Exists(MarkerPath(cache)));
         Assert.Empty(_store.GetApprovedEntries(TrustAudience.Personal, ShellTool.ToolName));
     }

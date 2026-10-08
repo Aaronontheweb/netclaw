@@ -89,12 +89,12 @@ public static partial class SessionProtocol
 
         public required string Result { get; init; }
 
-        /// <summary>The <see cref="FailureCode"/> of a call that the tool, or the policy in front of it, refused access to.</summary>
+        /// <summary>The <see cref="FailureCode"/> of a call that authorization refused: policy, hard deny, a consent that nobody could give, or a path rule. An operating system permission error does not carry it.</summary>
         public const string AccessDeniedFailureCode = "access_denied";
 
         /// <summary>
         /// The stable failure code: a preflight rejection code for a call that never ran,
-        /// <see cref="AccessDeniedFailureCode"/> for a call that was denied access, or null
+        /// <see cref="AccessDeniedFailureCode"/> for a call that authorization denied, or null
         /// after a normal execution.
         /// </summary>
         public string? FailureCode { get; init; }

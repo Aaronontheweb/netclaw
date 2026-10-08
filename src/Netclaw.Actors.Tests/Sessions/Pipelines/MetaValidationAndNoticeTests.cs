@@ -152,11 +152,14 @@ public sealed class MetaValidationAndNoticeTests(ITestOutputHelper output) : Tes
             completed.ToolFailureCodes["call-1"]);
     }
 
-    [Fact]
-    public async Task Failing_call_that_was_not_denied_has_no_failure_code()
+    [Theory]
+    [InlineData(typeof(InvalidOperationException))]
+    [InlineData(typeof(UnauthorizedAccessException))]
+    public async Task Failing_call_that_authorization_did_not_deny_has_no_failure_code(Type exceptionType)
     {
+        // An operating system permission error is an ordinary tool failure, not a denial.
         var completed = await RunPipelineAsync(
-            new AccessDeniedExecutor(new InvalidOperationException("boom")),
+            new AccessDeniedExecutor((Exception)Activator.CreateInstance(exceptionType, "boom")!),
             new Dictionary<string, object?> { ["Command"] = "echo hi", ["_rationale"] = "Say hi." });
 
         Assert.False(completed.ToolFailureCodes.ContainsKey("call-1"));

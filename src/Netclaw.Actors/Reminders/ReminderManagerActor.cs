@@ -66,6 +66,9 @@ public sealed partial class ReminderManagerActor : ReceiveActor, IWithTimers
 
     private readonly ActiveExecutionTracker _activeExecutions = new();
     private readonly Dictionary<ReminderId, int> _skipCounts = [];
+    // The denial text last alerted per reminder; cleared by its next ok run, so a reminder that is denied on
+    // every run alerts once. Not persisted: a restart may alert once more.
+    private readonly Dictionary<ReminderId, string> _deniedAlerts = [];
 
     // Uniqueness source for execution child actor names. A wall-clock
     // millisecond suffix collided when two fires for one reminder landed in
@@ -489,6 +492,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor, IWithTimers
     {
         await CancelScheduleOnlyAsync(id);
         _skipCounts.Remove(id);
+        _deniedAlerts.Remove(id);
 
         try
         {
@@ -871,8 +875,15 @@ public sealed partial class ReminderManagerActor : ReceiveActor, IWithTimers
         await AppendHistorySafelyAsync(outcome.Id, outcome.History);
 
         var definition = _definitionStore.Get(outcome.Id);
+        if (outcome.Success && outcome.History.ToolDenied)
+        {
+            await SettleDeniedExecutionAsync(outcome, execution, definition);
+            return;
+        }
+
         if (outcome.Success)
         {
+            _deniedAlerts.Remove(outcome.Id);
             await SettleSuccessfulExecutionAsync(outcome, execution, definition);
             return;
         }
@@ -889,6 +900,73 @@ public sealed partial class ReminderManagerActor : ReceiveActor, IWithTimers
         catch (Exception ex)
         {
             _log.Warning(ex, "Failed to write execution history for reminder '{0}'", id.Value);
+        }
+    }
+
+    /// <summary>
+    /// A run in which authorization denied a tool call. The denial is deterministic, so the occurrence is
+    /// acknowledged: no retry, no failure count, no auto-disable, and a recurring reminder keeps its
+    /// schedule. The owner gets one alert per distinct denial until the reminder next records an ok run.
+    /// A spent one-shot is disabled but kept, because its history is the only record of the denial.
+    /// </summary>
+    private async Task SettleDeniedExecutionAsync(
+        ReminderExecutionCompleted outcome,
+        ActiveReminderExecution execution,
+        ReminderDefinition? definition)
+    {
+        var reason = outcome.ErrorMessage ?? "A tool call was denied.";
+        _log.Warning("Reminder '{0}' ran with a denied tool call: {1}", outcome.Id.Value, reason);
+
+        if (!_deniedAlerts.TryGetValue(outcome.Id, out var alerted) || alerted != reason)
+        {
+            _deniedAlerts[outcome.Id] = reason;
+            var title = definition?.Title ?? outcome.Id.Value;
+            _notificationSink.Emit(OperationalAlert.Create(
+                _timeProvider,
+                "reminder.tool_denied",
+                AlertType.ReminderExecutionFailed,
+                $"Reminder '{title}' was denied a tool: {reason}",
+                AlertSeverity.Warning,
+                source: outcome.Id.Value,
+                context: new Dictionary<string, string>
+                {
+                    ["reminderId"] = outcome.Id.Value,
+                    ["title"] = title,
+                    ["error"] = reason
+                }));
+        }
+
+        try
+        {
+            var ack = await _client!.AckAsync(execution.Envelope);
+            if (ack.ResponseCode is ReminderAckResponseCode.Error)
+            {
+                if (definition is not null)
+                    EmitSettlementFailure(definition, ack.Message ?? $"Reminder acknowledgement returned {ack.ResponseCode}.");
+                return;
+            }
+        }
+        catch (Exception ex)
+        {
+            if (definition is not null)
+                EmitSettlementFailure(definition, ex.Message, ex);
+            return;
+        }
+
+        if (definition is { Schedule.Type: ReminderScheduleType.OneShot })
+        {
+            try
+            {
+                _definitionStore.Save(definition with
+                {
+                    Enabled = false,
+                    UpdatedAtMs = _timeProvider.GetUtcNow().ToUnixTimeMilliseconds()
+                });
+            }
+            catch (Exception ex)
+            {
+                EmitSettlementFailure(definition, ex.Message, ex);
+            }
         }
     }
 
