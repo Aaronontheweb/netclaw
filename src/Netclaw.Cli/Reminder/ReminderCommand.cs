@@ -570,8 +570,7 @@ internal static class ReminderCommand
 
     internal static string FormatHistoryRow(HistoryRecord r)
     {
-        var status = r.Success ? "ok" : "failed";
-        return $"{r.FiredAt.ToString("u"),-HistoryColFiredAt}  {status,-HistoryColStatus}  {r.DurationMs,-HistoryColDuration}  {r.SessionId}";
+        return $"{r.FiredAt.ToString("u"),-HistoryColFiredAt}  {r.Status,-HistoryColStatus}  {r.DurationMs,-HistoryColDuration}  {r.SessionId}";
     }
 
     /// <summary>
@@ -739,9 +738,8 @@ internal static class ReminderCommand
                 // (the ones an operator diagnosing a failure cares about) lead.
                 foreach (var r in history.Reverse())
                 {
-                    var outcome = r.Success ? "ok" : "failed";
                     var err = string.IsNullOrEmpty(r.ErrorMessage) ? "" : $" — {r.ErrorMessage}";
-                    Console.WriteLine($"  {r.FiredAt:u}  {outcome}{err}");
+                    Console.WriteLine($"  {r.FiredAt:u}  {r.Status}{err}");
                 }
             }
 

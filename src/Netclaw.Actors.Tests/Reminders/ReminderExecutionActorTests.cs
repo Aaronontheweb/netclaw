@@ -159,6 +159,73 @@ public class ReminderExecutionActorTests : TestKit, IAsyncDisposable
     }
 
     [Fact]
+    public async Task Execution_with_a_denied_tool_call_is_recorded_as_denied_not_ok()
+    {
+        var pipeline = new ScriptedSessionPipeline(sessionId =>
+        [
+            new ToolResultOutput
+            {
+                SessionId = sessionId,
+                CallId = new Netclaw.Tools.ToolCallId("call-denied"),
+                ToolName = new Netclaw.Tools.ToolName("shell_execute"),
+                Result = "Tool access denied: shell_execute needs approval, and nobody can answer a prompt in an unattended run.",
+                FailureCode = ToolResultOutput.AccessDeniedFailureCode
+            },
+            new TextOutput("I could not run the command.") { SessionId = sessionId },
+            new TurnCompleted { SessionId = sessionId, TurnNumber = new Netclaw.Actors.Protocol.TurnNumber(1) }
+        ]);
+
+        var definition = CreateDefinition("denied-tool-test") with { DeliveryRequired = false };
+        var probe = CreateTestProbe();
+        Sys.ActorOf(
+            Props.Create(() => new ParentProxy(probe.Ref, definition, pipeline, _historyStore)),
+            "exec-denied-tool");
+
+        var completed = await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.False(completed.Success);
+        Assert.True(completed.History.ToolDenied);
+        Assert.Equal("denied", completed.History.Status);
+        Assert.Contains("Tool call denied (shell_execute)", completed.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Execution_that_recovers_after_a_denied_call_is_still_marked_denied()
+    {
+        // The rule: any denied tool call marks the run, even when the model finished the task another way.
+        var pipeline = new ScriptedSessionPipeline(sessionId =>
+        [
+            new ToolResultOutput
+            {
+                SessionId = sessionId,
+                CallId = new Netclaw.Tools.ToolCallId("call-d"),
+                ToolName = new Netclaw.Tools.ToolName("shell_execute"),
+                Result = "Tool access denied: approval_required_unattended",
+                FailureCode = ToolResultOutput.AccessDeniedFailureCode
+            },
+            new ToolResultOutput
+            {
+                SessionId = sessionId,
+                CallId = new Netclaw.Tools.ToolCallId("call-ok"),
+                ToolName = new Netclaw.Tools.ToolName("send_channel_message"),
+                Result = "Message sent to channel C1. Thread: C1/1234567890.000001"
+            },
+            new TurnCompleted { SessionId = sessionId, TurnNumber = new Netclaw.Actors.Protocol.TurnNumber(1) }
+        ]);
+
+        var definition = CreateDefinition("denied-then-recovered");
+        var probe = CreateTestProbe();
+        Sys.ActorOf(
+            Props.Create(() => new ParentProxy(probe.Ref, definition, pipeline, _historyStore)),
+            "exec-denied-recovered");
+
+        var completed = await probe.ExpectMsgAsync<ReminderExecutionCompleted>(TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.False(completed.Success);
+        Assert.True(completed.History.ToolDenied);
+    }
+
+    [Fact]
     public async Task Execution_succeeds_when_notification_tool_reports_success()
     {
         var pipeline = new ScriptedSessionPipeline(sessionId =>

@@ -535,11 +535,14 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
                     var notifyFailureMessage = _accumulator.BuildNotifyFailureMessage(
                         _definition.Delivery.Kind == DeliveryKind.Channel,
                         _definition.DeliveryRequired);
-                    var success = notifyFailureMessage is null;
+                    // A denied tool call outranks a delivery failure: it is the likelier root cause.
+                    var deniedMessage = _accumulator.DeniedCallMessage;
+                    var failureMessage = deniedMessage ?? notifyFailureMessage;
+                    var success = failureMessage is null;
                     _log.Info(
-                        $"ReminderExecution Completed: execution_id={_executionId} reminder_id={_definition.Id} title={_definition.Title} success={success} output_length={result.Length} notify_attempted={_accumulator.NotifyAttempted} notify_failed={_accumulator.NotifyFailed} dispatched_at={_dispatchedAt} completed_at={_timeProvider.GetUtcNow()}");
+                        $"ReminderExecution Completed: execution_id={_executionId} reminder_id={_definition.Id} title={_definition.Title} success={success} tool_denied={deniedMessage is not null} output_length={result.Length} notify_attempted={_accumulator.NotifyAttempted} notify_failed={_accumulator.NotifyFailed} dispatched_at={_dispatchedAt} completed_at={_timeProvider.GetUtcNow()}");
 
-                    ReportOutcome(success, notifyFailureMessage);
+                    ReportOutcome(success, failureMessage, toolDenied: deniedMessage is not null);
                     break;
                 }
 
@@ -589,7 +592,7 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
         ReportOutcome(false, reason);
     }
 
-    private void ReportOutcome(bool success, string? errorMessage = null)
+    private void ReportOutcome(bool success, string? errorMessage = null, bool toolDenied = false)
     {
         if (_completed || _settlementStarted)
             return;
@@ -607,12 +610,13 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
             Success: success,
             DurationMs: durationMs,
             SessionId: _sessionIdValue ?? $"reminder/{_definition.Id}/unknown",
-            ErrorMessage: errorMessage);
+            ErrorMessage: errorMessage,
+            ToolDenied: toolDenied);
 
         if (!success)
         {
             _log.Warning(
-                $"ReminderExecution ReportFailed: execution_id={_executionId} reminder_id={_definition.Id} title={_definition.Title} success=false error_message={errorMessage}");
+                $"ReminderExecution ReportFailed: execution_id={_executionId} reminder_id={_definition.Id} title={_definition.Title} success=false tool_denied={toolDenied} error_message={errorMessage}");
         }
 
         Context.Parent.Tell(new ReminderExecutionCompleted(

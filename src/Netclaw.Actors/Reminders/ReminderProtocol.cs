@@ -582,4 +582,14 @@ public sealed record HistoryRecord(
     bool Success,
     long DurationMs,
     string SessionId,
-    string? ErrorMessage);
+    string? ErrorMessage,
+    bool ToolDenied = false)
+{
+    /// <summary>
+    /// The run's status as shown to operators. A run with a denied tool call is never
+    /// <c>ok</c>: <see cref="Success"/> is false for it, so a daemon that predates
+    /// <see cref="ToolDenied"/> reads the same record as <c>failed</c>.
+    /// </summary>
+    [JsonIgnore]
+    public string Status => ToolDenied ? "denied" : Success ? "ok" : "failed";
+}

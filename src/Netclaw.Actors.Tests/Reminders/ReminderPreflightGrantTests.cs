@@ -154,7 +154,8 @@ public sealed class ReminderPreflightGrantTests : LlmSessionTestBase
         // The scheduled run: unattended, a new session, the same command.
         _chatClient.PlannedResponses.Enqueue([ShellCall("scheduled-shell", cache)]);
         _chatClient.PlannedResponses.Enqueue([new TextContent("Cleanup done.")]);
-        await FireReminderAsync();
+        var granted = await FireReminderAsync();
+        Assert.True(granted.Success, granted.ErrorMessage);
 
         Assert.Equal("xx", ReadMarker(cache));
         // The chat test used the same prompt text as the scheduled run.
@@ -169,8 +170,13 @@ public sealed class ReminderPreflightGrantTests : LlmSessionTestBase
 
         _chatClient.PlannedResponses.Enqueue([ShellCall("scheduled-shell", cache)]);
         _chatClient.PlannedResponses.Enqueue([new TextContent("Cleanup failed.")]);
-        await FireReminderAsync();
+        var fired = await FireReminderAsync();
 
+        // The denial must not be recorded as a successful run.
+        Assert.False(fired.Success);
+        Assert.True(fired.ToolDenied);
+        Assert.Equal("denied", fired.Status);
+        Assert.Contains("needs approval", fired.ErrorMessage, StringComparison.Ordinal);
         Assert.False(File.Exists(MarkerPath(cache)));
         Assert.Empty(_store.GetApprovedEntries(TrustAudience.Personal, ShellTool.ToolName));
     }
@@ -284,7 +290,7 @@ public sealed class ReminderPreflightGrantTests : LlmSessionTestBase
     }
 
     /// <summary>Fires the reminder the way Akka.Reminders does and waits for its history record.</summary>
-    private async Task FireReminderAsync()
+    private async Task<HistoryRecord> FireReminderAsync()
     {
         var id = new ReminderId(ReminderName);
         ActorRegistry.Get<ReminderManagerActorKey>().Tell(new ReminderEnvelope<ReminderPayload>(
@@ -295,11 +301,12 @@ public sealed class ReminderPreflightGrantTests : LlmSessionTestBase
             new ReminderPayload { Id = id }));
 
         var history = Host.Services.GetRequiredService<ReminderHistoryStore>();
+        HistoryRecord? fired = null;
         await AwaitAssertAsync(async () =>
         {
-            var record = Assert.Single(await history.ReadAsync(id, 10));
-            Assert.True(record.Success, record.ErrorMessage);
+            fired = Assert.Single(await history.ReadAsync(id, 10));
         }, TimeSpan.FromSeconds(30), cancellationToken: TestContext.Current.CancellationToken);
+        return fired!;
     }
 
     private string CreateDirectory(string name)

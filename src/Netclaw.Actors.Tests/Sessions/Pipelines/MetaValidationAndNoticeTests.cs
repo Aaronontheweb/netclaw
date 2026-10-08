@@ -127,6 +127,41 @@ public sealed class MetaValidationAndNoticeTests(ITestOutputHelper output) : Tes
         }
     }
 
+    private sealed class AccessDeniedExecutor(Exception denial) : IToolExecutor
+    {
+        public Task AuthorizeAsync(FunctionCallContent toolCall, ToolExecutionContext? context = null, CancellationToken ct = default)
+            => Task.CompletedTask;
+
+        public ToolArgumentRejection? ValidateToolCall(FunctionCallContent toolCall) => null;
+
+        public Task<string> ExecuteAsync(FunctionCallContent toolCall, ToolExecutionContext? context = null, CancellationToken ct = default)
+            => Task.FromException<string>(denial);
+    }
+
+    // ── A denied call carries a failure code so unattended runs can see it ──
+
+    [Fact]
+    public async Task Denied_call_reports_the_access_denied_failure_code()
+    {
+        var completed = await RunPipelineAsync(
+            new AccessDeniedExecutor(new ToolAccessDeniedException("approval_required_unattended")),
+            new Dictionary<string, object?> { ["Command"] = "curl example.com", ["_rationale"] = "Fetch the page." });
+
+        Assert.Equal(
+            SessionProtocol.ToolResultOutput.AccessDeniedFailureCode,
+            completed.ToolFailureCodes["call-1"]);
+    }
+
+    [Fact]
+    public async Task Failing_call_that_was_not_denied_has_no_failure_code()
+    {
+        var completed = await RunPipelineAsync(
+            new AccessDeniedExecutor(new InvalidOperationException("boom")),
+            new Dictionary<string, object?> { ["Command"] = "echo hi", ["_rationale"] = "Say hi." });
+
+        Assert.False(completed.ToolFailureCodes.ContainsKey("call-1"));
+    }
+
     // ── Timeout hint is honored exactly (no clamp, no floor) ──
 
     [Fact]

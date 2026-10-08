@@ -89,7 +89,14 @@ public static partial class SessionProtocol
 
         public required string Result { get; init; }
 
-        /// <summary>The stable preflight failure code, or null after execution.</summary>
+        /// <summary>The <see cref="FailureCode"/> of a call that the tool, or the policy in front of it, refused access to.</summary>
+        public const string AccessDeniedFailureCode = "access_denied";
+
+        /// <summary>
+        /// The stable failure code: a preflight rejection code for a call that never ran,
+        /// <see cref="AccessDeniedFailureCode"/> for a call that was denied access, or null
+        /// after a normal execution.
+        /// </summary>
         public string? FailureCode { get; init; }
     }
 

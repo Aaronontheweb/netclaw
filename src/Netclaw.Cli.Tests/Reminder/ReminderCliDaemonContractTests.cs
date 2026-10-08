@@ -245,6 +245,15 @@ public sealed class ReminderCliDaemonContractTests : IAsyncDisposable
         Assert.Equal(expected, result.Stdout);
     }
 
+    [Fact]
+    public void History_row_shows_a_denied_run_as_denied()
+    {
+        var row = ReminderCommand.FormatHistoryRow(new HistoryRecord(
+            new DateTimeOffset(2026, 10, 7, 8, 0, 3, TimeSpan.Zero), false, 42, "session-1", "Tool call denied (shell_execute): x", ToolDenied: true));
+
+        Assert.Equal("2026-10-07 08:00:03Z       denied    42            session-1", row);
+    }
+
     private static async Task ImportAsync(DaemonHost host, string file)
     {
         var result = await RunAsync(host, "reminder", "import", file);

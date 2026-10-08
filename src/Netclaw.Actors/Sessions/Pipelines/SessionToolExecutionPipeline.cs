@@ -840,6 +840,9 @@ internal sealed class SessionToolExecutionPipeline
             completedRuns,
             acceptedFindings,
             authorizationAttemptId,
+            FailureCode: receipt.Category == ToolInvocationOutcomeCategory.AccessDenied
+                ? SessionProtocol.ToolResultOutput.AccessDeniedFailureCode
+                : null,
             Receipt: receipt,
             ManagedTemporaryCorrectionUpdate: consumedManagedTemporaryKey is { } consumed
                 ? new ManagedTemporaryCorrectionChange.Consume(consumed)
