@@ -205,8 +205,6 @@ public sealed class DaemonCommandWiringTests : IDisposable
 
     // ── daemon stop / start ownership ───────────────────────────────────────
 
-    private const string FakeSystemctlSkip = "Drives the Linux systemd user-service path through a fake systemctl.";
-
     /// <summary>The unit is active and its MainPID is the daemon this home's pid file records.</summary>
     private Process UnitRunsDaemonOf(string netclawHome)
     {
@@ -217,8 +215,8 @@ public sealed class DaemonCommandWiringTests : IDisposable
         return daemon;
     }
 
-    [SlopwatchSuppress("SW001", FakeSystemctlSkip)]
-    [Fact(SkipUnless = nameof(IsLinux), Skip = FakeSystemctlSkip)]
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
     public async Task Stop_GoesThroughTheUnit_ForTheDefaultHome()
     {
         UnitRunsDaemonOf(DefaultNetclawHome);
@@ -230,8 +228,8 @@ public sealed class DaemonCommandWiringTests : IDisposable
         Assert.Contains("Stopped systemd user service.", output);
     }
 
-    [SlopwatchSuppress("SW001", FakeSystemctlSkip)]
-    [Fact(SkipUnless = nameof(IsLinux), Skip = FakeSystemctlSkip)]
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
     public async Task Stop_GoesThroughTheUnit_ForANonDefaultHomeTheUnitServes()
     {
         // A drop-in `Environment=NETCLAW_HOME=...` makes the unit serve another home.
@@ -244,8 +242,8 @@ public sealed class DaemonCommandWiringTests : IDisposable
         Assert.Contains("Stopped systemd user service.", output);
     }
 
-    [SlopwatchSuppress("SW001", FakeSystemctlSkip)]
-    [Fact(SkipUnless = nameof(IsLinux), Skip = FakeSystemctlSkip)]
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
     public async Task Stop_GoesThroughTheUnit_ForASymlinkedSpellingOfTheDefaultHome()
     {
         UnitRunsDaemonOf(DefaultNetclawHome);
@@ -259,8 +257,8 @@ public sealed class DaemonCommandWiringTests : IDisposable
         Assert.Contains("Stopped systemd user service.", output);
     }
 
-    [SlopwatchSuppress("SW001", FakeSystemctlSkip)]
-    [Fact(SkipUnless = nameof(IsLinux), Skip = FakeSystemctlSkip)]
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
     public async Task Stop_NeverTouchesTheUnit_WhenTheUnitRunsADifferentDaemon()
     {
         InstallUnit();
@@ -276,8 +274,8 @@ public sealed class DaemonCommandWiringTests : IDisposable
         Assert.DoesNotContain("systemd user service", output);
     }
 
-    [SlopwatchSuppress("SW001", FakeSystemctlSkip)]
-    [Fact(SkipUnless = nameof(IsLinux), Skip = FakeSystemctlSkip)]
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
     public async Task Stop_NeverTouchesTheUnit_WhenNoDaemonRunsForThisHomeButTheUnitServesAnotherOne()
     {
         // The default home runs nothing; the unit's daemon belongs to some other home.
@@ -358,8 +356,8 @@ public sealed class DaemonCommandWiringTests : IDisposable
         Assert.DoesNotContain("Cannot find netclawd", output);
     }
 
-    [SlopwatchSuppress("SW001", FakeSystemctlSkip)]
-    [Fact(SkipUnless = nameof(IsLinux), Skip = FakeSystemctlSkip)]
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
     public async Task Stop_ExplainsTheUnreachableBus_WhenOwnershipIsUnknown()
     {
         var daemon = StartFakeDaemonProcess(DefaultNetclawHome);
@@ -375,8 +373,8 @@ public sealed class DaemonCommandWiringTests : IDisposable
         Assert.Contains("systemctl --user", output);
     }
 
-    [SlopwatchSuppress("SW001", FakeSystemctlSkip)]
-    [Fact(SkipUnless = nameof(IsLinux), Skip = FakeSystemctlSkip)]
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
     public async Task Start_GoesThroughTheUnit_ForASymlinkedSpellingOfTheDefaultHome()
     {
         InstallUnit();
@@ -393,8 +391,8 @@ public sealed class DaemonCommandWiringTests : IDisposable
         Assert.Contains("Started systemd user service.", output);
     }
 
-    [SlopwatchSuppress("SW001", FakeSystemctlSkip)]
-    [Fact(SkipUnless = nameof(IsLinux), Skip = FakeSystemctlSkip)]
+    [SlopwatchSuppress("SW001", "Drives the Linux systemd user-service path through a fake systemctl.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Drives the Linux systemd user-service path through a fake systemctl.")]
     public async Task Start_StartsDetached_WhenNoDaemonRunsForANonDefaultHome()
     {
         InstallUnit();

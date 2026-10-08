@@ -136,7 +136,7 @@ internal sealed class SystemdUserService(
         }
         catch (IOException)
         {
-            // Not a readable link: compare the path as spelled.
+            return full; // not a readable link: compare the path as spelled
         }
 
         return full;

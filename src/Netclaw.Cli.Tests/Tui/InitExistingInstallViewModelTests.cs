@@ -466,7 +466,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
             StartFullReset(vm);
             await CompleteResetAsync(vm);
-            await WaitForCommandAsync(runner, "--user stop netclaw.service");
+            await runner.StopSeen.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         }
         finally
         {
@@ -477,23 +477,17 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
 
     public static bool IsLinux => OperatingSystem.IsLinux();
 
-    private static async Task WaitForCommandAsync(RecordingCommandRunner runner, string arguments)
-    {
-        var deadline = DateTime.UtcNow.AddSeconds(10);
-        while (!runner.Commands.Contains(arguments) && DateTime.UtcNow < deadline)
-            await Task.Delay(20, TestContext.Current.CancellationToken);
-        Assert.Contains(arguments, runner.Commands);
-    }
-
     private sealed class RecordingCommandRunner(int mainPid) : ISystemCommandRunner
     {
-        private readonly System.Collections.Concurrent.ConcurrentQueue<string> _commands = new();
+        private readonly TaskCompletionSource _stopSeen = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
-        public IReadOnlyCollection<string> Commands => _commands;
+        public Task StopSeen => _stopSeen.Task;
 
         public Task<SystemCommandResult> RunAsync(string command, string arguments)
         {
-            _commands.Enqueue(arguments);
+            if (arguments.Contains("--user stop netclaw.service", StringComparison.Ordinal))
+                _stopSeen.TrySetResult();
+
             return Task.FromResult(arguments.Contains("show", StringComparison.Ordinal)
                 ? new SystemCommandResult(0, string.Empty, StandardOutput: mainPid + "\n")
                 : new SystemCommandResult(0, string.Empty));
