@@ -54,7 +54,14 @@ public static class LoggingRegistrationExtensions
         // is wired in post-build by SessionLogDispatcherWiringService once Akka.Hosting has
         // registered the actor system.
         Directory.CreateDirectory(resolvedPaths.LogsDirectory);
-        var provider = new RollingFileLoggerProvider(resolvedPaths.DaemonLogPath);
+        var retentionDays = DaemonLogRetention.ResolveRetentionDays(builder.Configuration, out var retentionWarning);
+        var provider = new RollingFileLoggerProvider(resolvedPaths.DaemonLogPath, retentionDays: retentionDays);
+        if (retentionWarning is not null)
+        {
+            // Logging is not built yet, so the warning goes straight to the log file (Route) and stderr.
+            provider.Route($"{provider.GetTimestamp()} [WRN] Netclaw.Logging: {retentionWarning}", null, null, fromSessionLogActor: false);
+            Console.Error.WriteLine(retentionWarning);
+        }
         builder.Logging.AddProvider(provider);
         builder.Services.AddSingleton(provider);
         builder.Services.AddHostedService<SessionLogDispatcherWiringService>();

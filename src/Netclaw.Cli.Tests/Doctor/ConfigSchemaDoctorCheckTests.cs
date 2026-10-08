@@ -158,6 +158,34 @@ public sealed class ConfigSchemaDoctorCheckTests : IDisposable
         Assert.Equal(DoctorSeverity.Error, result.Severity);
     }
 
+    [Theory]
+    [InlineData("""{ "configVersion": 1, "Logging": { "File": { "RetentionDays": 14 } } }""")]
+    [InlineData("""{ "configVersion": 1, "Logging": { "File": { "RetentionDays": 0 } } }""")]
+    [InlineData("""{ "configVersion": 1, "Logging": { "File": { "LogLevel": "Debug" } } }""")]
+    public async Task ReturnsPass_WhenLoggingFileConfigIsValid(string json)
+    {
+        var paths = new NetclawPaths(CreateTempBasePath());
+        paths.EnsureDirectoriesExist();
+        await File.WriteAllTextAsync(paths.NetclawConfigPath, json, TestContext.Current.CancellationToken);
+
+        var result = await new ConfigSchemaDoctorCheck(paths).RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Pass, result.Severity);
+    }
+
+    [Fact]
+    public async Task ReturnsNonPass_WhenLogRetentionDaysIsNegative()
+    {
+        var paths = new NetclawPaths(CreateTempBasePath());
+        paths.EnsureDirectoriesExist();
+        await File.WriteAllTextAsync(paths.NetclawConfigPath,
+            """{ "configVersion": 1, "Logging": { "File": { "RetentionDays": -1 } } }""", TestContext.Current.CancellationToken);
+
+        var result = await new ConfigSchemaDoctorCheck(paths).RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.NotEqual(DoctorSeverity.Pass, result.Severity);
+    }
+
     [Fact]
     public async Task ReturnsPass_WhenMemoryEmbeddingsConfigMatchesSchemaV1()
     {

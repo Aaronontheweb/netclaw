@@ -3,7 +3,9 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.Json;
 using Netclaw.Cli.Config;
+using Netclaw.Cli.Tui.Sections;
 using Netclaw.Cli.Tui.Wizard;
 using Netclaw.Cli.Tui.Wizard.Steps;
 using Netclaw.Configuration;
@@ -16,9 +18,9 @@ namespace Netclaw.Cli.Tui;
 /// <summary>
 /// "Redo identity setup" flow reached from the existing-install menu. Hosts the
 /// init-owned identity step single-step and, on completion, rewrites ONLY the identity
-/// files — it deliberately does not call <see cref="WizardOrchestrator.WriteConfig"/>,
-/// which would clobber the existing <c>netclaw.json</c> with bootstrap defaults
-/// (simplify-netclaw-init: identity stays init-owned and is editable on its own).
+/// files and the <c>Identity</c> section of <c>netclaw.json</c> — it deliberately does not call
+/// <see cref="WizardOrchestrator.WriteConfig"/>, which would clobber the rest of the file with
+/// bootstrap defaults (simplify-netclaw-init: identity stays init-owned and is editable on its own).
 /// After a successful save the operator can start the guided identity chat, which hands
 /// the same onboarding trigger as the full wizard to <see cref="ChatNavigationState"/>.
 /// </summary>
@@ -71,8 +73,15 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         try
         {
             _step.WriteIdentityFiles(_paths);
+
+            // Persist the Identity.* fields through the editor session `netclaw config` uses:
+            // it changes only those keys, so `netclaw chat --onboarding` and the daemon read the
+            // redone values instead of the ones the first wizard run saved.
+            var session = new ConfigEditorSession(_paths);
+            session.Apply(_step.BuildContribution(_step));
+            session.Save();
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
             // Stay on the form without offering chat: the identity files may be only
             // partly written, so the guided interview has no complete identity to build
@@ -92,7 +101,7 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
     private string DescribeWriteFailure(Exception ex)
     {
         var reason = ex is UnauthorizedAccessException ? "permission denied" : "write failed";
-        var failed = new[] { _paths.SoulPath, _paths.ToolingPath, _paths.AgentsPath }
+        var failed = new[] { _paths.SoulPath, _paths.ToolingPath, _paths.AgentsPath, _paths.NetclawConfigPath }
             .FirstOrDefault(path => ex.Message.Contains(path, StringComparison.Ordinal));
         var target = failed is null ? "the identity files" : Path.GetFileName(failed);
         return $"Couldn't write {target}: {reason}. Fix it and press Enter to retry.";
@@ -104,7 +113,7 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
     /// </summary>
     private void StartGuidedChat()
     {
-        _chatNavigationState.InitialMessage = _step.BuildOnboardingTrigger(_paths);
+        _chatNavigationState.StartOnboarding(_step.BuildOnboardingTrigger(_paths));
         Navigate?.Invoke(ChatViewModel.Route);
     }
 

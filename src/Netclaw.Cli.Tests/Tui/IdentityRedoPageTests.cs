@@ -125,6 +125,7 @@ public sealed class IdentityRedoPageTests : IDisposable
 
         Assert.True(landing.Entered, "Enter on the saved screen must navigate to chat.");
         Assert.False(string.IsNullOrWhiteSpace(landing.InitialMessage));
+        Assert.True(landing.NavigationState.IsOnboarding);
 
         // Built from the values just entered, not from defaults or stale state.
         Assert.Contains("My name is Pat", landing.InitialMessage);
@@ -178,7 +179,7 @@ public sealed class IdentityRedoPageTests : IDisposable
     }
 
     [Fact]
-    public async Task GuidedChatHandoff_LeavesConfigAndSecretsUntouched()
+    public async Task GuidedChatHandoff_ChangesOnlyIdentityInConfig_AndLeavesSecretsUntouched()
     {
         const string config = "{ \"configVersion\": 1, \"Security\": { \"DeploymentPosture\": \"Team\" }, "
                               + "\"Providers\": { \"openrouter\": { \"BaseUrl\": \"https://openrouter.ai/api/v1\" } } }";
@@ -193,7 +194,10 @@ public sealed class IdentityRedoPageTests : IDisposable
         await RedoIdentityAsync(app, terminal, input, cts.Token, () => Keys(() => input.EnqueueKey(ConsoleKey.Enter)));
 
         Assert.True(landing.Entered);
-        Assert.Equal(config, File.ReadAllText(_paths.NetclawConfigPath));
+        var after = System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(_paths.NetclawConfigPath))!.AsObject();
+        Assert.NotNull(after["Identity"]);
+        after.Remove("Identity");
+        Assert.True(System.Text.Json.Nodes.JsonNode.DeepEquals(System.Text.Json.Nodes.JsonNode.Parse(config), after));
         Assert.Equal(secrets, File.ReadAllText(_paths.SecretsPath));
     }
 

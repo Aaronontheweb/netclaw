@@ -35,6 +35,12 @@ public sealed class MemoryCurationLlmDoctorCheck(NetclawPaths paths, TimeProvide
 
     public async Task<DoctorCheckResult> RunAsync(CancellationToken cancellationToken = default)
     {
+        var result = await RunCoreAsync(cancellationToken);
+        return result with { Message = result.Message + DoctorJsonConfigReader.LogRetentionNote(paths, LogWindowDays) };
+    }
+
+    private async Task<DoctorCheckResult> RunCoreAsync(CancellationToken cancellationToken)
+    {
         try
         {
             if (!Directory.Exists(paths.LogsDirectory))

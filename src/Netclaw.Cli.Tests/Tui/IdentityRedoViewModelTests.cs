@@ -46,9 +46,8 @@ public sealed class IdentityRedoViewModelTests : IDisposable
               "Identity": { "AgentName": "Existing", "UserTimezone": "UTC" }
             }
             """);
-        var configBefore = File.ReadAllText(_paths.NetclawConfigPath);
-        var securityBefore = ReadSection(configBefore, "Security");
-        var providersBefore = ReadSection(configBefore, "Providers");
+        var securityBefore = ReadSection(File.ReadAllText(_paths.NetclawConfigPath), "Security");
+        var providersBefore = ReadSection(File.ReadAllText(_paths.NetclawConfigPath), "Providers");
 
         // Identity files do not exist before a redo run.
         Assert.False(File.Exists(_paths.SoulPath));
@@ -65,11 +64,41 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         Assert.NotEqual(0, new FileInfo(_paths.SoulPath).Length);
         Assert.NotEqual(0, new FileInfo(_paths.ToolingPath).Length);
 
-        // netclaw.json is byte-for-byte untouched: redo never calls WriteConfig.
+        // Only the Identity section of netclaw.json changes; every other section is untouched.
         var configAfter = File.ReadAllText(_paths.NetclawConfigPath);
-        Assert.Equal(configBefore, configAfter);
         Assert.Equal(securityBefore, ReadSection(configAfter, "Security"));
         Assert.Equal(providersBefore, ReadSection(configAfter, "Providers"));
+    }
+
+    [Fact]
+    public void Redo_persists_the_new_identity_and_the_onboarding_trigger_uses_it()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath,
+            """
+            {
+              "configVersion": 1,
+              "Security": { "DeploymentPosture": "Team" },
+              "Identity": { "AgentName": "Existing", "UserName": "Walter", "CommunicationStyle": "Concise & casual", "UserTimezone": "UTC" }
+            }
+            """);
+
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        vm.Step.UserName = "Pat";
+        vm.Step.CommunicationStyle = "Detailed & formal";
+        DriveToSaved(vm);
+
+        Assert.True(vm.IsSaved.Value);
+        using var doc = JsonDocument.Parse(File.ReadAllText(_paths.NetclawConfigPath));
+        var identity = doc.RootElement.GetProperty("Identity");
+        Assert.Equal("Pat", identity.GetProperty("UserName").GetString());
+        Assert.Equal("Detailed & formal", identity.GetProperty("CommunicationStyle").GetString());
+        Assert.Equal("UTC", identity.GetProperty("UserTimezone").GetString());
+        Assert.Equal("Team", doc.RootElement.GetProperty("Security").GetProperty("DeploymentPosture").GetString());
+
+        var trigger = ChatOnboarding.BuildTrigger(_paths);
+        Assert.Contains("My name is Pat", trigger);
+        Assert.Contains("\"Detailed & formal\"", trigger);
+        Assert.DoesNotContain("Walter", trigger);
     }
 
     [Fact]
@@ -135,7 +164,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
     private static string ReadSection(string json, string section)
     {
         using var doc = JsonDocument.Parse(json);
-        return doc.RootElement.GetProperty(section).GetRawText();
+        return System.Text.Json.Nodes.JsonNode.Parse(doc.RootElement.GetProperty(section).GetRawText())!.ToJsonString();
     }
 
     // The Navigate delegate is a protected, framework-wired member on ReactiveViewModel

@@ -44,4 +44,21 @@ public sealed class ChatNavigationState
         InitialMessage = null;
         return msg;
     }
+
+    /// <summary>
+    /// True once <see cref="StartOnboarding"/> queued the onboarding trigger. Stays set after
+    /// the message is taken so a failed daemon connection can still point the operator at
+    /// <c>netclaw chat --onboarding</c>.
+    /// </summary>
+    public bool IsOnboarding { get; private set; }
+
+    /// <summary>
+    /// Queues the onboarding trigger as the chat's first turn. The init wizard, the redo
+    /// identity flow and <c>netclaw chat --onboarding</c> all start the interview through here.
+    /// </summary>
+    public void StartOnboarding(string trigger)
+    {
+        InitialMessage = trigger;
+        IsOnboarding = true;
+    }
 }
