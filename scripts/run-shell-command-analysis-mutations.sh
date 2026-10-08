@@ -518,10 +518,58 @@ read -r combine_start combine_end < <(
 )
 security_mutations+=("ShellCommandPolicy.cs{$combine_start..$combine_end}")
 
+# Fixed text on stdin is data only for a receiver that is not a shell, and
+# only when the heredoc does not expand or the here string has a proved value.
+read -r stdin_arm_start stdin_arm_end < <(
+  find_span \
+    "$analysis_file" \
+    "private static bool HasUnresolvedRedirect(" \
+    "HereDocumentRedirectAnalysis heredoc =>" \
+    "!HasFixedTextStdin(occurrence, hereString),"
+)
+security_mutations+=("ShellCommandAnalysis.cs{$stdin_arm_start..$stdin_arm_end}")
+
+read -r stdin_start stdin_end < <(
+  find_span \
+    "$analysis_file" \
+    "private static bool HasFixedTextStdin(" \
+    "=> IsStandardInputSource(redirect.Source)" \
+    "&& MayNameScriptShell(argument.Value));"
+)
+security_mutations+=("ShellCommandAnalysis.cs{$stdin_start..$stdin_end}")
+
+read -r shell_value_start shell_value_end < <(
+  find_span \
+    "$analysis_file" \
+    "private static bool MayNameScriptShell(" \
+    "=> value switch" \
+    ".Any(ShellVerbPolicyData.IsScriptShellProgram);"
+)
+security_mutations+=("ShellCommandAnalysis.cs{$shell_value_start..$shell_value_end}")
+
+read -r literal_start literal_end < <(
+  find_span \
+    "$analysis_file" \
+    "private static bool HasLiteralHereDocument(" \
+    "&& hereDocument.ExpansionMode == HereDocumentExpansionMode.Literal" \
+    "&& hereDocument.ExpansionMode == HereDocumentExpansionMode.Literal"
+)
+security_mutations+=("ShellCommandAnalysis.cs{$literal_start..$literal_end}")
+
+verb_policy_file="$repo_root/src/Netclaw.Security/ShellVerbPolicyData.cs"
+read -r shell_name_start shell_name_end < <(
+  find_span \
+    "$verb_policy_file" \
+    "internal static bool IsScriptShellProgram(" \
+    "var program = LegacyShellTextScan.TrimShellPunctuation(word);" \
+    "return ScriptShellNames.Contains(name);"
+)
+security_mutations+=("ShellVerbPolicyData.cs{$shell_name_start..$shell_name_end}")
+
 run_group \
   "stryker-shell-command-analysis.json" \
   "$output_path/security" \
-  279 \
+  303 \
   "${security_mutations[@]}"
 
 actor_mutations=()

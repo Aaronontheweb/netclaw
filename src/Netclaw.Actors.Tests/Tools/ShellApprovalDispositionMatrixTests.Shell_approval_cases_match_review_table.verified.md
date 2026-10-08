@@ -266,8 +266,79 @@
 | dynamic-heredoc-cat-prompts | Bash | Personal | Project | Interactive | cat <<EOF\n$value\nEOF | persistent[anywhere]:cat | RequiresApproval | approval required | <full command text> | Yes |
 | literal-here-string-cat-allows | Bash | Personal | Project | Interactive | cat <<< "hello" | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | dynamic-here-string-cat-prompts | Bash | Personal | Project | Interactive | cat <<< "$value" | persistent[anywhere]:cat | RequiresApproval | approval required | <full command text> | Yes |
-| here-string-cat-with-argument-prompts | Bash | Personal | Project | Interactive | cat -n <<< "hello" | persistent[anywhere]:cat | RequiresApproval | approval required | cat -n <<< "hello" | No |
+| here-string-cat-with-argument-uses-grant | Bash | Personal | Project | Interactive | cat -n <<< "hello" | persistent[anywhere]:cat | Allowed | StoredApproval | none | Not applicable |
 | here-string-interpreter-grant-prompts | Bash | Personal | Project | Interactive | bash <<< "echo ok" | persistent[anywhere]:bash | RequiresApproval | approval required | bash <<< "echo ok" | No |
+| heredoc-substitution-body-prompts-for-inner-command | Bash | Personal | Project | Interactive | python3 - <<EOF\n$(rm -rf x)\nEOF | persistent[anywhere]:python3 | RequiresApproval | approval required | rm, python3 - <<EOF | No |
+| heredoc-expanding-body-stays-strict | Bash | Personal | Project | Interactive | python3 - <<EOF\n$HOME\nEOF | persistent[anywhere]:python3 | RequiresApproval | approval required | <full command text> | Yes |
+| heredoc-unquoted-literal-body-stays-strict | Bash | Personal | Project | Interactive | python3 - <<EOF\nprint(1)\nEOF | persistent[anywhere]:python3 | RequiresApproval | approval required | python3 - <<EOF | No |
+| here-string-variable-word-stays-strict | Bash | Personal | Project | Interactive | python3 - <<< "$CODE" | persistent[anywhere]:python3 | RequiresApproval | approval required | <full command text> | Yes |
+| heredoc-protected-redirect-denies | Bash | Personal | Project | Interactive | python3 - <<'EOF' > ~/.netclaw/config/secrets.json\nprint(1)\nEOF | persistent[anywhere]:python3 | Denied | shell_references_protected_path | none | Not applicable |
+| heredoc-shell-receiver-stays-strict | Bash | Personal | Project | Interactive | bash <<'EOF'\necho ok\nEOF | persistent[anywhere]:bash | RequiresApproval | approval required | bash <<'EOF' | No |
+| heredoc-wrapped-shell-receiver-stays-strict | Bash | Personal | Project | Interactive | env sh <<'EOF'\necho ok\nEOF | persistent[anywhere]:env, persistent[anywhere]:sh, persistent[anywhere]:env sh | RequiresApproval | approval required | env sh <<'EOF' | No |
+| heredoc-path-shell-receiver-stays-strict | Bash | Personal | Project | Interactive | /usr/local/bin/bash <<'EOF'\necho ok\nEOF | persistent[anywhere]:/usr/local/bin/bash | RequiresApproval | approval required | /usr/local/bin/bash <<'EOF' | No |
+| path-shell-command-string-uses-grant | Bash | Personal | Project | Interactive | /usr/local/bin/bash -c 'echo ok' | persistent[anywhere]:/usr/local/bin/bash | Allowed | StoredApproval | none | Not applicable |
+| heredoc-shell-in-argument-stays-strict | Bash | Personal | Project | Interactive | timeout 5 /opt/x/bash <<'EOF'\necho ok\nEOF | persistent[anywhere]:timeout | RequiresApproval | approval required | timeout 5 /opt/x/bash <<'EOF' | No |
+| heredoc-loop-unknown-words-keeps-exact-prompt | Bash52 | Personal | Project | Interactive | for f in a b; do python3 - "$f" <<'EOF'\nprint(1)\nEOF\ndone | persistent[anywhere]:python3 | RequiresApproval | approval required | python3 - "$f" <<'EOF' | No |
+| loop-argument-form-uses-grant-for-each-twin | Bash52 | Personal | Project | Interactive | for f in a b; do python3 -c 'print(1)' "$f"; done | persistent[anywhere]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-pipe-after-operator-keeps-exact-prompt | Bash | Personal | Project | Interactive | python3 - <<'EOF' \| head -5\nprint(1)\nEOF | persistent[anywhere]:python3, persistent[anywhere]:head | RequiresApproval | approval required | <full command text> | Yes |
+| heredoc-redirect-after-operator-keeps-exact-prompt | Bash | Personal | Project | Interactive | cat <<'EOF' > out.txt\nx\nEOF | persistent[anywhere]:cat | RequiresApproval | approval required | <full command text> | Yes |
+| heredoc-redirect-before-operator-uses-grant | Bash | Personal | Project | Interactive | python3 - 2>&1 <<'EOF'\nprint(1)\nEOF | persistent[anywhere]:python3 | Allowed | StoredApproval | none | Not applicable |
+| here-string-path-text-uses-folder-grant | Bash | Personal | Project | Interactive | xargs cat <<< /etc/passwd | persistent[project]:xargs cat | Allowed | StoredApproval | none | Not applicable |
+| pipe-path-text-uses-folder-grant | Bash | Personal | Project | Interactive | printf /etc/passwd \| xargs cat | persistent[project]:xargs cat | Allowed | StoredApproval | none | Not applicable |
+| heredoc-shell-inside-argument-env-split-string-stays-strict | Bash | Personal | Project | Interactive | env -S 'bash -s' <<'EOF'\necho ok\nEOF | persistent[anywhere]:env | RequiresApproval | approval required | env -S 'bash -s' <<'EOF' | No |
+| heredoc-shell-inside-argument-ssh-remote-command-stays-strict | Bash | Personal | Project | Interactive | ssh host 'bash -s' <<'EOF'\necho ok\nEOF | persistent[anywhere]:ssh host | RequiresApproval | approval required | ssh host 'bash -s' <<'EOF' | No |
+| heredoc-shell-inside-argument-sg-command-stays-strict | Bash | Personal | Project | Interactive | sg grp 'bash -s' <<'EOF'\necho ok\nEOF | persistent[anywhere]:sg grp | RequiresApproval | approval required | sg grp 'bash -s' <<'EOF' | No |
+| heredoc-shell-inside-argument-flock-command-stays-strict | Bash | Personal | Project | Interactive | flock x -c 'bash -s' <<'EOF'\necho ok\nEOF | persistent[anywhere]:flock x | RequiresApproval | approval required | flock x -c 'bash -s' <<'EOF' | No |
+| heredoc-shell-inside-argument-script-command-stays-strict | Bash | Personal | Project | Interactive | script -c 'bash -s' <<'EOF'\necho ok\nEOF | persistent[anywhere]:script | RequiresApproval | approval required | script -c 'bash -s' <<'EOF' | No |
+| heredoc-shell-word-in-data-argument-is-exact | Bash | Personal | Project | Interactive | grep 'run bash now' <<'EOF'\nx\nEOF | persistent[anywhere]:grep | RequiresApproval | approval required | grep 'run bash now' <<'EOF' | No |
+| no-program-colon-heredoc-needs-no-prompt | Bash | Personal | Project | Interactive | : <<'EOF'\nnote\nEOF | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
+| no-program-true-heredoc-needs-no-prompt | Bash | Personal | Project | Interactive | true <<'EOF'\nnote\nEOF | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
+| no-program-echo-here-string-needs-no-prompt | Bash | Personal | Project | Interactive | echo x <<< 'y' | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
+| no-program-echo-here-string-with-file-redirect-uses-file-rules | Bash | Personal | Project | Interactive | echo x > /netclaw-approval-external/netclaw-approval-echo-stdin.txt <<< 'y' | none | Allowed | ApprovalExemptShellCandidates | none | Not applicable |
+| no-program-heredoc-with-protected-redirect-denies | Bash | Personal | Project | Interactive | echo x > ~/.netclaw/config/secrets.json <<'EOF'\ny\nEOF | none | Denied | shell_references_protected_path | none | Not applicable |
+| no-program-expanding-heredoc-stays-exact | Bash | Personal | Project | Interactive | : <<EOF\nnote\nEOF | none | RequiresApproval | approval required | : <<EOF | No |
+| heredoc-program-with-write-redirect-prompts-for-program | Bash | Personal | Project | Interactive | python3 - > out.txt <<'EOF'\nprint(1)\nEOF | none | RequiresApproval | approval required | python3 | No |
+| heredoc-cat-with-write-redirect-prompts-for-writer | Bash | Personal | Project | Interactive | cat > out.txt <<'EOF'\nx\nEOF | none | RequiresApproval | approval required | cat | No |
+| heredoc-parity-python-heredoc-no-grant | Bash | Personal | Project | Interactive | python3 - <<'EOF'\nprint(1)\nEOF | none | RequiresApproval | approval required | python3 | No |
+| heredoc-parity-python-heredoc-twin-no-grant | Bash | Personal | Project | Interactive | python3 -c 'print(1)' | none | RequiresApproval | approval required | python3 | No |
+| heredoc-parity-python-heredoc-chat-grant | Bash | Personal | Project | Interactive | python3 - <<'EOF'\nprint(1)\nEOF | session[this-chat]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-heredoc-twin-chat-grant | Bash | Personal | Project | Interactive | python3 -c 'print(1)' | session[this-chat]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-heredoc-folder-grant | Bash | Personal | Project | Interactive | python3 - <<'EOF'\nprint(1)\nEOF | persistent[project]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-heredoc-twin-folder-grant | Bash | Personal | Project | Interactive | python3 -c 'print(1)' | persistent[project]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-heredoc-anywhere-grant | Bash | Personal | Project | Interactive | python3 - <<'EOF'\nprint(1)\nEOF | persistent[anywhere]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-heredoc-twin-anywhere-grant | Bash | Personal | Project | Interactive | python3 -c 'print(1)' | persistent[anywhere]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-heredoc-unattended | Bash | Personal | Project | Non-interactive | python3 - <<'EOF'\nprint(1)\nEOF | none | Denied | approval_required_unattended | none | Not applicable |
+| heredoc-parity-python-heredoc-twin-unattended | Bash | Personal | Project | Non-interactive | python3 -c 'print(1)' | none | Denied | approval_required_unattended | none | Not applicable |
+| heredoc-parity-python-here-string-no-grant | Bash | Personal | Project | Interactive | python3 - <<< 'print(1)' | none | RequiresApproval | approval required | python3 | No |
+| heredoc-parity-python-here-string-twin-no-grant | Bash | Personal | Project | Interactive | python3 -c 'print(1)' | none | RequiresApproval | approval required | python3 | No |
+| heredoc-parity-python-here-string-chat-grant | Bash | Personal | Project | Interactive | python3 - <<< 'print(1)' | session[this-chat]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-here-string-twin-chat-grant | Bash | Personal | Project | Interactive | python3 -c 'print(1)' | session[this-chat]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-here-string-folder-grant | Bash | Personal | Project | Interactive | python3 - <<< 'print(1)' | persistent[project]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-here-string-twin-folder-grant | Bash | Personal | Project | Interactive | python3 -c 'print(1)' | persistent[project]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-here-string-anywhere-grant | Bash | Personal | Project | Interactive | python3 - <<< 'print(1)' | persistent[anywhere]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-here-string-twin-anywhere-grant | Bash | Personal | Project | Interactive | python3 -c 'print(1)' | persistent[anywhere]:python3 | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-python-here-string-unattended | Bash | Personal | Project | Non-interactive | python3 - <<< 'print(1)' | none | Denied | approval_required_unattended | none | Not applicable |
+| heredoc-parity-python-here-string-twin-unattended | Bash | Personal | Project | Non-interactive | python3 -c 'print(1)' | none | Denied | approval_required_unattended | none | Not applicable |
+| heredoc-parity-grep-heredoc-no-grant | Bash | Personal | Project | Interactive | grep x <<'EOF'\nx\nEOF | none | Allowed | ReviewedSafePolicy | none | Not applicable |
+| heredoc-parity-grep-heredoc-twin-no-grant | Bash | Personal | Project | Interactive | grep x | none | Allowed | ReviewedSafePolicy | none | Not applicable |
+| heredoc-parity-grep-heredoc-chat-grant | Bash | Personal | Project | Interactive | grep x <<'EOF'\nx\nEOF | session[this-chat]:grep | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-grep-heredoc-twin-chat-grant | Bash | Personal | Project | Interactive | grep x | session[this-chat]:grep | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-grep-heredoc-folder-grant | Bash | Personal | Project | Interactive | grep x <<'EOF'\nx\nEOF | persistent[project]:grep | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-grep-heredoc-twin-folder-grant | Bash | Personal | Project | Interactive | grep x | persistent[project]:grep | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-grep-heredoc-anywhere-grant | Bash | Personal | Project | Interactive | grep x <<'EOF'\nx\nEOF | persistent[anywhere]:grep | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-grep-heredoc-twin-anywhere-grant | Bash | Personal | Project | Interactive | grep x | persistent[anywhere]:grep | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-grep-heredoc-unattended | Bash | Personal | Project | Non-interactive | grep x <<'EOF'\nx\nEOF | none | Allowed | ReviewedSafePolicy | none | Not applicable |
+| heredoc-parity-grep-heredoc-twin-unattended | Bash | Personal | Project | Non-interactive | grep x | none | Allowed | ReviewedSafePolicy | none | Not applicable |
+| heredoc-parity-cat-heredoc-no-grant | Bash | Personal | Project | Interactive | cat <<'EOF'\nx\nEOF | none | Allowed | ReviewedSafePolicy | none | Not applicable |
+| heredoc-parity-cat-heredoc-twin-no-grant | Bash | Personal | Project | Interactive | cat | none | Allowed | ReviewedSafePolicy | none | Not applicable |
+| heredoc-parity-cat-heredoc-chat-grant | Bash | Personal | Project | Interactive | cat <<'EOF'\nx\nEOF | session[this-chat]:cat | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-cat-heredoc-twin-chat-grant | Bash | Personal | Project | Interactive | cat | session[this-chat]:cat | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-cat-heredoc-folder-grant | Bash | Personal | Project | Interactive | cat <<'EOF'\nx\nEOF | persistent[project]:cat | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-cat-heredoc-twin-folder-grant | Bash | Personal | Project | Interactive | cat | persistent[project]:cat | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-cat-heredoc-anywhere-grant | Bash | Personal | Project | Interactive | cat <<'EOF'\nx\nEOF | persistent[anywhere]:cat | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-cat-heredoc-twin-anywhere-grant | Bash | Personal | Project | Interactive | cat | persistent[anywhere]:cat | Allowed | StoredApproval | none | Not applicable |
+| heredoc-parity-cat-heredoc-unattended | Bash | Personal | Project | Non-interactive | cat <<'EOF'\nx\nEOF | none | Allowed | ReviewedSafePolicy | none | Not applicable |
+| heredoc-parity-cat-heredoc-twin-unattended | Bash | Personal | Project | Non-interactive | cat | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | workload-search-rg-in-project-allows | Bash | Personal | Project | Interactive | rg -n "TODO" src | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | workload-search-grep-in-project-allows | Bash | Personal | Project | Interactive | grep -R "error" src | none | Allowed | ReviewedSafePolicy | none | Not applicable |
 | workload-search-find-in-project-prompts | Bash | Personal | Project | Interactive | find src -name "*.cs" -print | none | RequiresApproval | approval required | find | No |
@@ -383,7 +454,7 @@
 | inline-python-interpreter-grant-currently-allows | Bash | Personal | Project | Interactive | python3 -c "print('hello')" | persistent[anywhere]:python3 | Allowed | StoredApproval | none | Not applicable |
 | eval-prompts-for-interpreter | Bash | Personal | Project | Interactive | eval "$CODE" | none | RequiresApproval | approval required | <full command text> | Yes |
 | eval-grant-does-not-cover-dynamic-payload | Bash | Personal | Project | Interactive | eval "$CODE" | persistent[anywhere]:eval | RequiresApproval | approval required | <full command text> | Yes |
-| inline-python-heredoc-fails-closed | Bash | Personal | Project | Interactive | python3 <<'PY'\nprint('hello')\nPY | persistent[anywhere]:python3 | RequiresApproval | approval required | python3 <<'PY' | No |
+| inline-python-heredoc-uses-interpreter-grant | Bash | Personal | Project | Interactive | python3 <<'PY'\nprint('hello')\nPY | persistent[anywhere]:python3 | Allowed | StoredApproval | none | Not applicable |
 | empty-command-fails-closed | Bash | Personal | Project | Interactive |  | none | RequiresApproval | approval required | <full command text> | Yes |
 | whitespace-command-fails-closed | Bash | Personal | Project | Interactive |     | none | RequiresApproval | approval required | <full command text> | Yes |
 | session-grant-allows | Bash | Personal | Project | Interactive | git push | session[this-chat]:git push | Allowed | StoredApproval | none | Not applicable |
