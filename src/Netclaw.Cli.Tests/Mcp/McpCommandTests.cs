@@ -1018,6 +1018,126 @@ public sealed class McpCommandTests : IDisposable
         Assert.Equal("Approval", overrides.GetProperty("dropbox/copy").GetString());
     }
 
+    private static string TeamProfileJson(string teamBody) => $$"""
+        { "configVersion": 1, "Tools": { "AudienceProfiles": { "Team": { {{teamBody}} } } } }
+        """;
+
+    private static List<string> ReadStrings(JsonElement array)
+        => array.EnumerateArray().Select(e => e.GetString()!).ToList();
+
+    [Fact]
+    public async Task Tools_Grant_ServerNotAllowed_AddsServerToAllowListAndSaysSo()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, TeamProfileJson("""
+            "McpServerToolGrants": { "dropbox": [] }
+            """));
+
+        var exitCode = await McpCommand.RunAsync(
+            ["mcp", "tools", "dropbox", "--grant", "copy", "--audience", "team"],
+            _paths, ToolsDaemonApi("dropbox", "copy", "delete", "move"), _output);
+
+        Assert.Equal(0, exitCode);
+        using var doc = ReadConfigFile(_paths.NetclawConfigPath);
+        var team = doc.RootElement.GetProperty("Tools").GetProperty("AudienceProfiles").GetProperty("Team");
+        Assert.Equal(["dropbox"], ReadStrings(team.GetProperty("AllowedMcpServers")));
+        Assert.Equal(["copy"], ReadStrings(team.GetProperty("McpServerToolGrants").GetProperty("dropbox")));
+        Assert.Contains("Also allowed server 'dropbox' for Team.", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Tools_Grant_ServerNotAllowedAndNoGrantsEntry_GrantsOnlyTheNamedTool()
+    {
+        // No entry means "every tool" once the audience allows the server, so allowing it for
+        // one grant must start from nothing instead of from the full tool list.
+        File.WriteAllText(_paths.NetclawConfigPath, TeamProfileJson(""));
+
+        var exitCode = await McpCommand.RunAsync(
+            ["mcp", "tools", "dropbox", "--grant", "copy", "--audience", "team"],
+            _paths, ToolsDaemonApi("dropbox", "copy", "delete", "move"), _output);
+
+        Assert.Equal(0, exitCode);
+        using var doc = ReadConfigFile(_paths.NetclawConfigPath);
+        var team = doc.RootElement.GetProperty("Tools").GetProperty("AudienceProfiles").GetProperty("Team");
+        Assert.Equal(["copy"], ReadStrings(team.GetProperty("McpServerToolGrants").GetProperty("dropbox")));
+        Assert.Equal(["dropbox"], ReadStrings(team.GetProperty("AllowedMcpServers")));
+    }
+
+    [Fact]
+    public async Task Tools_Grant_ServerAlreadyAllowed_LeavesAllowListAndPrintsNoExtraLine()
+    {
+        // The existing entry differs only by case. The runtime ignores case, so it counts.
+        File.WriteAllText(_paths.NetclawConfigPath, TeamProfileJson("""
+            "AllowedMcpServers": [ "Dropbox", "other" ],
+            "McpServerToolGrants": { "dropbox": [ "copy" ] }
+            """));
+
+        var exitCode = await McpCommand.RunAsync(
+            ["mcp", "tools", "dropbox", "--grant", "delete", "--audience", "team"],
+            _paths, ToolsDaemonApi("dropbox", "copy", "delete"), _output);
+
+        Assert.Equal(0, exitCode);
+        using var doc = ReadConfigFile(_paths.NetclawConfigPath);
+        var team = doc.RootElement.GetProperty("Tools").GetProperty("AudienceProfiles").GetProperty("Team");
+        Assert.Equal(["Dropbox", "other"], ReadStrings(team.GetProperty("AllowedMcpServers")));
+        Assert.DoesNotContain("Also allowed", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Tools_Grant_PersonalInAllMode_DoesNotWriteAnAllowList()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, """
+        { "configVersion": 1, "Tools": { "AudienceProfiles": { "Personal": { "McpServersMode": "All" } } } }
+        """);
+
+        var exitCode = await McpCommand.RunAsync(
+            ["mcp", "tools", "dropbox", "--grant", "copy", "--audience", "personal"],
+            _paths, ToolsDaemonApi("dropbox", "copy", "delete"), _output);
+
+        Assert.Equal(0, exitCode);
+        using var doc = ReadConfigFile(_paths.NetclawConfigPath);
+        var personal = doc.RootElement.GetProperty("Tools").GetProperty("AudienceProfiles").GetProperty("Personal");
+        Assert.False(personal.TryGetProperty("AllowedMcpServers", out _));
+        Assert.DoesNotContain("Also allowed", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Tools_Revoke_LastGrantedTool_KeepsTheServerAllowedAndSaysSo()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, TeamProfileJson("""
+            "AllowedMcpServers": [ "dropbox" ],
+            "McpServerToolGrants": { "dropbox": [ "copy" ] }
+            """));
+
+        var exitCode = await McpCommand.RunAsync(
+            ["mcp", "tools", "dropbox", "--revoke", "copy", "--audience", "team"],
+            _paths, ToolsDaemonApi("dropbox", "copy", "delete"), _output);
+
+        Assert.Equal(0, exitCode);
+        using var doc = ReadConfigFile(_paths.NetclawConfigPath);
+        var team = doc.RootElement.GetProperty("Tools").GetProperty("AudienceProfiles").GetProperty("Team");
+        Assert.Equal(["dropbox"], ReadStrings(team.GetProperty("AllowedMcpServers")));
+        Assert.Equal(0, team.GetProperty("McpServerToolGrants").GetProperty("dropbox").GetArrayLength());
+        Assert.Contains("No tools remain granted. Server 'dropbox' stays in the Team AllowedMcpServers list.", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Tools_View_LeavesAConfigWithGrantsButNoAllowListUntouched()
+    {
+        // A 0.27.1 home can hold grants for a server the audience never allowed. Reading it
+        // does not repair it; only an explicit --grant does.
+        var original = TeamProfileJson("""
+            "McpServerToolGrants": { "dropbox": [ "copy" ] }
+            """);
+        File.WriteAllText(_paths.NetclawConfigPath, original);
+
+        var exitCode = await McpCommand.RunAsync(
+            ["mcp", "tools", "dropbox"],
+            _paths, ToolsDaemonApi("dropbox", "copy", "delete"), _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Equal(original, File.ReadAllText(_paths.NetclawConfigPath));
+    }
+
     private DaemonApi ToolsDaemonApi(string serverName, params string[] tools)
     {
         var body = JsonSerializer.Serialize(tools);
