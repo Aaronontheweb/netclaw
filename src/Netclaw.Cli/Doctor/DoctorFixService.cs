@@ -178,14 +178,14 @@ public sealed class DoctorFixService
         return changed;
     }
 
-    // Returns netclaw.json.legacy-tool-defaults.bak, then .legacy-tool-defaults.2.bak, and so on:
-    // the first name that is not a file. A directory at a candidate name is not skipped, so the
-    // copy fails loudly instead of the fix writing without a backup.
-    internal static string NextLegacyAllowedToolsBackupPath(string configPath)
+    // Returns netclaw.json.<name>.bak, then .<name>.2.bak, and so on: the first name that is
+    // not a file. A directory at a candidate name is not skipped, so the copy fails loudly
+    // instead of the fix writing without a backup.
+    internal static string NextBackupPath(string configPath, string name)
     {
-        var candidate = configPath + ".legacy-tool-defaults.bak";
+        var candidate = $"{configPath}.{name}.bak";
         for (var number = 2; File.Exists(candidate); number++)
-            candidate = $"{configPath}.legacy-tool-defaults.{number}.bak";
+            candidate = $"{configPath}.{name}.{number}.bak";
 
         return candidate;
     }
@@ -336,8 +336,46 @@ public sealed class DoctorFixService
 
     internal const string ToolApprovalHygieneFixName = "tool approval grants";
 
-    public Task ApplyAsync(DoctorFixPlan plan, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Writes every fix in the plan. A fix that deletes user data first copies the original file
+    /// to a backup. All backups are written before the first file changes, so a failed backup
+    /// leaves every file as it was. Returns the backup paths.
+    /// </summary>
+    public Task<IReadOnlyList<string>> ApplyAsync(DoctorFixPlan plan, CancellationToken cancellationToken = default)
     {
+        var backups = new List<string>();
+        foreach (var fix in plan.Fixes)
+        {
+            if (!File.Exists(fix.FilePath))
+                continue;
+
+            if (fix.Description.Contains("named model definitions", StringComparison.Ordinal))
+            {
+                var backupPath = fix.FilePath + ".legacy-models.bak";
+                if (!File.Exists(backupPath))
+                {
+                    File.Copy(fix.FilePath, backupPath);
+                    backups.Add(backupPath);
+                }
+            }
+
+            // The audience tool list fix and the property removal delete user data, so the
+            // operator gets a copy of the original file. A failed copy throws before any write.
+            // An older backup is never overwritten: each run that applies one of them writes a
+            // new file.
+            var removalName = fix.Description.Contains(LegacyAllowedToolsFixName, StringComparison.Ordinal)
+                ? "legacy-tool-defaults"
+                : fix.Description.Contains(SchemaFixResolver.RemovedPropertyPrefix, StringComparison.Ordinal)
+                    ? "removed-keys"
+                    : null;
+            if (removalName is not null)
+            {
+                var backupPath = NextBackupPath(fix.FilePath, removalName);
+                File.Copy(fix.FilePath, backupPath, overwrite: false);
+                backups.Add(backupPath);
+            }
+        }
+
         foreach (var fix in plan.Fixes)
         {
             // The grant store has its own lock. The write fails when the store changed after the plan.
@@ -362,27 +400,10 @@ public sealed class DoctorFixService
                 Directory.CreateDirectory(dir);
 
             cancellationToken.ThrowIfCancellationRequested();
-            if (fix.Description.Contains("named model definitions", StringComparison.Ordinal)
-                && File.Exists(fix.FilePath))
-            {
-                var backupPath = fix.FilePath + ".legacy-models.bak";
-                if (!File.Exists(backupPath))
-                    File.Copy(fix.FilePath, backupPath);
-            }
-
-            // The audience tool list fix deletes security policy data, so the operator gets a
-            // copy of the original file. A failed copy throws before the write below. An older
-            // backup is never overwritten: each run that applies this fix writes a new file.
-            if (fix.Description.Contains(LegacyAllowedToolsFixName, StringComparison.Ordinal)
-                && File.Exists(fix.FilePath))
-            {
-                File.Copy(fix.FilePath, NextLegacyAllowedToolsBackupPath(fix.FilePath), overwrite: false);
-            }
-
             AtomicFile.WriteAllText(fix.FilePath, fix.UpdatedText);
         }
 
-        return Task.CompletedTask;
+        return Task.FromResult<IReadOnlyList<string>>(backups);
     }
 
 }

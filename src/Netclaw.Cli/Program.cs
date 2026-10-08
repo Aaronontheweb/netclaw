@@ -252,7 +252,19 @@ static async Task RunAsync(string[] args)
                 {
                     var shouldApply = doctorOptions.Yes || PromptForDoctorFixApply();
                     if (shouldApply)
-                        await fixService.ApplyAsync(fixPlan);
+                    {
+                        try
+                        {
+                            foreach (var backup in await fixService.ApplyAsync(fixPlan))
+                                Console.WriteLine($"Backed up the original to {backup}");
+                        }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                        {
+                            Console.Error.WriteLine($"Error: could not apply the fixes: {ex.Message}");
+                            Environment.ExitCode = 1;
+                            return;
+                        }
+                    }
                 }
             }
 

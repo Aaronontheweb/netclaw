@@ -6,6 +6,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Json.Schema;
+using Netclaw.Security;
 
 namespace Netclaw.Cli.Doctor;
 
@@ -15,6 +16,8 @@ namespace Netclaw.Cli.Doctor;
 /// </summary>
 public static class SchemaFixResolver
 {
+    internal const string RemovedPropertyPrefix = "Removed disallowed property";
+
     /// <summary>
     /// Validates config against schema and applies safe fixes for known error patterns.
     /// Returns true if any fixes were applied; <paramref name="appliedFixes"/> lists descriptions.
@@ -148,6 +151,9 @@ public static class SchemaFixResolver
     /// <summary>
     /// Removes properties that are disallowed by <c>additionalProperties: false</c>.
     /// Common cause: a property was removed from the schema in a newer version.
+    /// Keys under <c>Models</c> and keys that hold a credential are never removed. The
+    /// schema has no notion of a key that moved, so those are the values that a removal
+    /// could lose without a replacement. The Config Schema check reports them instead.
     /// </summary>
     /// <remarks>
     /// When <c>additionalProperties: false</c> rejects a property, json-everything emits
@@ -182,20 +188,28 @@ public static class SchemaFixResolver
             if (propertySchema is not null)
                 continue; // schema recognizes this property — don't remove
 
+            if (string.Equals(segments[0], "Models", StringComparison.OrdinalIgnoreCase))
+                continue;
+
             // Remove the property from its parent
             var parentSegments = segments[..^1];
             var propertyName = segments[^1];
             if (ResolveConfigNode(config, parentSegments) is JsonObject parent
-                && parent.ContainsKey(propertyName))
+                && parent.ContainsKey(propertyName)
+                && !HoldsCredential(propertyName, parent[propertyName]))
             {
                 parent.Remove(propertyName);
-                appliedFixes.Add($"Removed disallowed property {instancePath}");
+                appliedFixes.Add($"{RemovedPropertyPrefix} {instancePath}");
                 changed = true;
             }
         }
 
         return changed;
     }
+
+    private static bool HoldsCredential(string name, JsonNode? value)
+        => SecretOutputRedactor.IsSecretKey(name)
+           || value is JsonObject obj && obj.Any(property => HoldsCredential(property.Key, property.Value));
 
     /// <summary>
     /// Inserts default values for missing required properties when the schema defines a default.
