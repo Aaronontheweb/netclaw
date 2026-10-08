@@ -605,6 +605,16 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
                      ("tilde", "~/notes.txt"),
                      ("temporary", platformTemporary),
                      ("parent", Path.Combine(project, "..", "escape.txt")),
+                     ("ssh-key", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh", "id_ed25519")),
+                     ("ssh-public-key", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh", "id_ed25519.pub")),
+                     ("aws-credentials", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".aws", "credentials")),
+                     ("kube-config", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".kube", "config")),
+                     ("netrc", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".netrc")),
+                     ("gh-hosts", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".config", "gh", "hosts.yml")),
+                     ("docker-contexts", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".docker", "contexts", "meta.json")),
+                     ("home-neighbour", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".bashrc")),
+                     ("project-aws-directory", Path.Combine(project, ".aws", "config")),
+                     ("project-ssh-directory", Path.Combine(project, "infra", ".ssh", "config")),
                  })
         {
             Add($"file_read {name}", FileReadTool.ToolName, "Path", path);
@@ -613,7 +623,9 @@ public sealed class AuthorizationCorpusProbe(ShellApprovalMatrixFixture fixture)
             Add($"attach_file {name}", AttachFileTool.ToolName, "Path", path);
         }
 
-        foreach (var (name, directory) in new[] { ("project", project), ("external", external), ("config", paths.ConfigDirectory) })
+        foreach (var (name, directory) in new[] { ("project", project), ("external", external), ("config", paths.ConfigDirectory),
+                     ("ssh-dir", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ssh")),
+                     ("aws-dir", Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".aws")) })
         {
             Add($"file_list {name}", FileListTool.ToolName, "Path", directory);
             Add($"file_search {name}", FileSearchTool.ToolName, "Root", directory, "Pattern", "*.md");

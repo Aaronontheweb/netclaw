@@ -276,6 +276,17 @@ public sealed class HardDenyParityCorpusTests(ShellApprovalMatrixFixture fixture
         Deny("boundary-background-wrapper", BoundaryTests, "bash -c \"pkill netclawd\" &", SelfDestructive),
         Deny("boundary-background-sudo", BoundaryTests, "sudo rm -rf / &", PrivilegeEscalation),
         Deny("boundary-background-protected", BoundaryTests, "cat ../netclaw/config/secrets.json &", ProtectedPath),
+
+        // Owner decision (2026-10-07): ~/.ssh and ~/.aws are denied like the control plane.
+        Deny("credential-ssh-key", "Credential locations", "cat ~/.ssh/id_ed25519", ProtectedPath),
+        Deny("credential-ssh-list", "Credential locations", "ls ~/.ssh", ProtectedPath),
+        Deny("credential-aws-home-var", "Credential locations", "cat $HOME/.aws/credentials", ProtectedPath),
+        Deny("credential-aws-cd", "Credential locations", "cd ~/.aws && cat credentials", ProtectedPath),
+        Deny("credential-kube-config", "Credential locations", "cat ~/.kube/config", ProtectedPath),
+        Deny("credential-netrc", "Credential locations", "cat ~/.netrc", ProtectedPath),
+        Deny("credential-gh-hosts", "Credential locations", "cat $HOME/.config/gh/hosts.yml", ProtectedPath),
+        Control("credential-docker-contexts-control", "Credential locations", "cat ~/.docker/contexts/meta.json"),
+        Control("credential-neighbour-control", "Credential locations", "cat ~/.bashrc"),
     ];
 
     public static IEnumerable<TheoryDataRow<string>> BashRows

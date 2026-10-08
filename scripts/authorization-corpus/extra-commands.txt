@@ -306,3 +306,74 @@ set -a; b=1; git status
 GIT_DIR=/tmp/x; git status
 d=key; echo ../netclaw/"${d}s"/*
 d=key; ls ../netclaw/"${d}s"/*
+cat ~/.ssh/id_ed25519
+cat ~/.ssh/id_ed25519.pub
+ls ~/.ssh
+ls -la ~/.aws
+cat ~/.aws/credentials
+cat $HOME/.aws/credentials
+cat ${HOME}/.ssh/config
+cat "$HOME/.ssh/id_rsa"
+cat ~/.s*/id_ed25519
+cd ~/.ssh && cat id_ed25519
+cd ~ && cat .ssh/id_ed25519
+cd ~/.aws; cat credentials
+head -n1 ~/.ssh/known_hosts
+echo hi > ~/.ssh/authorized_keys
+cp key ~/.ssh/id_ed25519
+tee ~/.aws/config
+ssh-keygen -y -f ~/.ssh/id_ed25519
+ssh-add ~/.ssh/id_ed25519
+ssh -i ~/.ssh/id_ed25519 host
+scp ~/.ssh/id_ed25519.pub host:
+docker run -v $HOME/.aws:/root/.aws:ro alpine ls
+aws s3 ls
+ssh host uptime
+git fetch
+ssh -V
+cat ~/.bashrc
+cat ~/projects/app/.aws/config
+cat infra/.ssh/config
+cat .devcontainer/.aws/config
+cd app && cat .aws/config
+git diff -- infra/.ssh/config
+grep -rn '\.ssh' .
+sed 's/\.ssh//' f
+grep -c 'docs\.aws\.amazon\.com' README.md
+grep -rn "/.aws" .
+git log --grep="/.ssh"
+git commit -m "docs: explain the /.aws mount"
+curl https://raw.githubusercontent.com/x/dotfiles/main/.ssh/config
+curl https://docs.aws.amazon.com/cli/latest/userguide/
+git clone https://github.com/example/dotfiles.ssh.git
+cat notes.ssh.md
+cat ~/.kube/config
+kubectl --kubeconfig ~/.kube/config get pods
+cat ~/.netrc
+cat ~/.git-credentials
+cat ~/.docker/config.json
+gpg --homedir ~/.gnupg --list-keys
+cat ~/.config/gh/hosts.yml
+ls ~/.config/gcloud
+cat ~/.azure/accessTokens.json
+cat $HOME/.kube/config
+cat ${HOME}/.netrc
+Get-Content ~\.ssh\id_ed25519
+gc $HOME\.aws\credentials
+cat $env:USERPROFILE\.kube\config
+cat ~/.sshrc
+cat ~/.awsome/x
+cat ~/.netrc-example.md
+cat ~/.docker/contexts/meta.json
+cat ~/.config/git/config
+cat tsconfig.json
+cat infra/.kube/config
+git push origin main
+gh pr list
+kubectl get pods
+docker pull alpine
+gcloud auth list
+az account show
+gpg --sign file
+curl -n https://example.com/x
+Select-String '\.ssh' *
