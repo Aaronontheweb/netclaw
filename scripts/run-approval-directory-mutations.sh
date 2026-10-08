@@ -63,6 +63,34 @@ targets = [
         "CrossesLink(parents.Peek(), parent, includeAnchor: false)",
         2,
     ),
+    # A link word has the scope of its link folder and of its final target
+    # (#2375). A target after a ".." that leaves a link is not known, so the
+    # word stays unresolved. A word that names no link keeps its lexical scope.
+    (
+        "src/Netclaw.Security/IToolApprovalMatcher.cs",
+        "if (!TryAddLinkScopes(resolved, pathStyle, directories, out var isLink))",
+        1,
+    ),
+    (
+        "src/Netclaw.Security/IToolApprovalMatcher.cs",
+        "if (!isLink)",
+        1,
+    ),
+    (
+        "src/Netclaw.Security/IToolApprovalMatcher.cs",
+        "if (!TryAddLinkScopes(link, pathStyle, directories, out _))",
+        1,
+    ),
+    (
+        "src/Netclaw.Security/IToolApprovalMatcher.cs",
+        "directories.Add(Path.GetDirectoryName(link) ?? link);",
+        2,
+    ),
+    (
+        "src/Netclaw.Security/Authorization/Filesystem/FileSystemAuthority.cs",
+        "if (HasParentSegmentAfterLink(next, baseDirectory: null))",
+        1,
+    ),
 ]
 
 for relative_path, marker, expected_count in targets:
@@ -112,9 +140,9 @@ while IFS=$'\t' read -r _source_name source_file _span_start _span_end line coun
 done <<< "$spans"
 
 # Each target above must die even if Stryker reports unrelated compiler errors.
-jq -e '[.files[].mutants[] | select(.status != "Ignored" and .status != "CompileError")] | length == 12' \
+jq -e '[.files[].mutants[] | select(.status != "Ignored" and .status != "CompileError")] | length == 18' \
   "$report" > /dev/null || {
-  echo "Expected exactly 12 approval directory mutants." >&2
+  echo "Expected exactly 18 approval directory mutants." >&2
   exit 1
 }
 

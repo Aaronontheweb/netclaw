@@ -265,6 +265,74 @@ public sealed class ApprovalDirectoryMutationTests : IDisposable
         Assert.Equal("/work", Assert.IsType<GrantScope.Folder>(bare.Scope).Directory);
     }
 
+    // Issue #2375: a word that names a link has two scopes, the link folder and
+    // the final target. A folder grant covers the word only when it covers both.
+    [Fact]
+    public void Folder_grant_covers_a_link_word_only_when_it_covers_the_target()
+    {
+        File.WriteAllText(Path.Combine(_grantRoot, "notes.txt"), "synthetic test data");
+        File.WriteAllText(Path.Combine(_outside, "notes.txt"), "synthetic test data");
+        File.CreateSymbolicLink(Path.Combine(_grantRoot, "ext.txt"), Path.Combine(_outside, "notes.txt"));
+        File.CreateSymbolicLink(Path.Combine(_grantRoot, "extlink"), Path.Combine(_outside, "notes.txt"));
+        File.CreateSymbolicLink(Path.Combine(_grantRoot, "inner.txt"), "notes.txt");
+        File.CreateSymbolicLink(Path.Combine(_grantRoot, "innerlink"), "notes.txt");
+        File.CreateSymbolicLink(Path.Combine(_outside, "backlink"), Path.Combine(_grantRoot, "notes.txt"));
+        Directory.CreateSymbolicLink(Path.Combine(_grantRoot, "outlnk"), Path.Combine(_outside, "nested"));
+        File.CreateSymbolicLink(Path.Combine(_grantRoot, "dotdot.txt"), Path.Combine("outlnk", "..", "notes.txt"));
+        var matcher = new ShellApprovalMatcher(OperatingSystem.IsWindows()
+            ? ShellExecutionEnvironment.CreatePowerShell(
+                @"C:\Program Files\PowerShell\7\pwsh.exe",
+                PwshDialect.PowerShell7)
+            : ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux));
+        var verb = OperatingSystem.IsWindows() ? "Get-Content" : "cat";
+
+        // A path word.
+        Assert.True(CommandMatches(_grantRoot, $"{verb} inner.txt"));
+        Assert.False(CommandMatches(_grantRoot, $"{verb} ext.txt"));
+        // The OS applies ".." after the link, so the target is not known.
+        Assert.Equal(
+            LinkChainEnd.Unknown,
+            FileSystemAuthority.FollowLinkChain(Path.Combine(_grantRoot, "dotdot.txt"), out _));
+        Assert.False(CommandMatches(_grantRoot, $"{verb} dotdot.txt"));
+
+        // The same link without a file extension gets the same answer.
+        Assert.True(CommandMatches(_grantRoot, $"{verb} {Path.Combine(".", "innerlink")}"));
+        Assert.False(CommandMatches(_grantRoot, $"{verb} {Path.Combine(".", "extlink")}"));
+        // The link folder is a scope too.
+        Assert.False(CommandMatches(_outside, $"{verb} {Path.Combine(".", "backlink")}"));
+
+        // A plain word. The Bash parser reads each operand of cat as a path, so
+        // these cases use a program that it does not know. The Linux mutation
+        // job runs them.
+        if (OperatingSystem.IsWindows())
+            return;
+
+        Assert.True(CommandMatches(_grantRoot, "mytool read innerlink"));
+        Assert.False(CommandMatches(_grantRoot, "mytool read extlink"));
+        // The link folder is a scope too.
+        Assert.False(CommandMatches(_outside, "mytool read backlink"));
+
+        // The grant uses the command words of the candidate, so only the scope decides.
+        bool CommandMatches(string cwd, string command)
+        {
+            var analysis = matcher.AnalyzeInvocation(
+                new ToolName(ShellTool.ToolName),
+                new Dictionary<string, object?>
+                {
+                    ["Command"] = command,
+                    ["WorkingDirectory"] = cwd,
+                });
+            return !analysis.IsMessy
+                   && analysis.Candidates.Count > 0
+                   && analysis.Candidates.All(candidate =>
+                       candidate is { Unresolved: ShellUnresolvedPart.None, VerbTokens: { Count: > 0 } tokens }
+                       && ApprovalPatternMatching.MatchesShellApproval(
+                           candidate,
+                           cwd,
+                           [ApprovalEntry.CreateTokenPrefix(_shell, tokens, _grantRoot)]));
+        }
+    }
+
     public void Dispose() => Directory.Delete(_basePath, recursive: true);
 
     private bool Matches(string? directory, string? cwd)

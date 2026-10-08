@@ -840,6 +840,14 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
             foreach (var fileWord in fileWords)
                 directories.Add(ResolveAuthorizationScope(verb, fileWord.Word, fileWord.Path, pathStyle));
 
+            // A plain word that names a link stays a command word. It gets the
+            // same two scopes as a path word that names the link.
+            foreach (var link in ToolPathPolicy.FindLinkWords(occurrence, clauseWorkingDirectory))
+            {
+                if (!TryAddLinkScopes(link, pathStyle, directories, out _))
+                    return null;
+            }
+
             foreach (var argument in occurrence.Arguments)
             {
                 if (argument.Argument.IsPath)
@@ -929,6 +937,68 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         }
 
         return directories.Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    /// <summary>
+    /// Adds the two scopes of a word that names a link (issue #2375): the folder
+    /// that holds the link, and the final target of the link chain. Returns false
+    /// when the target is not known. <paramref name="isLink"/> is false when the
+    /// path names no link; the caller then gives the word its lexical scope.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// SECURITY: a program that opens the word reads or writes the target, so the
+    /// target is a scope. A grant must cover every scope, so a folder or repository
+    /// grant covers the word only when it covers the link folder and the target.
+    /// The link walk of the grant still checks the target scope, so a directory
+    /// link in the target path is refused. A missing target (a dangling link)
+    /// has the scope of the folder that its link text names.
+    /// </para>
+    /// <para>
+    /// Each spelling of one link gets the same pair of scopes: <c>ext.txt</c>,
+    /// <c>./extlink</c>, and the plain word <c>extlink</c>.
+    /// </para>
+    /// <para>
+    /// The check reads the disk at authorization time. A link that the same
+    /// command creates or changes before the program runs is a run-time effect
+    /// that the check cannot see. A path in another host style, or a path that
+    /// is not a full host path, names no host link.
+    /// </para>
+    /// <para>
+    /// A platform temporary alias, such as macOS <c>/tmp</c>, is an OS alias and
+    /// not a link to another place (R7). The word keeps its one lexical scope.
+    /// </para>
+    /// </remarks>
+    private static bool TryAddLinkScopes(
+        string path,
+        ShellPathStyle pathStyle,
+        List<string?> directories,
+        out bool isLink)
+    {
+        isLink = false;
+        if (!CanonicalPath.TryCreate(path, relativeBase: null, pathStyle, out var canonical)
+            || !canonical.IsHostStyle
+            || FileSystemAuthority.IsBelowTemporaryAlias(canonical))
+        {
+            return true;
+        }
+
+        // The canonical form has no trailing separator. With one, the OS reads
+        // the target and not the link.
+        var link = canonical.Value;
+        switch (FileSystemAuthority.FollowLinkChain(link, out var target))
+        {
+            case LinkChainEnd.NotALink:
+                return true;
+            case LinkChainEnd.Target:
+                isLink = true;
+                directories.Add(Path.GetDirectoryName(link) ?? link);
+                // A file or a missing target has the scope of its folder.
+                directories.Add(Directory.Exists(target) ? target : Path.GetDirectoryName(target) ?? target);
+                return true;
+            default:
+                return false;
+        }
     }
 
     /// <summary>
@@ -1160,8 +1230,15 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         if (resolvedPaths is null)
             return false;
 
-        directories.AddRange(resolvedPaths.Select(resolved =>
-            ResolveAuthorizationScope(verb, arg, resolved, pathStyle)));
+        foreach (var resolved in resolvedPaths)
+        {
+            if (!TryAddLinkScopes(resolved, pathStyle, directories, out var isLink))
+                return false;
+
+            if (!isLink)
+                directories.Add(ResolveAuthorizationScope(verb, arg, resolved, pathStyle));
+        }
+
         return true;
     }
 
