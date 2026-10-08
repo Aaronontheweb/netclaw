@@ -30,7 +30,8 @@ inbound adapter -> turn context (audience, requester)          durable in the se
   -> shell only: analyze with ShellSyntaxTree
   -> screen: hard deny, protected paths, path access decision    call-local
   -> cover each candidate: one-time, chat grant, persistent
-     grant, reviewed-safe, approval-exempt output command        store is durable
+     grant, reviewed-safe, approval-exempt output command,
+     command that runs no program                                 store is durable
   -> outcome: Allowed | RequiresAgentCorrection
               | RequiresApproval | Denied
   -> RequiresApproval: no operator -> fixed denial text
@@ -1080,7 +1081,28 @@ SHALL be:
   unknown part is an operand;
 - an approval-exempt data command with no directory scope and no assignment
   digest, while the store is available: an output command (`echo`,
-  `printf`, `:`, `true`, `false`), or in Bash a test builtin (`test`, `[`).
+  `printf`, `:`, `true`, `false`), or in Bash a test builtin (`test`, `[`);
+- a Bash command that runs no program, while the store is available (owner
+  decision, 2026-10-07): a command with only redirects (`> file`), or a data
+  command, when each redirect target is one proved plain file. A data command
+  that a shell-state assignment reaches SHALL qualify only when each operand
+  is proved data. Each redirect SHALL get the decision of the file tool for
+  the audience and the path: `file_write` for a write target, `file_read` for
+  an input redirect (`<`). The shell trust zone SHALL judge each target, and
+  the `file_read` path rules SHALL also judge an input target. A refused
+  target, a target that is not proved, and a `Deny` mode of the file tool
+  SHALL deny the call (`shell_path_protected`,
+  `shell_path_outside_trusted_roots`, `shell_redirect_read_denied`,
+  `shell_redirect_unproved`, `shell_redirect_file_tool_denied`). Each redirect
+  of the command SHALL get these checks before any prompt. With an `Approval`
+  mode of the file tool, a stored grant of that tool SHALL cover the redirect.
+  With no such grant, one exact candidate SHALL name each write and read that
+  needs consent, with `Once` and `Deny` only. Otherwise the candidate
+  SHALL NOT ask for a stored grant, and an answer SHALL NOT save one. Such a
+  command SHALL get no managed temporary directory advice. A Bash source that
+  parses with no command (an assignment, a comment, an empty `case`, an
+  empty subshell) SHALL be allowed after the screens. A target below `/dev/` other than `/dev/null`, a glob, or a
+  set of values SHALL make a data command one exact candidate.
 
 The path rule for reviewed-safe policy SHALL NOT depend on the run (D2):
 
@@ -1149,6 +1171,31 @@ own the reviewed-safe path rule; their result is call-local.
 `ApprovalPatternMatching` owns the grant match, including the legacy rule; its
 result is call-local. `ToolApprovalActor` holds chat grants (actor-local).
 `ToolApprovalStore` holds persistent grants (durable).
+
+#### Scenario: A command that runs no program needs no prompt
+
+- **GIVEN** an interactive Personal session on the Bash 5.2 host with no grants
+- **WHEN** the model calls `shell_execute` with `printf 'a\tb\n' > drafts-harvest.tsv && : > drafts-harvest.json` (catalog case `no-program-harvest-drafts-allows`), `> drafts.json`, or `x=1`
+- **THEN** authorization returns `Allowed` with no grant lookup
+- **AND** an unattended call returns the same result
+
+#### Scenario: A command that runs no program cannot reach a refused path
+
+- **GIVEN** an interactive Personal session on the Bash 5.2 host
+- **WHEN** the model calls `shell_execute` with `: > <config dir>/secrets.json` or `echo x > <config dir>/tool-approvals.json`
+- **THEN** authorization returns `Denied`
+- **AND** with bounded read roots, `: < <outside>/notes.txt` returns `Denied` with reason `shell_redirect_read_denied`
+- **AND** `date > out.txt` and `echo $(rm -rf build) > out.txt` still prompt for `date` and `rm`
+
+#### Scenario: A redirect gets the consent mode of its file tool
+
+- **GIVEN** an interactive Personal session on the Bash 5.2 host
+- **WHEN** `file_write` has mode `Deny` and the model calls `shell_execute` with `echo x > out.txt`
+- **THEN** authorization returns `Denied` with reason `shell_redirect_file_tool_denied`
+- **AND** with mode `Approval`, the prompt shows the one candidate `write <project>/out.txt` and offers `Once` and `Deny` only
+- **AND** with mode `Approval`, an unattended call returns `Denied` with reason `approval_required_unattended`
+- **AND** with mode `Approval` and a chat grant for `file_write`, the call returns `Allowed`
+- **AND** with `file_read` = `Approval` and `file_write` = `Deny`, `: < notes.txt > out.txt` returns `Denied`
 
 #### Scenario: Folder grant stays inside its folder
 
@@ -1320,6 +1367,12 @@ and labels:
 - The prompt SHALL offer only `Once` and `Deny` when any uncovered
   candidate has unresolved syntax or no reusable phrase, or when the call is
   a managed temporary retry.
+- A shell consent request SHALL always name what it asks for (owner decision,
+  2026-10-07). When it has no candidate and no pattern (a source that does not parse, an
+  unknown program word such as `$cmd > x`), its one display candidate SHALL be
+  the full command text, and it SHALL offer only `Once` and `Deny`. The
+  one-time key SHALL NOT read the display list, so a `Once` answer still
+  covers the retry.
 - `Always here` SHALL be offered only for a shell call with a directory scope
   that is not shallow and not session-owned.
 - `This repository` SHALL be offered only for a clean reusable shell phrase
@@ -1355,6 +1408,13 @@ result is call-local. `ConsentAnswerCodec.AppendResultNote` owns the approval
 note line. `SessionToolExecutionPipeline` and `SubAgentActor` add the line to
 the call-local tool result. The journal keeps the consent request and the
 answer (durable).
+
+#### Scenario: A prompt for an unknown program shows the command text
+
+- **GIVEN** an interactive Personal session on the Bash 5.2 host
+- **WHEN** the model calls `shell_execute` with `$cmd > drafts.txt`
+- **THEN** the prompt shows `$cmd > drafts.txt` as its one candidate and offers `Once` and `Deny` only
+- **AND** a `Once` answer allows the retry of the same call
 
 #### Scenario: Unresolved syntax offers one-time options only
 

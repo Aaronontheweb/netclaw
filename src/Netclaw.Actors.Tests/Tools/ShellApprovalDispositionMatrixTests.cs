@@ -65,7 +65,14 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
         Assert.Equal(testCase.Expected.Outcome, observed.Outcome);
         Assert.Equal(testCase.Expected.AllowReason, observed.AllowReason);
         Assert.Equal(testCase.Expected.DenyReason, observed.DenyReason);
-        Assert.Equal(testCase.Expected.Candidates, observed.Prompt?.CandidateVerbs ?? []);
+        // A prompt that names no command shows its full command text, or the
+        // statement patterns when it has them (PowerShell).
+        IReadOnlyList<string> expectedCandidates = testCase.Expected.Candidates is [ExpectedApproval.FullCommandText]
+            ? observed.Prompt is { Patterns.Count: > 0 }
+                ? []
+                : [observed.Prompt?.DisplayText ?? ExpectedApproval.FullCommandText]
+            : testCase.Expected.Candidates;
+        Assert.Equal(expectedCandidates, observed.Prompt?.CandidateVerbs ?? []);
         Assert.Equal(testCase.Expected.IsMessy, observed.Prompt?.IsMessy);
         Assert.Equal(testCase.Expected.ApprovalChecks, observed.ApprovalChecks);
         Assert.Equal(testCase.Expected.ApprovalMatches, observed.ApprovalMatches);
@@ -165,7 +172,7 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
                 "cd sub && cat result.txt | sed -n '1p'; ls .",
                 ApprovalDirectoryShape.None),
             Approvals.PersistentAnywhere("cd", "cat", "sed", "ls"),
-            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0));
+            ExpectedApproval.RequireFullText());
         await using var harness = await ShellApprovalHarness.CreateAsync(
             testCase,
             fixture.ActorSystem,
@@ -522,7 +529,7 @@ public sealed class ShellApprovalDispositionMatrixTests(ShellApprovalMatrixFixtu
                     $"cd {child.FullName} && touch {marker}; cat */result.txt",
                     ApprovalDirectoryShape.None),
                 Approvals.None,
-                ExpectedApproval.Require([]));
+                ExpectedApproval.Correct());
             await using var harness = await ShellApprovalHarness.CreateAsync(
                 testCase.Id,
                 testCase.Invocation,

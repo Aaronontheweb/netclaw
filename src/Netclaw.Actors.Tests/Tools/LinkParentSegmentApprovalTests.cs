@@ -149,15 +149,17 @@ public sealed class LinkParentSegmentApprovalTests(ShellApprovalMatrixFixture fi
 
     // A quoted glob character in a redirect target is plain path text. The
     // grant keeps covering it, until the directory before ".." is a link.
+    // The command runs a program (date): a data command with a redirect gets
+    // no candidate, so it would not show the grant rule.
     [SlopwatchSuppress("SW001", "The case uses a POSIX symbolic link and Bash authorization behavior.")]
     [Theory(SkipUnless = nameof(IsPosix), Skip = "The case uses a POSIX symbolic link and Bash authorization behavior.")]
-    [InlineData("d[1]", "echo hi > 'd[1]/../out.txt'")]
-    [InlineData("a*b", "echo hi > \"a*b/../out.txt\"")]
+    [InlineData("d[1]", "date > 'd[1]/../out.txt'")]
+    [InlineData("a*b", "date > \"a*b/../out.txt\"")]
     public async Task Quoted_redirect_text_is_a_literal_path(string directory, string command)
     {
         await using var harness = await CreateLinkedProjectHarnessAsync(
             "link-parent-quoted-redirect",
-            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "echo"));
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "date"));
         harness.CreateProjectDirectory(directory);
 
         var plain = await harness.EvaluateShellAsync(command, Ct);

@@ -68,7 +68,7 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
             expectedOutcomes.Add(ParseOutcome(policyCase.ExpectedFinal.Outcome));
             actualOutcomes.Add(observed.Outcome);
             Assert.Equal(
-                policyCase.ExpectedFinal.ApprovalCandidates,
+                ExpectedPromptCandidates(policyCase.ExpectedFinal.ApprovalCandidates, observed),
                 observed.Prompt?.CandidateVerbs);
             Assert.Equal(policyCase.ExpectedFinal.IsMessy, observed.Prompt?.IsMessy);
             Assert.Equal(
@@ -372,7 +372,9 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
         Assert.Equal(
             ParseCorrection(policyCase.Expected.AgentCorrection),
             observed.AgentCorrection);
-        Assert.Equal(policyCase.Expected.ApprovalCandidates, observed.Prompt?.CandidateVerbs);
+        Assert.Equal(
+            ExpectedPromptCandidates(policyCase.Expected.ApprovalCandidates, observed),
+            observed.Prompt?.CandidateVerbs);
         Assert.Equal(policyCase.Expected.IsMessy, observed.Prompt?.IsMessy);
         Assert.Equal(policyCase.Expected.OptionKeys, observed.Prompt?.OptionKeys);
         Assert.Equal(policyCase.Expected.ActorCheckCount, observed.ApprovalChecks);
@@ -390,6 +392,16 @@ public sealed class ShellPolicyEvidenceFixtureTests(ShellApprovalMatrixFixture f
                 observed.TraceRows);
         }
     }
+
+    // The evidence records an empty candidate list for a prompt that names no
+    // command. Owner decision (October 2026): such a prompt shows its full
+    // command text as its one candidate.
+    private static IReadOnlyList<string>? ExpectedPromptCandidates(
+        IReadOnlyList<string>? expected,
+        ApprovalObservation observed)
+        => expected is { Count: 0 } && observed.Prompt is { Patterns.Count: 0 } prompt
+            ? [prompt.DisplayText]
+            : expected;
 
     private static void ApplyFileSystemFacts(
         PolicyAdversarialCase policyCase,

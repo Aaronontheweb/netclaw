@@ -75,6 +75,8 @@ netclaw reminder delete <id>
 The `cancel` CLI subcommand mirrors the tool behavior (disable only):
 
 ```
+netclaw reminder list            # table: id, status, failures, schedule, next_fire, title
+netclaw reminder list --json     # raw JSON, for parsing
 netclaw reminder cancel <id>     # disable, keep definition
 netclaw reminder delete <id>     # permanent delete + history
 ```
@@ -96,10 +98,17 @@ The retry uses bounded backoff and the same durable occurrence identity. A
 successful execution resets the consecutive failure count.
 
 A one-shot reminder stays enabled while an occurrence can retry. After a
-successful acknowledgement, Netclaw deletes its definition and history. A poison
-one-shot becomes disabled with a `Failed` outcome. Its definition and history
-remain available until an operator uses the permanent delete command.
-Startup reconciliation also removes completed one-shots from prior versions.
+successful acknowledgement, it becomes disabled with a `Completed` outcome. A
+poison one-shot becomes disabled with a `Failed` outcome. Either way the
+definition and its history stay available (`netclaw reminder history <id>`,
+`netclaw reminder status <id>`). A `Completed` one-shot is pruned with its
+history 12 days after it ran. Netclaw never prunes a `Failed` one-shot or any
+recurring reminder, whatever its state; only `netclaw reminder delete <id>`
+removes those (or removes a completed one sooner). Reminders that are disabled
+or auto-disabled do not count in the `failed` figure of `netclaw stats`, which
+counts only enabled reminders with failures. Creating a reminder with the id of
+a completed one-shot replaces it and drops its old history; a failed one-shot
+keeps its id until you delete it.
 
 Each attempt has a 20-minute inactivity limit and a one-hour absolute limit.
 The durable acknowledgement lease is 70 minutes. A daemon crash therefore lets
@@ -114,8 +123,15 @@ notices plus the disabled notice), not the unbounded skip stream.
 
 A one-shot that cannot start receives a negative acknowledgement. Akka.Reminders
 then controls its retry delay. Netclaw acknowledges and skips a blocked recurring
-occurrence. It does not keep a stale catch-up queue. The status command shows the
-skip count:
+occurrence. It does not keep a stale catch-up queue.
+
+An interval can be shorter than the one-hour attempt limit. An interval
+occurrence starts when it arrives before its next due time. If the previous run
+is still active at the next due time, Netclaw skips that occurrence. After
+downtime, Netclaw runs the current occurrence at most. It does not replay the
+occurrences that it missed.
+
+The status command shows the skip count:
 
 ```
 netclaw reminder status <id>

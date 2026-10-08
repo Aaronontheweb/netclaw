@@ -71,6 +71,15 @@ public sealed record ApprovalCandidate(
     internal bool WordRewriteCanResolve { get; init; }
 
     /// <summary>
+    /// True when the command of this candidate runs no program
+    /// (<see cref="ShellCommandAnalysis.RunsNoProgram"/>): a command with only
+    /// redirects, or a data command such as <c>printf</c> or <c>:</c>. No grant
+    /// covers such a candidate and no prompt names it. The file rules of the
+    /// audience judge its redirect targets.
+    /// </summary>
+    internal bool RunsNoProgram { get; init; }
+
+    /// <summary>
     /// Parser source metadata does not change occurrence identity.
     /// </summary>
     public bool Equals(ApprovalCandidate? other) =>
@@ -84,6 +93,7 @@ public sealed record ApprovalCandidate(
         Equals(other) &&
         Unresolved == other.Unresolved &&
         WordRewriteCanResolve == other.WordRewriteCanResolve &&
+        RunsNoProgram == other.RunsNoProgram &&
         AssignmentDigest == other.AssignmentDigest &&
         Shell == other.Shell &&
         HasSameVerbTokens(other.VerbTokens);
@@ -331,10 +341,10 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
 
         foreach (var occurrence in result.Commands)
         {
-            var occurrenceCandidates = ExtractCandidatesForOccurrence(
+            var occurrenceCandidates = ExtractProvedCandidates(
+                result,
                 occurrence,
                 workingDirectory,
-                resolveUnknownPathsFromEffectiveValues: false,
                 hostLinks);
             if (occurrenceCandidates is null)
                 return [];
@@ -343,6 +353,83 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
         }
 
         return candidates;
+    }
+
+    /// <summary>
+    /// Returns the candidates of one command that the parser proves. A command
+    /// that runs no program gets candidates with
+    /// <see cref="ApprovalCandidate.RunsNoProgram"/>. A command with only
+    /// redirects has no command word, so its candidate verb is its source text.
+    /// </summary>
+    private IReadOnlyList<ApprovalCandidate>? ExtractProvedCandidates(
+        ShellCommandAnalysis result,
+        CommandOccurrence occurrence,
+        string? workingDirectory,
+        LinkRule hostLinks)
+    {
+        if (!result.RunsNoProgram(occurrence))
+        {
+            return ExtractCandidatesForOccurrence(
+                occurrence,
+                workingDirectory,
+                resolveUnknownPathsFromEffectiveValues: false,
+                hostLinks);
+        }
+
+        var redirectLinks = NoProgramLinks(result, occurrence, hostLinks);
+        var candidates = ShellCommandAnalysis.IsRedirectOnlyCommand(occurrence)
+            ? ExtractRedirectOnlyCandidates(result.Source, occurrence, workingDirectory, redirectLinks)
+            : ExtractCandidatesForOccurrence(
+                occurrence,
+                workingDirectory,
+                resolveUnknownPathsFromEffectiveValues: false,
+                redirectLinks);
+        return candidates?
+            .Select(static candidate => candidate with { RunsNoProgram = true })
+            .ToArray();
+    }
+
+    // A command that runs no program has no grant scope: the file rules judge
+    // its target, and they resolve each link. Thus the platform temporary
+    // alias (macOS /tmp -> /private/tmp, R7) is a valid target for it. Each
+    // other command keeps the caller's link rule.
+    private static LinkRule NoProgramLinks(
+        ShellCommandAnalysis result,
+        CommandOccurrence occurrence,
+        LinkRule hostLinks)
+        => hostLinks == LinkRule.FromVolumeRoot && result.RunsNoProgram(occurrence)
+            ? LinkRule.FromVolumeRootExceptTemporaryAlias
+            : hostLinks;
+
+    // A command with only redirects gets one candidate for each redirect
+    // folder, as a data command does. The verb is the source text, so a prompt
+    // that shows the candidate never shows an empty name.
+    private IReadOnlyList<ApprovalCandidate>? ExtractRedirectOnlyCandidates(
+        string source,
+        CommandOccurrence occurrence,
+        string? workingDirectory,
+        LinkRule hostLinks)
+    {
+        var directories = ResolveCommandDirectories(
+            occurrence,
+            verb: string.Empty,
+            isSideEffectVerb: true,
+            workingDirectory,
+            Environment.PathStyle,
+            resolveUnknownPathsFromEffectiveValues: false,
+            hostLinks,
+            fileWords: []);
+        if (directories is null)
+            return null;
+
+        var text = ExactCommandText(source, occurrence);
+        return directories
+            .Select(directory => new ApprovalCandidate(text, directory)
+            {
+                Shell = ApprovalShell.Bash,
+                SourceOccurrence = occurrence,
+            })
+            .ToArray();
     }
 
     /// <summary>
@@ -388,10 +475,10 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
                 ? result.GetUnresolvedPart(occurrence)
                 : ShellUnresolvedPart.Command;
             if (part == ShellUnresolvedPart.None
-                && ExtractCandidatesForOccurrence(
+                && ExtractProvedCandidates(
+                    result,
                     occurrence,
                     result.WorkingDirectory,
-                    resolveUnknownPathsFromEffectiveValues: false,
                     hostLinks) is { } resolved)
             {
                 candidates.AddRange(resolved);
@@ -2137,7 +2224,7 @@ public sealed class ShellApprovalMatcher : IToolApprovalMatcher
                     workingDirectory,
                     Environment.PathStyle,
                     resolveUnknownPathsFromEffectiveValues: false,
-                    hostLinks,
+                    NoProgramLinks(analysis, command, hostLinks),
                     // A file word adds a known scope. It never makes a scope unresolved.
                     fileWords: []) is null))
         {

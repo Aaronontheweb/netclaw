@@ -1325,7 +1325,7 @@ internal static class McpCommand
         LoadConfigFiles(NetclawPaths paths) => ConfigFileHelper.LoadConfigFiles(paths);
 
     private static Dictionary<string, object> GetOrCreateSection(
-        Dictionary<string, object> dict, string key) => ConfigFileHelper.GetOrCreateSection(dict, key);
+        Dictionary<string, object> dict, string key) => ConfigFileHelper.GetOrCreateSection(dict, ExistingKey(dict, key));
 
     private static Dictionary<string, object>? GetSectionOrNull(
         Dictionary<string, object> dict, string key) => ConfigFileHelper.GetSectionOrNull(dict, key);
@@ -1529,7 +1529,7 @@ internal static class McpCommand
         writer.WriteLine("Options:");
         writer.WriteLine("  --audience <name>     Filter to a specific audience (public, team, personal)");
         writer.WriteLine("  --snapshot            Populate McpServerToolGrants from currently discovered tools");
-        writer.WriteLine("  --grant <tools>       Grant comma-separated tools (requires --audience)");
+        writer.WriteLine("  --grant <tools>       Grant comma-separated tools (requires --audience); also allows the server for that audience");
         writer.WriteLine("  --revoke <tools>      Revoke comma-separated tools (requires --audience)");
         writer.WriteLine();
         writer.WriteLine("Examples:");
@@ -1766,15 +1766,38 @@ internal static class McpCommand
             return 0;
         }
 
+        var serverAllowed = profile.AllowedMcpServers.Contains(serverName.Value, StringComparer.OrdinalIgnoreCase);
+        var granting = grantTools is { Count: > 0 };
+
+        // A tool grant has no effect while the server is missing from the audience allow-list.
+        // --grant allows the server; --revoke never changes the allow-list, so on a server the
+        // audience does not allow it has nothing to act on.
+        if (!serverAllowed && !granting)
+        {
+            writer.WriteLine($"Server '{serverName.Value}' is not allowed by the {audienceName} audience profile. Nothing changed.");
+            return 1;
+        }
+
+        var allowServer = granting && !serverAllowed;
+
+        // Once the server is allowed, an entry that was written while it was not allowed becomes live.
+        // The result of the command that allows the server is exactly the tools it names.
         HashSet<string> currentTools;
-        if (profile.McpServerToolGrants is { } existing
+        List<string> droppedTools = [];
+        if (allowServer)
+        {
+            currentTools = new HashSet<string>(StringComparer.Ordinal);
+            if (profile.McpServerToolGrants is { } stale && stale.TryGetValue(serverName.Value, out var staleList))
+                droppedTools = staleList.Except(grantTools!, StringComparer.Ordinal).Order(StringComparer.Ordinal).ToList();
+        }
+        else if (profile.McpServerToolGrants is { } existing
             && existing.TryGetValue(serverName.Value, out var currentList))
         {
             currentTools = new HashSet<string>(currentList, StringComparer.Ordinal);
         }
         else
         {
-            // No grants configured yet — start from all discovered tools
+            // A server without a grants entry exposes every tool, so start from all of them.
             currentTools = new HashSet<string>(discoveredTools, StringComparer.Ordinal);
         }
 
@@ -1786,31 +1809,72 @@ internal static class McpCommand
             foreach (var tool in revokeTools)
                 currentTools.Remove(tool);
 
-        // Write to config
+        // Write to config. Keys keep the spelling the file already has: the daemon reads keys
+        // without case, and a second spelling is a duplicate key that stops every command.
         var (config, _) = LoadConfigFiles(paths);
         var toolsSection = GetOrCreateSection(config, "Tools");
         var profilesSection = GetOrCreateSection(toolsSection, "AudienceProfiles");
         var audienceSection = GetOrCreateSection(profilesSection, audienceName);
+        var grants = GetOrCreateSection(audienceSection, "McpServerToolGrants");
 
-        var grants = audienceSection.TryGetValue("McpServerToolGrants", out var ex)
-            && ex is Dictionary<string, object> dict
-                ? dict
-                : [];
+        grants[ExistingKey(grants, serverName.Value)] = currentTools.Order(StringComparer.Ordinal).ToList();
 
-        grants[serverName.Value] = currentTools.Order(StringComparer.Ordinal).ToList();
-        audienceSection["McpServerToolGrants"] = grants;
+        if (allowServer)
+            audienceSection[ExistingKey(audienceSection, "AllowedMcpServers")] =
+                new List<string>(profile.AllowedMcpServers) { serverName.Value };
 
         WriteConfigFile(paths.NetclawConfigPath, config);
 
         var changes = new List<string>();
-        if (grantTools is { Count: > 0 })
-            changes.Add($"granted {grantTools.Count}");
+        if (granting)
+            changes.Add($"granted {grantTools!.Count}");
         if (revokeTools is { Count: > 0 })
             changes.Add($"revoked {revokeTools.Count}");
 
         writer.WriteLine($"Updated {audienceName} profile for '{serverName.Value}': {string.Join(", ", changes)} tool(s). {currentTools.Count} total granted.");
+        if (allowServer)
+            writer.WriteLine($"Also allowed server '{serverName.Value}' for {audienceName}.");
+        if (droppedTools.Count > 0)
+            writer.WriteLine($"Dropped stale grants from before the server was allowed: {string.Join(", ", droppedTools)}.");
+
+        if (granting)
+            WriteGrantEffect(serverName, audienceName, grantTools!.Where(currentTools.Contains).Distinct().ToList(), profile.ApprovalPolicy, writer);
+        else if (currentTools.Count == 0)
+            writer.WriteLine($"No tools remain granted. Server '{serverName.Value}' stays in the {audienceName} AllowedMcpServers list.");
         return 0;
     }
+
+    /// <summary>
+    /// Says which of the granted tools the audience can call and how each runs, using the
+    /// approval resolution that the authorizer uses. A tool whose mode is Deny stays granted
+    /// but is not callable, and the line names the setting to change.
+    /// </summary>
+    private static void WriteGrantEffect(
+        McpServerName serverName, string audienceName, List<string> tools,
+        ToolApprovalConfig? policy, TextWriter writer)
+    {
+        var callable = new List<string>();
+        var denied = new List<string>();
+        foreach (var tool in tools.Order(StringComparer.Ordinal))
+        {
+            var mode = policy?.GetEffectiveMode($"{serverName.Value}/{tool}") ?? ToolApprovalMode.Auto;
+            if (mode == ToolApprovalMode.Deny)
+                denied.Add(tool);
+            else
+                callable.Add($"{tool} (mode: {mode})");
+        }
+
+        if (callable.Count > 0)
+            writer.WriteLine($"{audienceName} can now call: {string.Join(", ", callable)}");
+        if (denied.Count > 0)
+            writer.WriteLine(
+                $"Granted, but the {audienceName} approval policy denies {string.Join(", ", denied)}, so it cannot be called. " +
+                $"Change ApprovalPolicy.McpServerDefaults.{serverName.Value} (or the tool's ToolOverrides entry) to Approval or Auto.");
+    }
+
+    // The spelling of a key that the file already has, or the given spelling for a new key.
+    private static string ExistingKey(Dictionary<string, object> section, string key)
+        => section.Keys.FirstOrDefault(k => string.Equals(k, key, StringComparison.OrdinalIgnoreCase)) ?? key;
 
     private static ToolAudienceProfile ResolveProfile(TrustAudience audience, ToolAudienceProfiles profiles)
     {

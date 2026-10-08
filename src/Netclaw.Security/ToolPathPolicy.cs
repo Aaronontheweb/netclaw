@@ -37,6 +37,7 @@ public sealed class ToolPathPolicy
 
     private readonly ShellCommandAnalyzer _analyzer;
     private readonly HashSet<string> _commandIndicators;
+    private readonly IReadOnlyList<Regex> _anchoredIndicators;
     private readonly HashSet<string> _guardedDirectoryMarkers;
     private readonly IReadOnlyList<string> _guardedDirectories;
 
@@ -58,6 +59,7 @@ public sealed class ToolPathPolicy
         var materialized = deniedPaths.ToList();
         FileSystem = new FileSystemAuthority(materialized, materialized, materialized);
         _commandIndicators = BuildCommandIndicators(materialized);
+        _anchoredIndicators = [];
         _guardedDirectories = GuardedDirectories(materialized, materialized);
         _guardedDirectoryMarkers = BuildGuardedDirectoryMarkers(_guardedDirectories);
         _unprovedShell = FileSystem;
@@ -75,11 +77,23 @@ public sealed class ToolPathPolicy
     {
     }
 
+    /// <param name="environment">The host shell.</param>
+    /// <param name="writeDeniedPaths">Paths that a write meets.</param>
+    /// <param name="readDeniedPaths">Paths that a read meets.</param>
+    /// <param name="shellIndicatorPaths">Paths that shell text meets.</param>
+    /// <param name="homeAnchoredPaths">
+    /// Entries of the shell list whose command text indicators are only their
+    /// home-anchored spellings (<c>~/.ssh</c>, <c>$HOME/.ssh</c>,
+    /// <c>$env:USERPROFILE\.ssh</c>) and their absolute path, each ending at a
+    /// name boundary. A bare file name would also deny a workspace path or a
+    /// pattern. The resolved-path checks cover every other spelling.
+    /// </param>
     public ToolPathPolicy(
         ShellExecutionEnvironment environment,
         IEnumerable<string> writeDeniedPaths,
         IEnumerable<string> readDeniedPaths,
-        IEnumerable<string> shellIndicatorPaths)
+        IEnumerable<string> shellIndicatorPaths,
+        IEnumerable<string>? homeAnchoredPaths = null)
     {
         Environment = environment ?? throw new ArgumentNullException(nameof(environment));
         _analyzer = new ShellCommandAnalyzer(environment);
@@ -87,7 +101,11 @@ public sealed class ToolPathPolicy
         var readList = readDeniedPaths.ToList();
         var shellList = shellIndicatorPaths.ToList();
         FileSystem = new FileSystemAuthority(writeList, readList, shellList);
-        _commandIndicators = BuildCommandIndicators(shellList);
+        var anchoredList = (homeAnchoredPaths ?? []).ToList();
+        var anchoredKeys = anchoredList.Select(PathUtility.Normalize).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _commandIndicators = BuildCommandIndicators(shellList
+            .Where(path => !anchoredKeys.Contains(PathUtility.Normalize(path))));
+        _anchoredIndicators = BuildAnchoredIndicators(anchoredList, DefaultAnchors());
         _guardedDirectories = GuardedDirectories(writeList, readList);
         _guardedDirectoryMarkers = BuildGuardedDirectoryMarkers(_guardedDirectories);
         _unprovedShell = _guardedDirectories.Count == 0
@@ -121,6 +139,67 @@ public sealed class ToolPathPolicy
         }
 
         return indicators;
+    }
+
+    // The variables that name a base directory in shell text, for both Bash and
+    // PowerShell. Text is compared with its backslashes turned into slashes and
+    // without case, so "$env:USERPROFILE\\.ssh" and "~/.SSH" are the same spelling.
+    internal readonly record struct HomeAnchor(string BasePath, string[] Spellings);
+
+    internal static readonly string[] HomeSpellings = ["~", "$HOME", "${HOME}", "$env:USERPROFILE", "${env:USERPROFILE}", "%USERPROFILE%"];
+    internal static readonly string[] AppDataSpellings = ["$env:APPDATA", "${env:APPDATA}", "%APPDATA%"];
+    internal static readonly string[] ProgramDataSpellings = ["$env:PROGRAMDATA", "${env:PROGRAMDATA}", "%PROGRAMDATA%"];
+
+    private static List<HomeAnchor> DefaultAnchors()
+    {
+        var anchors = new List<HomeAnchor>
+        {
+            new(System.Environment.GetFolderPath(System.Environment.SpecialFolder.UserProfile), HomeSpellings)
+        };
+        if (OperatingSystem.IsWindows())
+        {
+            anchors.Add(new(System.Environment.GetFolderPath(System.Environment.SpecialFolder.ApplicationData), AppDataSpellings));
+            anchors.Add(new(System.Environment.GetFolderPath(System.Environment.SpecialFolder.CommonApplicationData), ProgramDataSpellings));
+        }
+
+        return anchors;
+    }
+
+    /// <summary>
+    /// Builds the text indicators of home-anchored entries: each anchor spelling
+    /// followed by the entry below its base, and the absolute path. A match ends
+    /// at a name boundary, so "~/.sshrc" is not "~/.ssh" while "~/.ssh:/x" is.
+    /// </summary>
+    internal static List<Regex> BuildAnchoredIndicators(IEnumerable<string> paths, IReadOnlyList<HomeAnchor> anchors)
+    {
+        var texts = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var path in paths)
+        {
+            foreach (var form in new[] { path, PathUtility.Normalize(path) })
+            {
+                var slashPath = form.Replace('\\', '/').TrimEnd('/');
+                texts.Add(slashPath);
+                foreach (var anchor in anchors)
+                {
+                    var anchorBase = anchor.BasePath.Replace('\\', '/').TrimEnd('/');
+                    if (anchorBase.Length == 0
+                        || !slashPath.StartsWith(anchorBase + "/", StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var relative = slashPath[(anchorBase.Length + 1)..];
+                    foreach (var spelling in anchor.Spellings)
+                        texts.Add(spelling + "/" + relative);
+                }
+            }
+        }
+
+        return texts
+            .Select(text => new Regex(
+                Regex.Escape(text) + "(?![A-Za-z0-9_.\\-])",
+                RegexOptions.IgnoreCase | RegexOptions.CultureInvariant))
+            .ToList();
     }
 
     /// <summary>
@@ -310,6 +389,9 @@ public sealed class ToolPathPolicy
             if (slashCommand.Contains(indicator, StringComparison.OrdinalIgnoreCase))
                 return true;
         }
+
+        if (_anchoredIndicators.Any(indicator => indicator.IsMatch(slashCommand)))
+            return true;
 
         // Each mention of a guarded directory stays denied, as when the whole
         // config directory was a shell indicator. Only an exact read operand leaves

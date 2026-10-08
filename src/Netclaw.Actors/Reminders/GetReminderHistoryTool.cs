@@ -80,7 +80,7 @@ public sealed partial class GetReminderHistoryTool : NetclawTool<GetReminderHist
         foreach (var r in records)
         {
             sb.AppendLine($"  fired_at:    {r.FiredAt:u}");
-            sb.AppendLine($"  success:     {r.Success}");
+            sb.AppendLine($"  status:      {r.Status}");
             sb.AppendLine($"  duration_ms: {r.DurationMs}");
             sb.AppendLine($"  session_id:  {r.SessionId}");
             if (r.ErrorMessage is not null)

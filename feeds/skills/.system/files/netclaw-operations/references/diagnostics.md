@@ -177,6 +177,7 @@ active. Personal posture skips this step (all features enabled by default).
 | Historical skill usage by method/name | `netclaw stats skills` |
 | List/manage skills | `netclaw skill list` |
 | List past sessions | `netclaw sessions --once` |
+| List reminders (parse with `--json`) | `netclaw reminder list --json` |
 | Inspect reminder history | `netclaw reminder history <id> --last 5` |
 | Permanently delete a reminder | `netclaw reminder delete <id>` |
 

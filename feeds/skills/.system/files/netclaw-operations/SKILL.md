@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.103.0"
+  version: "2.104.0"
 ---
 
 # Netclaw Operations
@@ -75,6 +75,7 @@ Keep shell approval friction bounded:
 12. If you require the exact platform path, retry unchanged once through normal policy.
 13. Reviewed diagnostics without file output do not receive temporary relocation advice. Normal approval and denial rules still apply.
 14. Write long text (PR bodies, issue bodies, commit messages, file contents) to a file first, then pass the file to the command (for example `gh pr create --body-file <file>`, `gh issue create --body-file <file>`, `git commit -F <file>`). Do not inline long text in a shell command: a command that needs approval and is longer than 900 characters gets a `shorten_shell_command` correction, not a prompt.
+15. To send fixed text on stdin, quote the heredoc delimiter (`python3 - <<'EOF'`) or use a literal here string (`<<< 'text'`). Such a call gets the same approval as the same text in an argument (`python3 -c '...'`), so a saved grant can cover it. Put each file redirect before the heredoc operator (`cat > out.txt <<'EOF'`), and put the next command on a new line after the end word. Use only literal arguments with the heredoc. An unquoted delimiter, a here string with a variable, a pipe or `&&` on the operator line, a loop variable in the command, stdin text to a shell (`bash`, `sh`), and an argument that holds a shell name (`ssh host 'bash -s'`, `grep 'run bash now'`) get a one-time prompt.
 
 ## Project Directory
 
@@ -599,6 +600,31 @@ again: a grant for anywhere for the command words then covers it. A value from
 `$(...)` or `read` in the verb slot (`f=$(cmd); cat /work/$f`) gets one exact
 prompt with `Once` and `Deny`. Write such paths literally. `echo`, `printf`, `test`, and `[` keep their own rules. An ANSI-C word such as
 `$'\x6beys'` gets the decision of its decoded text.
+
+**A command that runs no program needs no approval of its own.** An
+assignment (`x=1`), a command with only redirects (`> out.json`), and an
+output or test command (`echo`, `printf`, `:`, `true`, `false`, `test`) run no
+program. The only effect of such a command is its redirects. Each redirect
+gets the decision of the file tool for your audience and that path: a write
+target (`>`, `>>`, `&>`) gets the `file_write` decision, and an input target
+(`<`) gets the `file_read` decision. When the tool can use the path with no
+prompt, the command runs with no prompt and no grant:
+`printf 'a\n' > drafts/h.tsv && : > drafts/h.json` runs. When the path rules
+or a `Deny` mode refuse the target, the call is denied. Examples are
+`~/.netclaw/config/secrets.json` and a path outside the trusted roots. Write
+the file in an allowed folder instead. When the file tool needs approval, a
+saved grant of that tool covers the redirect too. With no such grant, you get
+one prompt that names each file ("write /path/out.json"), with `Once` and
+`Deny`. That prompt saves nothing, so it repeats: use `file_write`, and save
+its approval, to stop it. A program still needs its own approval: `date > out.txt` and
+`tee out.txt < in.txt` prompt, and so does `cmd` in `echo $(cmd) > out.txt`.
+These forms keep a prompt with `Once` and `Deny` that shows the command text:
+a target that Netclaw cannot prove as one file (`> "$f"`, `> *.json`,
+`> /dev/tcp/host/port`, a loop variable in the target, a target behind a
+link; on macOS also `/var` and the default `TMPDIR`), a redirect after `cd dir;` (use `cd dir && ...` or an absolute target),
+the operators `>|`, `>&`, and `<>`, and `x=1 y=2`, `a=(1 2)`, or `x+=1`. A
+prompt never shows an empty name. For an unknown program word (`$cmd > x`,
+`eval x`), it shows the full command text.
 
 **Prompts survive passivation and restart.** Pending approval prompts are
 journaled with their requester and trust context, so if the session goes idle or

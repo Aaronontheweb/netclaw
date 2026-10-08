@@ -29,7 +29,7 @@ public static partial class SecretOutputRedactor
         "connectionstring"
     ];
 
-    internal static bool IsSecretKey(string key)
+    public static bool IsSecretKey(string key)
     {
         // A hostile MCP schema can supply arbitrarily large property names.
         // Fail closed instead of allocating an equally large normalized key
