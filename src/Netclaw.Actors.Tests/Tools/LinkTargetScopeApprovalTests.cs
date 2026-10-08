@@ -34,6 +34,9 @@ public sealed class LinkTargetScopeApprovalTests(ShellApprovalMatrixFixture fixt
         { "mytool read", "mytool read ./extlink" },
         { "mytool read", "mytool read sub/../extlink" },
         { "gh api", "gh api --input ext.txt x" },
+        // An option value is a path word when it names a link (#2364).
+        { "mytool read", "mytool read --input=ext.txt" },
+        { "mytool read", "mytool read --input=extlink" },
         { "mytool write", "mytool write outdir" },
         { "mytool write", "mytool write chain.txt" },
         { "mytool write", "mytool write dangling.txt" },
@@ -53,6 +56,22 @@ public sealed class LinkTargetScopeApprovalTests(ShellApprovalMatrixFixture fixt
             decision.Outcome == ApprovalOutcome.RequiresApproval,
             $"'{command}' was {decision.Outcome} ({decision.AllowReason}); the link target is outside the folder.");
         Assert.Contains(OtherDirectory(harness), decision.Prompt!.CandidateDirectories ?? []);
+    }
+
+    // A directory link in the middle of an option value keeps the link rule
+    // below the grant root: the folder grant does not cover it.
+    [SlopwatchSuppress("SW001", "The case uses POSIX symbolic links and Bash authorization behavior.")]
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "The case uses POSIX symbolic links and Bash authorization behavior.")]
+    [InlineData("mytool read --input=outdir/notes.txt")]
+    [InlineData("mytool read outdir/notes.txt")]
+    public async Task Folder_grant_does_not_cover_a_directory_link_in_the_middle_of_a_word(string command)
+    {
+        await using var harness = await CreateHarnessAsync(
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "mytool read"));
+
+        var decision = await harness.EvaluateShellAsync(command, Ct);
+
+        Assert.Equal(ApprovalOutcome.RequiresApproval, decision.Outcome);
     }
 
     // Control: the target path itself gets the same prompt.
@@ -82,6 +101,8 @@ public sealed class LinkTargetScopeApprovalTests(ShellApprovalMatrixFixture fixt
     [InlineData("mytool read", "mytool read {P}/innerlink")]
     [InlineData("mytool read", "mytool read node_modules/.bin/tsc")]
     [InlineData("mytool write", "mytool write ./innerdir")]
+    [InlineData("mytool read", "mytool read --input=innerlink")]
+    [InlineData("mytool read", "mytool read --input=inner.txt")]
     [InlineData("mytool write", "mytool write innerdir")]
     [InlineData("mytool write", "mytool write back.txt")]
     [InlineData("mytool write", "mytool write danglingin.txt")]
@@ -125,11 +146,14 @@ public sealed class LinkTargetScopeApprovalTests(ShellApprovalMatrixFixture fixt
             interactive: false);
 
         var outside = await harness.EvaluateShellAsync("mytool read ext.txt", Ct);
+        var optionOutside = await harness.EvaluateShellAsync("mytool read --input=ext.txt", Ct);
         var inside = await harness.EvaluateShellAsync("mytool read inner.txt", Ct);
 
         // No operator can answer a prompt in an unattended call (D2).
         Assert.Equal(ApprovalOutcome.Denied, outside.Outcome);
         Assert.Equal(ToolAuthorizer.UnattendedApprovalRequired, outside.DenyReason);
+        Assert.Equal(ApprovalOutcome.Denied, optionOutside.Outcome);
+        Assert.Equal(ToolAuthorizer.UnattendedApprovalRequired, optionOutside.DenyReason);
         Assert.Equal(ApprovalOutcome.Allowed, inside.Outcome);
     }
 

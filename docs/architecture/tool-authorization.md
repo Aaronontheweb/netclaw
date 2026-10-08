@@ -777,9 +777,12 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
   - The scopes are the folder that holds the link and the final target of the
     link chain. `ShellApprovalMatcher.TryAddLinkScopes` adds the two scopes.
   - Each spelling of one link gets the same two scopes: a path word
-    (`cat ext.txt`, `mytool read ./extlink`, `node_modules/.bin/tsc`) and a
+    (`cat ext.txt`, `mytool read ./extlink`, `node_modules/.bin/tsc`), a
     plain word that names a link in the occurrence directory
-    (`mytool read extlink`, `gh api --input ext.txt x`).
+    (`mytool read extlink`, `gh api --input ext.txt x`), and an option value
+    (`mytool read --input=ext.txt`). An option value that names a link does
+    not stay in the working directory, so it is a path word
+    (`TryAddPathWordScopes`).
     `ToolPathPolicy.FindLinkWords` is the one loop that finds the plain words,
     for the protected-path screen and for the scopes.
   - `FileSystemAuthority.FollowLinkChain` is the one reader of a final link
@@ -827,11 +830,13 @@ See the Shell Approval Abstraction Rule in [`AGENTS.md`](../../AGENTS.md) and
     - A directory link in the middle of a path word (`current/app.js`,
       `cd innerdir && ...`). The link rule below the grant root refuses it,
       also when its target is in the folder.
-    - An option value or a `key=value` word: `--input=ext.txt`, `-iextlink`,
-      `if=ext.txt`, `@ext.txt`. Such a word has no path scope today, also for a literal path
-      outside the folder. The option-value scope of
-      https://github.com/netclaw-dev/netclaw/pull/2378 must call
-      `TryAddLinkScopes` for each path that it adds.
+    - A value that the parser does not split from its word: a short option
+      with an attached value (`-iextlink`), a `key=value` word without a dash
+      (`if=ext.txt`), and text before the path (`@ext.txt`). Such a word has no
+      path scope today, also for a literal path outside the folder
+      (https://github.com/netclaw-dev/netclaw/issues/2383). A fix for that
+      issue must send each path that it adds through `TryAddPathWordScopes`,
+      which adds the link scopes.
     - A redirect to a link (`> inner.txt`). It gets exact consent only, also
       when the target is in the folder.
     - A link as the program word (`./tool` that points to `/usr/bin/rm`). The
