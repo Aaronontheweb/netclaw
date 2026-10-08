@@ -216,17 +216,25 @@ When an installed Linux systemd user unit owns the daemon, `start` runs
 running" without touching the unit when a detached daemon already holds the home
 (the unit's daemon would only loop on the singleton lock).
 
-`netclaw daemon stop` stops the installed systemd user unit when one owns the
-daemon (a detached copy left running beside it is stopped too). Otherwise it
-reads the PID file and sends SIGTERM for graceful shutdown. The daemon handles
-SIGTERM by draining active sessions and stopping the actor system cleanly.
-Under the container supervisor (`NETCLAW_CONTAINER_SUPERVISOR`) the stop still
-happens, exits 0, and prints that the supervisor will restart the daemon; this
-is how a containerised daemon is bounced from the CLI.
+`netclaw daemon stop` guarantees that, once it succeeds, nothing brings this
+home's daemon back. It stops the installed systemd user unit when the unit could
+(re)start a daemon for this home (`active`, `activating` including auto-restart,
+or `reloading`), then stops any daemon process still alive (a detached copy
+beside the unit, for example). A unit that is `inactive`, `failed` or
+`deactivating` is left alone: `deactivating` is the unit's own `ExecStop` calling
+back in. Otherwise `stop` reads the PID file and sends SIGTERM for graceful
+shutdown. The daemon handles SIGTERM by draining active sessions and stopping
+the actor system cleanly. Under the container supervisor
+(`NETCLAW_CONTAINER_SUPERVISOR`) the stop still happens, exits 0, and prints that
+the supervisor will restart the daemon; this is how a containerised daemon is
+bounced from the CLI.
 
-The unit carries no `NETCLAW_HOME`, so it owns only the default home
-(`~/.netclaw`). With any other `NETCLAW_HOME`, `start` and `stop` act on that
-home's own daemon process and never on the unit.
+The unit serves a home when its `MainPID` is that home's daemon, or when that
+home is the default home (`~/.netclaw`, links resolved) and the unit is not given
+a different `NETCLAW_HOME`. With any other `NETCLAW_HOME` that does not match the
+unit's `MainPID`, `start` and `stop` act on that home's own daemon process and
+never on the unit. A PID file counts as this home's daemon only while this
+home's lock file is held.
 
 The session journals each accepted input before it acknowledges the source.
 The record retains the text, media, source message ID, and original authority.
