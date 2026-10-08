@@ -425,6 +425,10 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
 
             case ToolCallOutput msg:
                 RemoveThinkingSpinner();
+                // Streamed text that never got a closing TextOutput (whitespace-only
+                // preamble, or a tool call straight after deltas) would otherwise
+                // stay open and be joined by the tool line.
+                FinalizeAssistantSegmentIfNeeded();
                 var toolSegmentId = NextSegmentId();
                 _thinkingSegmentId = toolSegmentId;
                 _toolTimer = new ElapsedTimeSegment(Color.BrightBlack);
@@ -533,13 +537,18 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
     private static string TruncateArgs(string? json) =>
         json is null or "" ? "" : Truncate(json, 60);
 
-    // Tracked segments carry no line break of their own, and tool output (a
-    // web_fetch summary is a dozen lines) must stay on the one row the tool
-    // line owns, so whitespace runs and newlines collapse before truncation.
+    // Tool output (a web_fetch summary is a dozen lines) must stay on the one
+    // row its tool line owns, so whitespace runs and newlines collapse. Only a
+    // bounded prefix is scanned: the preview is far shorter than the result.
+    private const int PreviewScanChars = 512;
+
     private static string Truncate(string text, int maxLength)
     {
-        text = WhitespaceRun.Replace(text, " ").Trim();
-        return text.Length <= maxLength ? text : string.Concat(text.AsSpan(0, maxLength - 3), "...");
+        var clipped = text.Length > PreviewScanChars;
+        text = WhitespaceRun.Replace(clipped ? text[..PreviewScanChars] : text, " ").Trim();
+        return !clipped && text.Length <= maxLength
+            ? text
+            : string.Concat(text.AsSpan(0, Math.Min(text.Length, maxLength - 3)), "...");
     }
 
     private static string FormatElapsed(TimeSpan elapsed) =>

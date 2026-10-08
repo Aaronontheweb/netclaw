@@ -366,12 +366,87 @@ public sealed class ChatPageTests
         Assert.Single(rows, r => r.Contains("web_search", StringComparison.Ordinal));
     }
 
-    private static ToolCallOutput ToolCall(string toolName, string callId = "call-1") => new()
+    [Fact]
+    public async Task ToolCallPreviews_CollapseAllWhitespaceAndTrimBeforeTruncating()
+    {
+        // 100 leading spaces: truncating before collapsing would leave only
+        // whitespace inside the 80-character budget.
+        var result = new string(' ', 100) + "Fetched:\t\tok\r\n\r\n  done\n\n";
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch", "call-1", "{\n  \"url\":\t\"http://example.test/a\",\n  \"mode\": \"raw\"\n}"),
+            new SessionJoined { SessionId = new SessionId("tui/test") },
+            ToolResult("web_fetch", result, "call-1"));
+
+        var rows = ChatRows(screen);
+        // Arguments stay on the tool row; nothing after them starts a row of its own.
+        Assert.DoesNotContain(rows, r => r.StartsWith("\"url\"", StringComparison.Ordinal)
+            || r.StartsWith("\"mode\"", StringComparison.Ordinal) || r.StartsWith('}'));
+        // Single space between tokens, trimmed at both ends: "→ Fetched: ok done (0.0s)".
+        Assert.Matches(@"✓ web_fetch → Fetched: ok done \(\d", Assert.Single(rows, r => r.Contains("✓ web_fetch", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task PendingToolCall_EndsItsRowBeforeLaterOutput()
+    {
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch", "call-1", "{\n  \"url\": \"http://example.test/a\"\n}"),
+            new SessionJoined { SessionId = new SessionId("tui/test"), Title = "after the call" });
+
+        var rows = ChatRows(screen);
+        var callRow = Assert.Single(rows, r => r.Contains("web_fetch(", StringComparison.Ordinal));
+        Assert.Contains("{ \"url\": \"http://example.test/a\" }", callRow, StringComparison.Ordinal);
+        Assert.DoesNotContain("System:", callRow, StringComparison.Ordinal);
+        Assert.Single(rows, r => r.StartsWith("System: Session started. Title: after the call", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task WhitespaceOnlyTextBeforeToolCall_DoesNotJoinTheToolLine()
+    {
+        var screen = await RenderSessionOutputsAsync(
+            new TextDeltaOutput("\n\n") { SessionId = new SessionId("tui/test") },
+            ToolCall("web_fetch"),
+            ToolResult("web_fetch", "Fetched: ok"),
+            new TextDeltaOutput("All done") { SessionId = new SessionId("tui/test") },
+            new TurnCompleted { SessionId = new SessionId("tui/test"), TurnNumber = new TurnNumber(1) });
+
+        var rows = ChatRows(screen);
+        var toolRow = Assert.Single(rows, r => r.Contains("✓ web_fetch", StringComparison.Ordinal));
+        Assert.DoesNotContain("Netclaw:", toolRow, StringComparison.Ordinal);
+        Assert.Single(rows, r => r.StartsWith("Netclaw: All done", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task TextToolText_RendersEachOnceOnItsOwnRow()
+    {
+        var sid = new SessionId("tui/test");
+        var screen = await RenderSessionOutputsAsync(
+            new TextDeltaOutput("Let me check") { SessionId = sid },
+            new TextOutput("Let me check") { SessionId = sid },
+            ToolCall("web_fetch", "call-1"),
+            ToolResult("web_fetch", "Fetched: ok", "call-1"),
+            // Streamed deltas with no closing TextOutput before the second tool call.
+            new TextDeltaOutput("Now the second") { SessionId = sid },
+            ToolCall("web_search", "call-2"),
+            ToolResult("web_search", "Found: ok", "call-2"),
+            new TextDeltaOutput("Done") { SessionId = sid },
+            new TextOutput("Done") { SessionId = sid },
+            new TurnCompleted { SessionId = sid, TurnNumber = new TurnNumber(1) });
+
+        var rows = ChatRows(screen);
+        Assert.Single(rows, r => r == "Netclaw: Let me check");
+        Assert.Single(rows, r => r == "Netclaw: Now the second");
+        Assert.Single(rows, r => r == "Netclaw: Done");
+        Assert.DoesNotContain(rows, r => r.Contains("✓", StringComparison.Ordinal) && r.Contains("Netclaw:", StringComparison.Ordinal));
+        Assert.Equal(3, rows.Count(r => r.Contains("Netclaw:", StringComparison.Ordinal)));
+    }
+
+    private static ToolCallOutput ToolCall(
+        string toolName, string callId = "call-1", string argumentsJson = "{\"url\":\"http://example.test/weather\"}") => new()
     {
         SessionId = new SessionId("tui/test"),
         CallId = new Netclaw.Tools.ToolCallId(callId),
         ToolName = new Netclaw.Tools.ToolName(toolName),
-        ArgumentsJson = "{\"url\":\"http://example.test/weather\"}"
+        ArgumentsJson = argumentsJson
     };
 
     private static ToolResultOutput ToolResult(string toolName, string result, string callId = "call-1") => new()
