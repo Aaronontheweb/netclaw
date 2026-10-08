@@ -532,10 +532,10 @@ public partial class ChatViewModel : ReactiveViewModel
 
         // Auto-send hidden trigger message (e.g., onboarding interview prompt).
         // Not rendered as a user bubble — the LLM's greeting is the first visible thing.
-        if (_initialMessage is not null)
+        // Two connection events can run this method at the same time, so the trigger is taken
+        // atomically: whichever call takes it sends it, and the other sees none.
+        if (Interlocked.Exchange(ref _initialMessage, null) is { } trigger)
         {
-            var trigger = _initialMessage;
-            _initialMessage = null;
             IsGenerating.Value = true;
             StatusMessage.Value = "Generating...";
             RequestRedraw();
