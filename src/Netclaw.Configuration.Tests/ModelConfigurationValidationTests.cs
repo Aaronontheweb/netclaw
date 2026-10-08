@@ -53,6 +53,18 @@ public sealed class ModelConfigurationValidationTests
         Assert.NotNull(check.Error);
         Assert.Contains(expected, check.Error);
         Assert.DoesNotContain("doctor --fix", check.Error);
+
+        // Startup calls Require: the same error leaves as the exception that Program.cs turns into a clean exit.
+        var exception = Assert.Throws<ModelConfigurationException>(() => ModelConfigurationValidation.Require(Build(modelsJson)));
+        Assert.Equal(check.Error, exception.Message);
+    }
+
+    [Fact]
+    public void Require_ReturnsTheCheck_WhenValid()
+    {
+        var check = ModelConfigurationValidation.Require(Build("""{"Main":{"Provider":"p","ModelId":"m1"}}"""));
+
+        Assert.Equal("m1", check.Models.Main.ModelId);
     }
 
     private static IConfiguration Build(string? modelsJson)

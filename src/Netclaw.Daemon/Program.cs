@@ -426,9 +426,7 @@ static (NetclawPaths Paths, ModelSelection Models) ConfigureConfigServices(
     // the NoProviderConfigured outcome and the host registers NoOpChatClientProvider.
     // The same check gates the config watcher's restart. An invalid Models section is an operator
     // error: startup stops with the message and no crash log (see the catch in the main try block).
-    var modelCheck = ModelConfigurationValidation.Check(configuration);
-    if (modelCheck.Error is not null)
-        throw new ModelConfigurationException(modelCheck.Error);
+    var modelCheck = ModelConfigurationValidation.Require(configuration);
 
     var (providers, models, validation) = (modelCheck.Providers, modelCheck.Models, modelCheck.Validation);
 

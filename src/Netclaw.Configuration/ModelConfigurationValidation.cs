@@ -25,6 +25,13 @@ public sealed record ModelConfigurationCheck(
 /// </summary>
 public static class ModelConfigurationValidation
 {
+    /// <summary>Startup entry point: returns the check, or throws its error as a <see cref="ModelConfigurationException"/>.</summary>
+    public static ModelConfigurationCheck Require(IConfiguration configuration)
+    {
+        var check = Check(configuration);
+        return check.Error is null ? check : throw new ModelConfigurationException(check.Error);
+    }
+
     public static ModelConfigurationCheck Check(IConfiguration configuration)
     {
         var providers = ProviderConfigurationLoader.Load(configuration.GetSection("Providers"));
