@@ -77,12 +77,7 @@ public sealed class ApprovalTurnBoundaryTests : LlmSessionTestBase
             new StaticSystemPromptProvider("You are a test assistant with tools."));
     }
 
-    protected override async Task AfterAllAsync()
-    {
-        await base.AfterAllAsync();
-        if (Directory.Exists(_root))
-            Directory.Delete(_root, recursive: true);
-    }
+    protected override void DeleteOwnedDirectories() => DisposableTempDir.Delete(_root);
 
     // One model turn asks for two gated shell calls. The operator approves one
     // call once and denies the other. Only the approved call runs, and the turn
@@ -363,12 +358,7 @@ public sealed class ApprovalRedriveBoundaryTests : LlmSessionTestBase
             new StaticSystemPromptProvider("You are a test assistant with tools."));
     }
 
-    protected override async Task AfterAllAsync()
-    {
-        await base.AfterAllAsync();
-        if (Directory.Exists(_root))
-            Directory.Delete(_root, recursive: true);
-    }
+    protected override void DeleteOwnedDirectories() => DisposableTempDir.Delete(_root);
 
     // One model turn asks for two gated shell calls, and the session restarts
     // before the operator answers. After the restart, "Once" for one call and

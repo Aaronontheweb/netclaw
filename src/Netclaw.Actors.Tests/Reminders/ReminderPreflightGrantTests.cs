@@ -108,12 +108,7 @@ public sealed class ReminderPreflightGrantTests : LlmSessionTestBase
         services.AddSingleton<ISystemPromptProvider>(new StaticSystemPromptProvider("You are a test assistant with tools."));
     }
 
-    protected override async Task AfterAllAsync()
-    {
-        await base.AfterAllAsync();
-        if (Directory.Exists(_root))
-            Directory.Delete(_root, recursive: true);
-    }
+    protected override void DeleteOwnedDirectories() => DisposableTempDir.Delete(_root);
 
     [Fact]
     public async Task Folder_grant_saved_in_a_chat_test_lets_the_unattended_scheduled_run_pass()

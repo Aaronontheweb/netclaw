@@ -366,12 +366,7 @@ public sealed class ShellApprovalLifecycleIntegrationTests : LlmSessionTestBase
             await EvaluateOutcomeAsync(journey.SessionId.Value, main));
     }
 
-    protected override async Task AfterAllAsync()
-    {
-        await base.AfterAllAsync();
-        if (Directory.Exists(_root))
-            Directory.Delete(_root, recursive: true);
-    }
+    protected override void DeleteOwnedDirectories() => DisposableTempDir.Delete(_root);
 
     private string MarkerCommand => _environment.Grammar == ShellGrammar.PowerShell
         ? "Add-Content -NoNewline -Path launch-count.txt -Value x"
