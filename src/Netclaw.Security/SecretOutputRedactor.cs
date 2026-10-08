@@ -67,8 +67,7 @@ public static partial class SecretOutputRedactor
             $"{m.Groups[1].Value}={Redacted}");
 
         var beforePrefixed = sanitized;
-        sanitized = PrefixedEnvSecretValueRegex().Replace(beforePrefixed, m =>
-            IsPrefixedNameCodeIdiom(beforePrefixed, m) ? m.Value : $"{m.Groups[1].Value}={Redacted}");
+        sanitized = PrefixedEnvSecretValueRegex().Replace(beforePrefixed, m => RedactPrefixedValue(beforePrefixed, m));
 
         sanitized = HeaderSecretValueRegex().Replace(sanitized, m =>
             $"{m.Groups[1].Value}{Redacted}");
@@ -112,12 +111,24 @@ public static partial class SecretOutputRedactor
     // The secret-bearing words shared by the JSON and env-style name rules.
     private const string SecretNameWords = "api[_-]?key|token|secret|password|passwd|authorization|access[_-]?token|refresh[_-]?token|client[_-]?secret|signing[_-]?key|private[_-]?key|connection[_-]?string|credential";
 
-    // Code that merely mentions a secret-named variable: "foo(auth_token=auth_token)" forwards
-    // a parameter under its own name, "is_token_valid=false" is a flag. A secret is never the
-    // literal true/false/null/none, nor its own name.
-    private static bool IsPrefixedNameCodeIdiom(string text, Match m)
+    // The whole whitespace-delimited value is masked, so a password that contains ')' or ','
+    // is not left half visible. Only a trailing run of closers is given back, which keeps
+    // "foo(auth_token=abc)" and "[db_password=abc, x]" readable. Code that merely mentions a
+    // secret-named variable is left alone: "foo(auth_token=auth_token)" forwards a parameter
+    // under its own name and "is_token_valid=false" is a flag. A secret is never the literal
+    // true/false/null/none, nor its own name.
+    private static string RedactPrefixedValue(string text, Match m)
     {
         var value = m.Groups[2].Value;
+        var core = value.AsSpan().TrimEnd(")],}");
+        if (core.IsEmpty || IsCodeIdiom(text, m, core))
+            return m.Value;
+
+        return $"{m.Groups[1].Value}={Redacted}{value[core.Length..]}";
+    }
+
+    private static bool IsCodeIdiom(string text, Match m, ReadOnlySpan<char> value)
+    {
         if (value.Equals("true", StringComparison.OrdinalIgnoreCase)
             || value.Equals("false", StringComparison.OrdinalIgnoreCase)
             || value.Equals("null", StringComparison.OrdinalIgnoreCase)
@@ -154,7 +165,7 @@ public static partial class SecretOutputRedactor
     // bounded so a long run of "token_token_..." stays linear.
     [GeneratedRegex("(?<=_)(?<!(?:next|page|continuation|cursor)_)((?:" + SecretNameWords + ")(?![A-Z])(?>[A-Z0-9_-]{0,64}))"
         + "(?<!_(?:file|path|dir|name|arn|url|header|env|permissions|length|lifetime|endpoint|stdin|attempts|count))"
-        + "=(?![\"']?(?:\\$[{(]|\\$[A-Z_]|%[A-Z_][A-Z0-9_]*%)|[\"']{2})([^\\s;)\\],}]+)", RegexOptions.IgnoreCase)]
+        + "=(?![\"']?(?:\\$[{(]|\\$[A-Z_]|%[A-Z_][A-Z0-9_]*%)|[\"']{2})([^\\s;]+)", RegexOptions.IgnoreCase)]
     private static partial Regex PrefixedEnvSecretValueRegex();
 
     [GeneratedRegex("(Authorization\\s*:\\s*Bearer\\s+)(\\S+)", RegexOptions.IgnoreCase)]

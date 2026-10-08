@@ -223,18 +223,20 @@ public sealed class SecretOutputRedactorTests
     // in the format's class, or is a word character for a \\b format) or ends it. A continuing
     // character is swallowed when the format is variable length and the character is in its
     // class; otherwise the token is not a token any more and the text passes through.
-    private static bool ExpectMasked(Boundary f, string follower)
+    // Returns whether the token is masked and, when it is, the text left after the mask: a
+    // character in the token's class is swallowed with it, anything else stays.
+    private static (bool Masked, string Remainder) Expect(Boundary f, string follower)
     {
         if (follower.Length == 0)
-            return true;
+            return (true, "");
 
         var c = follower[0];
         var inClass = char.IsAsciiLetterOrDigit(c) || (f.ClassChars.Contains('_') && c == '_') || (f.ClassChars.Contains('-') && c == '-');
         var continues = inClass || (f.WordBoundary && c == '_');
         if (!continues)
-            return true;
+            return (true, follower);
 
-        return f.VariableLength && inClass;
+        return f.VariableLength && inClass ? (true, "") : (false, follower);
     }
 
     [Theory]
@@ -246,15 +248,9 @@ public sealed class SecretOutputRedactorTests
 
         var redacted = SecretOutputRedactor.Redact(input);
 
-        if (ExpectMasked(f, follower))
-        {
-            Assert.DoesNotContain(f.Token, redacted, StringComparison.Ordinal);
-            Assert.StartsWith("see ***REDACTED***", redacted, StringComparison.Ordinal);
-        }
-        else
-        {
-            Assert.Equal(input, redacted);
-        }
+        var (masked, remainder) = Expect(f, follower);
+        // The exact text pins where the mask ends: a \\b ending would leave the tail of a Slack token behind.
+        Assert.Equal(masked ? "see ***REDACTED***" + remainder : input, redacted);
     }
 
     [Theory]
@@ -363,7 +359,7 @@ public sealed class SecretOutputRedactorTests
         Assert.Contains("=***REDACTED***", redacted, StringComparison.Ordinal);
     }
 
-    // The value of a prefixed name ends at the first closing bracket or comma, so code around
+    // A trailing run of closers after the value of a prefixed name is given back, so code around
     // the assignment survives. A numeric value is still masked: PINs and numeric passwords are real.
     [Theory]
     [InlineData("connect(DB_PASSWORD=hunter2)", "connect(DB_PASSWORD=***REDACTED***)")]
@@ -372,7 +368,14 @@ public sealed class SecretOutputRedactorTests
     [InlineData("{db_password=hunter2}", "{db_password=***REDACTED***}")]
     [InlineData("DB_PASSWORD=123456", "DB_PASSWORD=***REDACTED***")]
     [InlineData("foo(auth_token=other_token)", "foo(auth_token=***REDACTED***)")]
-    public void Redact_ends_a_prefixed_secret_value_at_a_closing_bracket_or_comma(string input, string expected)
+    [InlineData("f(a, db_password=hunter2),", "f(a, db_password=***REDACTED***),")]
+    [InlineData("x[db_password=hunter2]]", "x[db_password=***REDACTED***]]")]
+    // A closer or comma inside the value is part of the secret: all of it is masked.
+    [InlineData("MYSQL_ROOT_PASSWORD=p@ss,word123", "MYSQL_ROOT_PASSWORD=***REDACTED***")]
+    [InlineData("DB_PASSWORD=Tr0ub4dor)&3xyz", "DB_PASSWORD=***REDACTED***")]
+    [InlineData("DB_PASSWORD=a]b}c", "DB_PASSWORD=***REDACTED***")]
+    [InlineData("(DB_PASSWORD=Tr0ub4dor)&3xyz)", "(DB_PASSWORD=***REDACTED***)")]
+    public void Redact_masks_a_whole_prefixed_secret_value_and_gives_back_only_trailing_closers(string input, string expected)
     {
         Assert.Equal(expected, SecretOutputRedactor.Redact(input));
     }
