@@ -91,8 +91,9 @@ internal sealed class RetentionConfigViewModel : ReactiveViewModel
     {
         var row = Rows[SelectedRow.Value];
         // The first key press replaces the saved number instead of extending it.
-        row.Draft.Value = (row.Editing ? row.Draft.Value : string.Empty) + text;
+        var draft = (row.Editing ? row.Draft.Value : string.Empty) + text;
         row.Editing = true;
+        SetDraft(row, draft);
         ClearStatus();
         RequestRedraw();
     }
@@ -105,10 +106,20 @@ internal sealed class RetentionConfigViewModel : ReactiveViewModel
 
         // The draft of a stored value that is not valid is the default, not the text in the file.
         // Backspace clears it so the next keys start a new number.
-        row.Draft.Value = !row.Editing && row.Saved.Warning is not null ? string.Empty : row.Draft.Value[..^1];
+        var draft = !row.Editing && row.Saved.Warning is not null ? string.Empty : row.Draft.Value[..^1];
         row.Editing = true;
+        SetDraft(row, draft);
         ClearStatus();
         RequestRedraw();
+    }
+
+    // Editing is already set, so the row reads differently even when the text is the same.
+    private static void SetDraft(RetentionRow row, string draft)
+    {
+        if (row.Draft.Value == draft)
+            row.Draft.ForceNotify();
+        else
+            row.Draft.Value = draft;
     }
 
     public bool Save()
