@@ -999,8 +999,7 @@ static async Task RunAsync(string[] args)
         var configPaths = new NetclawPaths();
         configPaths.EnsureDirectoriesExist();
 
-        var configExitCode = ConfigCommand.Run(args, configPaths);
-        if (configExitCode != 0 || (args.Length > 1 && IsHelpToken(args[1])))
+        if (ConfigCommand.Handle(args, configPaths, out var configExitCode))
         {
             Environment.ExitCode = configExitCode;
             return;
@@ -1074,6 +1073,7 @@ static async Task RunAsync(string[] args)
     // ── Parse chat flags: --resume, -p/--prompt, --json ──
     string? resumeSessionId = null;
     bool chatJsonOutput = false;
+    bool chatOnboarding = false;
     if (mode is "chat")
     {
         bool chatHeadless = false;
@@ -1113,6 +1113,19 @@ static async Task RunAsync(string[] args)
                 continue;
             }
 
+            if (ChatOnboarding.ValidateToken(args[i]) is { } tokenError)
+            {
+                Console.Error.WriteLine(tokenError);
+                Environment.ExitCode = 1;
+                return;
+            }
+
+            if (args[i] is ChatOnboarding.Flag)
+            {
+                chatOnboarding = true;
+                continue;
+            }
+
             if (IsHelpToken(args[i]))
             {
                 WriteChatHelp();
@@ -1124,6 +1137,14 @@ static async Task RunAsync(string[] args)
             {
                 chatPrompt = args[i];
             }
+        }
+
+        if (chatOnboarding && ChatOnboarding.ValidateCombination(chatHeadless, resumeSessionId) is { } onboardingError)
+        {
+            Console.Error.WriteLine(onboardingError);
+            WriteChatHelp();
+            Environment.ExitCode = 1;
+            return;
         }
 
         if (chatHeadless)
@@ -1166,6 +1187,8 @@ static async Task RunAsync(string[] args)
         ResumeSessionId = resumeSessionId,
         InitialMessage = chatInitialMessage
     };
+    if (chatOnboarding)
+        navState.StartOnboarding(ChatOnboarding.BuildTrigger(sharedPaths));
     webBuilder.Services.AddSingleton(navState);
 
     // Suppress framework console logging — console is reserved for the chat UI
@@ -1282,6 +1305,7 @@ static async Task RunConfigEditorAsync(string[] args)
         t.RegisterRoute<BrowserAutomationConfigPage, BrowserAutomationConfigViewModel>("/browser-automation");
         t.RegisterRoute<TelemetryAlertingConfigPage, TelemetryAlertingConfigViewModel>("/telemetry-alerting");
         t.RegisterRoute<WorkspacesConfigPage, WorkspacesConfigViewModel>("/workspaces");
+        t.RegisterRoute<RetentionConfigPage, RetentionConfigViewModel>("/retention");
         t.RegisterRoute<SecurityAccessPage, SecurityAccessViewModel>("/security");
         t.RegisterRoute<ExposureModeConfigPage, ExposureModeConfigViewModel>("/exposure-mode");
         t.RegisterRoute<McpToolPermissionsPage, McpToolPermissionsViewModel>("/mcp-tools");
@@ -1332,6 +1356,8 @@ static async Task RunTerminaHostAsync(IHost host)
     catch (DaemonUnavailableException ex)
     {
         Console.Error.WriteLine($"netclaw: {ex.Message}");
+        if (ChatOnboarding.DaemonUnavailableHint(host.Services.GetService<ChatNavigationState>()) is { } hint)
+            Console.Error.WriteLine(hint);
         Environment.ExitCode = 1;
     }
 }
@@ -1354,6 +1380,7 @@ static void WriteGeneralHelp()
     Console.WriteLine("Commands:");
     Console.WriteLine("  chat                     Interactive TUI chat");
     Console.WriteLine("  chat --resume <id>       Resume an existing session by ID");
+    Console.WriteLine("  chat --onboarding        Start the guided identity interview");
     Console.WriteLine("  chat -p <text>           Headless single-prompt mode (supports --resume, --json)");
     Console.WriteLine("  sessions                 Browse and resume recent sessions (TUI)");
     Console.WriteLine("  sessions --once          List sessions and exit (no TUI, plain text or JSON)");
@@ -1458,6 +1485,8 @@ static void WriteChatHelp()
     Console.WriteLine();
     Console.WriteLine("Options:");
     Console.WriteLine("  --resume, -r <id>   Resume (or create) a session by ID");
+    Console.WriteLine("  --onboarding        Start the guided identity interview (interactive only;");
+    Console.WriteLine("                      not with -p or --resume)");
     Console.WriteLine("  -p, --prompt        Send a single headless prompt (non-interactive)");
     Console.WriteLine("  --json              Output structured JSON (headless mode only)");
     Console.WriteLine("                      Includes sessionId, response, toolCalls, and usage");
@@ -1465,6 +1494,7 @@ static void WriteChatHelp()
     Console.WriteLine("Examples:");
     Console.WriteLine("  netclaw chat                                       Interactive TUI");
     Console.WriteLine("  netclaw chat --resume abc123                       Resume session in TUI");
+    Console.WriteLine("  netclaw chat --onboarding                          Run the identity interview");
     Console.WriteLine("  netclaw chat -p \"hello\"                            Headless single prompt");
     Console.WriteLine("  netclaw chat -p --resume my-session \"hello\"        Named session, headless");
     Console.WriteLine("  netclaw chat -p --resume my-session --json \"hello\" JSON output, named session");

@@ -2,7 +2,7 @@
 # init-redo-chat.tape post-tape assertion.
 #
 # The tape proves the chat opened and replied after the redo. This script proves
-# the redo saved the UPDATED identity that the guided interview is built from,
+# the redo saved the UPDATED identity (files and the Identity section of netclaw.json) that the guided interview is built from,
 # and that the provider the wizard configured is still in place.
 
 set -euo pipefail
@@ -25,16 +25,18 @@ else
   echo "  ok  SOUL.md has the updated user name"
 fi
 
-echo "init-redo-chat: checking the redo left netclaw.json untouched..."
+echo "init-redo-chat: checking the redo changed only the Identity section of netclaw.json..."
 if [[ ! -s "${NETCLAW_HOME}/netclaw.before.json" ]]; then
   echo "FAIL: ${NETCLAW_HOME}/netclaw.before.json missing — the tape never snapshotted config." >&2
   assert_fail=1
-elif cmp -s "$CONFIG_PATH" "${NETCLAW_HOME}/netclaw.before.json"; then
-  echo "  ok  netclaw.json unchanged by the redo"
+elif [[ "$(jq -S 'del(.Identity)' "$CONFIG_PATH")" == "$(jq -S 'del(.Identity)' "${NETCLAW_HOME}/netclaw.before.json")" ]]; then
+  echo "  ok  netclaw.json unchanged outside Identity"
 else
-  echo "FAIL: netclaw.json changed during the redo — redo must not call WriteConfig." >&2
+  echo "FAIL: netclaw.json changed outside Identity during the redo — redo must not call WriteConfig." >&2
   assert_fail=1
 fi
+assert_field '.Identity.UserName' 'Pat' "$(read_config_json)" || :
+assert_field '.Identity.AgentName' 'Sentinel' "$(read_config_json)" || :
 
 echo "init-redo-chat: checking the redo chat sent a turn to the model (daemon log count)..."
 before="$(tr -d '[:space:]' < "${NETCLAW_HOME}/llm.before" 2>/dev/null || true)"

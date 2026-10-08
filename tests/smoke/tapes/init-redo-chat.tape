@@ -10,8 +10,9 @@
 # already printed the same smoke reply, so the screen alone proves little. The tape
 # counts the daemon's completed LLM calls (per-tape NETCLAW_HOME log) before the redo
 # and after the redo chat; the assertion script requires the count to grow. The tape also snapshots netclaw.json
-# before the redo; the assertion script compares it afterwards, so a redo that
-# rewrites config fails there.
+# before the redo; the assertion script compares everything except the Identity
+# section afterwards (a redo that rewrites other config fails there) and checks
+# Identity.UserName now holds the redone name.
 #
 # Pairs with tests/smoke/assertions/init-redo-chat.sh (updated identity on disk).
 # The skip path (Esc, no chat) is covered by init-redo-identity.tape.

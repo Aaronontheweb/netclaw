@@ -1072,6 +1072,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
         akkaBuilder.WithSignalRGateway();
         akkaBuilder.WithDailyStatsActor();
         akkaBuilder.WithServerFeedSkillSyncActor();
+        akkaBuilder.WithDataRetentionActor();
 
         // Register reminder tools after actors start (needs ReminderManagerActor ref)
         akkaBuilder.StartActors((system, registry, _) =>
@@ -1187,7 +1188,9 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     services.AddSingleton<SessionRegistryShutdownService>();
     services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SessionRegistryShutdownService>());
 
-    return toolConfigWarnings;
+    // Expired data is cleared by DataRetentionActor, which runs every RetentionJob registered here.
+    var retentionWarnings = services.AddRetentionJobs(configuration, paths);
+    return [.. toolConfigWarnings, .. retentionWarnings];
 }
 
 static ISearchBackend? CreateSearchBackend(SearchConfig config)

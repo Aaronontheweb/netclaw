@@ -39,7 +39,12 @@ public partial class ChatViewModel : ReactiveViewModel
     private string? _initialMessage;
 
     private readonly Subject<SessionOutput> _outputSubject = new();
-    private readonly Queue<string> _pendingMessages = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _pendingMessages = new();
+
+    // One session set-up at a time. The connect loop, the Connected connection event and a
+    // submit that finds the chat not ready all call EnsureSessionAndFlushAsync, and they can
+    // overlap. The method re-checks its state under this gate, so a later caller finds nothing left.
+    private readonly SemaphoreSlim _sessionSetup = new(1, 1);
     private readonly Queue<ToolInteractionRequest> _pendingInteractions = new();
 
     /// <summary>
@@ -434,6 +439,7 @@ public partial class ChatViewModel : ReactiveViewModel
         _daemonOutputSubscription?.Dispose();
         _daemonConnectionSubscription?.Dispose();
         _outputSubject.Dispose();
+        _sessionSetup.Dispose();
         _usageLog?.Dispose();
         _usageLog = null;
 
@@ -508,45 +514,97 @@ public partial class ChatViewModel : ReactiveViewModel
         RequestRedraw();
     }
 
-    private async Task EnsureSessionAndFlushAsync()
+    internal async Task EnsureSessionAndFlushAsync()
     {
-        // On the first call, use ResumeSessionAsync if a resume ID was provided.
-        // After that, DaemonClient has the session ID cached, so use EnsureSessionAsync
-        // to avoid redundant resume calls on reconnect.
-        var resumeId = _resumeSessionId;
-        _resumeSessionId = null;
-        var sessionId = resumeId is not null
-            ? await _daemonClient.ResumeSessionAsync(resumeId, DaemonClient.TuiChannelType)
-            : await _daemonClient.EnsureSessionAsync(DaemonClient.TuiChannelType);
-        SessionIdDisplay.Value = sessionId;
-        OpenUsageLogIfNeeded(sessionId);
-        _sessionReady = true;
-        IsInputEnabled.Value = true;
-        _connectAttempts = 0;
-
-        while (_pendingMessages.Count > 0)
+        await _sessionSetup.WaitAsync();
+        try
         {
-            var pending = _pendingMessages.Dequeue();
-            await _daemonClient.SendAsync(pending);
-        }
+            // Another caller already finished the set-up and nothing is waiting to be sent.
+            if (_sessionReady && _resumeSessionId is null && _initialMessage is null && _pendingMessages.IsEmpty)
+                return;
 
-        // Auto-send hidden trigger message (e.g., onboarding interview prompt).
-        // Not rendered as a user bubble — the LLM's greeting is the first visible thing.
-        if (_initialMessage is not null)
-        {
-            var trigger = _initialMessage;
-            _initialMessage = null;
-            IsGenerating.Value = true;
-            StatusMessage.Value = "Generating...";
+            // On the first call, use ResumeSessionAsync if a resume ID was provided.
+            // After that, DaemonClient has the session ID cached, so use EnsureSessionAsync
+            // to avoid redundant resume calls on reconnect.
+            var resumeId = _resumeSessionId;
+            _resumeSessionId = null;
+            var sessionId = resumeId is not null
+                ? await _daemonClient.ResumeSessionAsync(resumeId, DaemonClient.TuiChannelType)
+                : await _daemonClient.EnsureSessionAsync(DaemonClient.TuiChannelType);
+            SessionIdDisplay.Value = sessionId;
+            OpenUsageLogIfNeeded(sessionId);
+            IsInputEnabled.Value = true;
+            _connectAttempts = 0;
+
+            // Each queued message (and the initial message) is taken out first and sent once. One
+            // whose send throws is dropped, not put back: a message that can never be sent (too
+            // large for the connection, for one) would otherwise stay first in line and make every
+            // reconnect fail again. After a failure the method returns; the connection event that
+            // follows a torn-down connection flushes the messages still queued. The chat is marked
+            // ready only once the queue is empty, so a new submit queues behind the messages already
+            // waiting instead of overtaking them.
+            var triggerSent = false;
+            do
+            {
+                while (true)
+                {
+                    var isTrigger = false;
+                    var found = _pendingMessages.TryDequeue(out var next);
+                    if (!found && _initialMessage is { } trigger)
+                    {
+                        // Auto-send hidden trigger message (e.g., onboarding interview prompt).
+                        // Not rendered as a user bubble — the LLM's greeting is the first visible thing.
+                        next = trigger;
+                        _initialMessage = null;
+                        found = isTrigger = true;
+                        IsGenerating.Value = true;
+                        StatusMessage.Value = "Generating...";
+                        RequestRedraw();
+                    }
+
+                    if (!found)
+                        break;
+
+                    try
+                    {
+                        await _daemonClient.SendAsync(next!);
+                        triggerSent |= isTrigger;
+                    }
+                    catch (Exception ex)
+                    {
+                        _sessionReady = false;
+                        IsGenerating.Value = false;
+                        StatusMessage.Value = $"A message could not be sent and was dropped ({ex.Message}).";
+                        RequestRedraw();
+                        return;
+                    }
+                }
+
+                _sessionReady = true;
+            }
+            while (!_pendingMessages.IsEmpty); // a submit that queued itself just before the flag was set
+
+            if (!triggerSent && !IsGenerating.Value)
+                StatusMessage.Value = "Ready";
+
             RequestRedraw();
-            await _daemonClient.SendAsync(trigger);
-            return;
         }
+        finally
+        {
+            ReleaseSessionSetup();
+        }
+    }
 
-        if (!IsGenerating.Value)
-            StatusMessage.Value = "Ready";
-
-        RequestRedraw();
+    private void ReleaseSessionSetup()
+    {
+        try
+        {
+            _sessionSetup.Release();
+        }
+        catch (ObjectDisposedException)
+        {
+            return; // the view model was disposed while the set-up was in flight
+        }
     }
 
     protected virtual async Task SubmitInteractionSelectionAsync(string selectedKey)

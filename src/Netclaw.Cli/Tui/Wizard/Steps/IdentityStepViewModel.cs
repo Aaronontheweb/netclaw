@@ -222,9 +222,16 @@ public sealed class IdentityStepViewModel : IWizardStepViewModel, ISectionEditor
     /// Builds the initial onboarding chat message for the first conversation.
     /// </summary>
     public string BuildOnboardingTrigger(NetclawPaths paths)
+        => BuildOnboardingTrigger(paths, UserName, CommunicationStyle);
+
+    /// <summary>
+    /// Same trigger from saved identity values, for callers that have no step instance
+    /// (<c>netclaw chat --onboarding</c>).
+    /// </summary>
+    public static string BuildOnboardingTrigger(NetclawPaths paths, string? savedUserName, string? savedCommunicationStyle)
     {
-        var userName = string.IsNullOrWhiteSpace(UserName) ? "User" : UserName;
-        var commStyle = CommunicationStyle ?? "Concise & casual";
+        var userName = string.IsNullOrWhiteSpace(savedUserName) ? "User" : savedUserName;
+        var commStyle = savedCommunicationStyle ?? "Concise & casual";
         var soulPath = paths.SoulPath;
         var agentsPath = paths.AgentsPath;
 
