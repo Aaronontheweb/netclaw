@@ -19,6 +19,9 @@ namespace Netclaw.Cli.Model;
 /// </summary>
 internal static class ModelCommand
 {
+    /// <summary>Short one-line form for TUI status areas; the detail comes from <c>netclaw doctor</c>.</summary>
+    internal const string InvalidConfigurationMessage = "Model configuration is invalid. Run `netclaw doctor` for details.";
+
     public static async Task<int> RunAsync(
         string[] args, NetclawPaths paths,
         IProviderProbe? probe = null, TextWriter? output = null)
@@ -514,11 +517,35 @@ internal static class ModelCommand
         if (!File.Exists(paths.NetclawConfigPath))
             return true;
 
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(paths.NetclawConfigPath, optional: false, reloadOnChange: false)
+            .Build();
+        return TryResolveModelSelection(configuration, out models, out error);
+    }
+
+    /// <summary>
+    /// Same as the <see cref="NetclawPaths"/> overload, for callers that already hold the parsed
+    /// <c>netclaw.json</c> and must not read the file a second time.
+    /// </summary>
+    internal static bool TryLoadModelSelection(
+        Dictionary<string, object> config,
+        out ModelSelection? models,
+        out string? error)
+    {
+        using var stream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(config, JsonDefaults.ConfigFile));
+        var configuration = new ConfigurationBuilder().AddJsonStream(stream).Build();
+        return TryResolveModelSelection(configuration, out models, out error);
+    }
+
+    private static bool TryResolveModelSelection(
+        IConfiguration configuration,
+        out ModelSelection? models,
+        out string? error)
+    {
+        models = null;
+        error = null;
         try
         {
-            var configuration = new ConfigurationBuilder()
-                .AddJsonFile(paths.NetclawConfigPath, optional: false, reloadOnChange: false)
-                .Build();
             if (!configuration.GetSection("Models").Exists())
                 return true;
 

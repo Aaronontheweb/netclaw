@@ -6,6 +6,7 @@
 using System.Text.Json;
 using Netclaw.Actors.Channels;
 using Netclaw.Cli.Config;
+using Netclaw.Cli.Model;
 using Netclaw.Cli.Tui.Config;
 using Netclaw.Configuration;
 using R3;
@@ -209,13 +210,11 @@ internal sealed class ConfigDashboardStatusReader
 
     private static string ModelsSummary(Dictionary<string, object> config)
     {
-        if (ConfigFileHelper.TryGetPathValue(config, "Models.Main.ModelId", out var modelId)
-            && modelId is string id && !string.IsNullOrWhiteSpace(id))
-        {
-            return id;
-        }
+        // Same resolver as `netclaw model list`: understands both the Definitions/Roles and legacy inline shapes.
+        if (!ModelCommand.TryLoadModelSelection(config, out var models, out _))
+            return "– config error";
 
-        return "– not set";
+        return string.IsNullOrWhiteSpace(models?.Main.ModelId) ? "– not set" : models.Main.ModelId;
     }
 
     private string ChannelsSummary(Dictionary<string, object> config)
@@ -263,11 +262,15 @@ internal sealed class ConfigDashboardStatusReader
 
     private static string SearchSummary(Dictionary<string, object> config)
     {
-        if (!ConfigFileHelper.TryGetPathValue(config, "Search.Backend", out var raw)
-            || raw is not string backend || string.IsNullOrWhiteSpace(backend))
-        {
-            return "– not set";
-        }
+        // SearchConfig.Enabled defaults to true, so only an explicit false turns the subsystem off.
+        if (ConfigFileHelper.TryGetPathValue(config, "Search.Enabled", out var enabled) && enabled is false)
+            return OnOff(false);
+
+        // An absent Search.Backend means the SearchConfig default is in effect.
+        var backend = ConfigFileHelper.TryGetPathValue(config, "Search.Backend", out var raw)
+                      && raw is string configured && !string.IsNullOrWhiteSpace(configured)
+            ? configured
+            : new SearchConfig().Backend.ToWireValue();
 
         return backend.ToLowerInvariant() switch
         {
