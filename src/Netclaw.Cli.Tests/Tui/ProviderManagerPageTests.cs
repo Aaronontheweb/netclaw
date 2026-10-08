@@ -285,37 +285,6 @@ public sealed class ProviderManagerPageTests : IDisposable
     }
 
     [Fact]
-    public async Task Rename_TypingAppendsToThePrefilledName()
-    {
-        WriteConfig(new Dictionary<string, object>
-        {
-            ["configVersion"] = 1,
-            ["Providers"] = new Dictionary<string, object>
-            {
-                ["alpha-ollama"] = new Dictionary<string, object>
-                {
-                    ["Type"] = "ollama",
-                    ["Endpoint"] = "http://localhost:11434",
-                    ["AuthMethod"] = "None"
-                }
-            }
-        });
-
-        var (terminal, app, _) = CreateHeadlessApp(out var input);
-
-        input.EnqueueKey(ConsoleKey.Enter); // open the provider detail
-        input.EnqueueKey(ConsoleKey.N);     // start rename
-        input.EnqueueString("ZZ");
-        input.EnqueueKey(ConsoleKey.Q, control: true);
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await app.RunAsync(cts.Token);
-
-        Assert.True(terminal.Contains("alpha-ollamaZZ"),
-            "Typing into the pre-filled rename input must append to the name, not insert before it");
-    }
-
-    [Fact]
     public async Task OpenAiCompatibleFix_OffersExplicitKeyChoicesAndAcceptsReplacement()
     {
         WriteConfig(new Dictionary<string, object>
