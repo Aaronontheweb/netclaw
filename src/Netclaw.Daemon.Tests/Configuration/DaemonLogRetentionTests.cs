@@ -380,14 +380,3 @@ public sealed class DaemonLogRetentionTests : IDisposable
         }
     }
 }
-
-/// <summary>
-/// Supplies source-level Slopwatch suppressions without a runtime package dependency.
-/// </summary>
-[AttributeUsage(AttributeTargets.Method, AllowMultiple = true)]
-internal sealed class SlopwatchSuppressAttribute(string ruleId, string reason) : Attribute
-{
-    public string RuleId { get; } = ruleId;
-
-    public string Reason { get; } = reason;
-}
