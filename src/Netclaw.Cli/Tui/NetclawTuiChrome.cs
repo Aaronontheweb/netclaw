@@ -28,15 +28,14 @@ internal static class NetclawTuiChrome
 
     /// <summary>
     /// Pre-fills a text input with the cursor at the end. Termina's <c>Text</c> setter leaves
-    /// the cursor where it was (position 0 on a fresh node), so without the synthesized End
-    /// the first keystroke would insert in front of the default instead of after it.
+    /// the cursor at position 0 on a fresh node, so without <c>MoveCursorToEnd</c> the first
+    /// keystroke would insert in front of the default instead of after it.
     /// Every pre-filled input goes through here so they all behave the same.
     /// </summary>
     internal static void SeedTextInput(TextInputNode input, string? text)
     {
         input.Text = text ?? string.Empty;
-        if (!string.IsNullOrEmpty(input.Text))
-            input.HandleInput(new ConsoleKeyInfo('\0', ConsoleKey.End, shift: false, alt: false, control: false));
+        input.MoveCursorToEnd();
     }
 
     /// <summary>Longest a Provider column grows before it truncates, so Endpoint and Model ID keep their room.</summary>
