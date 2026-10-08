@@ -24,7 +24,6 @@ The update tests verify HTTP and checksum failures before daemon access.
 They also verify the supplied home and clock, foreign-unit refusal, and binary rollback.
 The approval tests verify canonical grants, diagnostics, and the supplied timestamp.
 The pair tests retain endpoint rejection, bounded responses, virtual deadlines, and caller cancellation.
-The source guard rejects process defaults in these three commands.
 No authorization gate or owner rule changes. Existing focused Stryker targets remain unchanged.
 
 Behavioral evals are not required for this CLI refactor, per the operator's instruction.
@@ -45,3 +44,13 @@ Only the operations skill version differs. The version preserves the newer upstr
 
 The full native suite result above predates the rebase.
 The refresh uses the rebased code. The rebase retains the upstream retention feature.
+
+## Test review after feedback
+
+The source guard test was removed. No production code changed.
+The review found no other self-confirming assertions among the tests changed by this PR.
+The factory assertions check the supplied dependencies, not production daemon construction.
+The other assertions inspect command results, files, timestamps, and daemon calls.
+
+- All 2,090 CLI tests passed with an isolated `NETCLAW_HOME`, with no skips.
+- Slopwatch reported zero issues. Copyright headers and the diff check passed.
