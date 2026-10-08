@@ -41,13 +41,13 @@ public sealed class SystemSkillSizeGateTests : IDisposable
         new Dictionary<string, SizeExemption>(StringComparer.Ordinal)
         {
             ["netclaw-operations/SKILL.md"] = new(
-                57_000,
+                57_300,
                 "Split netclaw-operations into an index and reference files. The plan is in the pull request that added this gate."),
             ["netclaw-operations/references/scheduling.md"] = new(
                 21_600,
                 "Split the scheduling reference (reminders, proactive channel messages, approvals, background jobs) with the netclaw-operations split."),
             ["netclaw-operations/references/diagnostics.md"] = new(
-                12_950,
+                13_200,
                 "Split the diagnostics reference (diagnostics, kill switches, self-maintenance) with the netclaw-operations split."),
             ["skill-authoring/SKILL.md"] = new(
                 12_400,

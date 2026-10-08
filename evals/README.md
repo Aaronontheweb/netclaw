@@ -184,10 +184,11 @@ file unless it reads more.
 
 The daemon keeps the full text of a bounded result below the workspace folder
 of the session, and adds one line that names `tool_output_read` and a call ID.
-A session gets that folder with its first shell command. A session that has
-run no shell command has no folder: the result then has no `tool_output_read`
-line, and the daemon keeps no text. The two "steer" cases measure the session
-that has the folder.
+On `dev` before pull request #2414, a session gets that folder with its first
+shell command. A session that has run no shell command has no folder: the
+result then has no `tool_output_read` line, and the daemon keeps no text. The
+two "steer" cases measure the session that has the folder. After #2414, each
+session gets the line, and the recorded "steer shown" value shows it.
 
 The Skill Discovery cases already prove the hop from the index to a reference:
 `skill_load`, then `skill_read_resource`, then an answer with a fact of that
