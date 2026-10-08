@@ -2094,6 +2094,7 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
             Generation: 1,
             ForceNoTools: false,
             TurnRestartNotice: null,
+            SlashCommandSkillContent: null,
             Snapshot: new WorkingContextSnapshot
             {
                 WorkingContext = WorkingContext.Empty.WithProjectDirectory("/stale/project"),

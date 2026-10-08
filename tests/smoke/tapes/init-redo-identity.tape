@@ -50,8 +50,9 @@ Enter
 Wait+Screen@10s /Your timezone/
 
 # The submit that used to loop back to this field forever — it must now
-# advance to the saved screen.
-Type "UTC"
+# advance to the saved screen. The field is pre-filled with the host's time
+# zone, which is a valid IANA id, so the tape accepts it. Typing here would
+# insert in front of the pre-filled text and fail time zone validation.
 Enter
 Wait+Screen@10s /Identity updated/
 

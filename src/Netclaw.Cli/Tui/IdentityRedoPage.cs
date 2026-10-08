@@ -156,6 +156,7 @@ public sealed class IdentityRedoPage : ReactivePage<IdentityRedoViewModel>
             InvalidateHelp = () => _helpTextNode?.Invalidate(),
             AdvanceStep = ViewModel.GoNext,
             RequestRedraw = ViewModel.RequestRedraw,
+            SetStatusMessage = message => ViewModel.Context.StatusMessage.Value = message,
         };
 
     public override void Dispose()

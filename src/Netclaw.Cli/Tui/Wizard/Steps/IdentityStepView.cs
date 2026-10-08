@@ -118,7 +118,7 @@ public sealed class IdentityStepView : IWizardStepView
 
     private ILayoutNode BuildTimezone(IdentityStepViewModel vm, StepViewCallbacks callbacks)
     {
-        _timezoneInput = new TextInputNode().WithPlaceholder(TimeZoneInfo.Local.Id);
+        _timezoneInput = new TextInputNode().WithPlaceholder(IdentityStepViewModel.DefaultTimezone);
         WizardStepHelpers.SeedTextInput(_timezoneInput, vm.UserTimezone);
 
         _timezoneInput.OnFocused();
@@ -128,7 +128,18 @@ public sealed class IdentityStepView : IWizardStepView
         _timezoneInput.Submitted
             .Subscribe(text =>
             {
-                vm.UserTimezone = string.IsNullOrWhiteSpace(text) ? TimeZoneInfo.Local.Id : text;
+                var timezone = string.IsNullOrWhiteSpace(text) ? IdentityStepViewModel.DefaultTimezone : text.Trim();
+                var error = IdentityStepViewModel.ValidateTimezone(timezone);
+                if (error is not null)
+                {
+                    // Submit clears the field; keep the rejected text so a second Enter is rejected again.
+                    _timezoneInput.Text = timezone;
+                    callbacks.ShowValidationError(error);
+                    return;
+                }
+
+                vm.UserTimezone = timezone;
+                callbacks.ClearStatusMessage();
                 callbacks.AdvanceStep();
             })
             .DisposeWith(callbacks.Subscriptions);
