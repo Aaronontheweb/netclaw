@@ -3221,16 +3221,19 @@ assert_skill_position_memory_no_recall_block() {
 }
 
 setup_skill_position_memory_tool_choice() {
-    EVAL_POSITION_TOKEN="R$1-$$"
+    EVAL_POSITION_TOKEN="site-$1-$$"
 }
 
 # MEMORY: the tool for each operation. Turn 1 is a save request
-# (`store_memory`). Turn 2 asks what is saved (`find_memories` or
+# (`store_memory`, or `update_memory` when the subject has a memory). Turn 2 asks what is saved (`find_memories` or
 # `get_memories`). Turn 3 corrects the saved memory (`update_memory`, and no
 # second `store_memory`).
 assert_skill_position_memory_tool_choice() {
     position_skill_loaded 'netclaw-memory' 3 || return 1
-    if ! position_evidence_is '.toolsByTurn[0] | index("store_memory") != null'; then
+    # The eval memory store is shared by the runs of one daemon. When an earlier
+    # run saved a memory on the same subject, an update of that memory is the
+    # correct tool for the save request, as in `memory_explicit_store`.
+    if ! position_evidence_is '.toolsByTurn[0] | (index("store_memory") != null or index("update_memory") != null)'; then
         EVAL_ASSERTION_DETAILS="turn1-no-store_memory"
         return 1
     fi
@@ -3623,9 +3626,9 @@ run_all() {
         "Load your netclaw-memory skill. Your last turns had no [memory-recall] block at all. Is the memory system broken or is that normal? Answer first with exactly one word in capitals: BROKEN or NORMAL."
 
     run_multi_turn_case --json skill_position_memory_tool_choice "memory: store, then find, then update without a second store" \
-        "Use your netclaw-memory skill for this conversation. Save this for later sessions: my preferred conference room is Room {{EVAL_POSITION_TOKEN}}. Tell me when it is saved." \
-        "What do you have saved about my preferred conference room? Check your saved memories for it." \
-        "The room changed. My preferred conference room is now Room {{EVAL_POSITION_TOKEN}}-B. Correct the saved memory. Do not create a second memory for it."
+        "Use your netclaw-memory skill for this conversation. Save this for later sessions: my preferred conference room at the {{EVAL_POSITION_TOKEN}} office is Room 12. Tell me when it is saved." \
+        "What do you have saved about my preferred conference room at the {{EVAL_POSITION_TOKEN}} office? Check your saved memories for it." \
+        "The room changed. My preferred conference room at the {{EVAL_POSITION_TOKEN}} office is now Room 31. Correct the saved memory. Do not create a second memory for it."
 
     run_case --json skill_position_right_reference_memory "right reference: reads the recall reference of netclaw-memory and no other" \
         "Use your netclaw-memory skill. What raw cosine similarity floor does automatic recall use for the default embedding model?" \

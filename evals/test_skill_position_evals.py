@@ -285,6 +285,9 @@ class AssertionTests(unittest.TestCase):
             envelope([("update_memory", "u", {})])]
         passed, _ = self.run_assertion("assert_skill_position_memory_tool_choice", turns, [])
         self.assertTrue(passed)
+        turns[0] = envelope([("skill_load", "l", {"Name": "netclaw-memory"}), ("update_memory", "s", {})])
+        passed, _ = self.run_assertion("assert_skill_position_memory_tool_choice", turns, [])
+        self.assertTrue(passed)
         turns[2] = envelope([("update_memory", "u", {}), ("store_memory", "s2", {})])
         passed, details = self.run_assertion("assert_skill_position_memory_tool_choice", turns, [])
         self.assertFalse(passed)

@@ -220,7 +220,7 @@ so an agent can find the skill folder. The runner records such a run as
 | `skill_position_reference_middle_steer` | Removed middle of the reference, in a session that has a workspace folder | Turn 1 runs `pwd` in the shell. Turn 2 is the prune question, with the same evidence. |
 | `skill_position_right_reference_operations` | `references/webhooks.md` (it fits the budget) | The run reads that reference and no other reference. The response holds `X-TextForge-Signature`. |
 | `skill_position_memory_no_recall_block` | `netclaw-memory` | The response starts with the word NORMAL and does not hold the word BROKEN. |
-| `skill_position_memory_tool_choice` | `netclaw-memory` | Three turns: `store_memory`; then `find_memories` or `get_memories`; then `update_memory` and no second `store_memory`. |
+| `skill_position_memory_tool_choice` | `netclaw-memory` | Three turns: `store_memory` (or `update_memory` when the subject has a memory); then `find_memories` or `get_memories`; then `update_memory` and no second `store_memory`. |
 | `skill_position_right_reference_memory` | `netclaw-memory/references/recall-internals.md` | The run reads that reference and no other reference. The response holds `0.24`. |
 
 Six cases ask for a fact, and the question shows the agent that something is
