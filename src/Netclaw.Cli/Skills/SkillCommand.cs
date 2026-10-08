@@ -79,7 +79,7 @@ internal static class SkillCommand
     private static async Task<int> RunListAsync(DaemonApi? daemonApi, TextWriter output)
     {
         string? unavailable;
-        var hint = "Start it with `netclaw daemon start` or `netclaw run`.";
+        var hint = "Start it with `netclaw daemon start`.";
         SkillInventory.Response? inventory = null;
 
         if (daemonApi is null)

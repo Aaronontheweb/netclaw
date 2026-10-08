@@ -19,6 +19,13 @@ namespace Netclaw.Cli.Config;
 internal static class ConfigFileHelper
 {
     /// <summary>
+    /// Appended to TUI status messages after a config write. True whether or not a daemon is
+    /// running: the daemon's config watcher reloads on change, and with none running the next
+    /// start reads the file.
+    /// </summary>
+    internal const string DaemonAppliesChange = "A running daemon applies the change automatically.";
+
+    /// <summary>
     /// Load both netclaw.json and secrets.json as mutable dictionaries.
     /// Missing files get a default <c>{ "configVersion": 1 }</c> skeleton.
     /// </summary>

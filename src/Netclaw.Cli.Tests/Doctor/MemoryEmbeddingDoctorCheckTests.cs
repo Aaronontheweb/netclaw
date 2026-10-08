@@ -44,6 +44,21 @@ public sealed class MemoryEmbeddingDoctorCheckTests : IDisposable
     }
 
     [Fact]
+    public async Task Errors_when_model_id_is_not_in_the_allowlist()
+    {
+        var paths = CreateTempPaths();
+        var config = WriteConfig(paths, enabled: true, autoDownload: true, modelId: "not-a-real-model");
+        var check = new MemoryEmbeddingDoctorCheck(paths, config, FixtureAllowlist());
+
+        var result = await check.RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(DoctorSeverity.Error, result.Severity);
+        Assert.Contains("Unknown embedding model id 'not-a-real-model'", result.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("download", result.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(ModelId, result.Remediation, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Warns_when_enabled_but_model_is_missing_and_auto_download_is_true()
     {
         var paths = CreateTempPaths();
@@ -138,7 +153,7 @@ public sealed class MemoryEmbeddingDoctorCheckTests : IDisposable
         return paths;
     }
 
-    private static IConfiguration WriteConfig(NetclawPaths paths, bool enabled, bool autoDownload = true)
+    private static IConfiguration WriteConfig(NetclawPaths paths, bool enabled, bool autoDownload = true, string modelId = ModelId)
     {
         var config = new Dictionary<string, object>
         {
@@ -147,7 +162,7 @@ public sealed class MemoryEmbeddingDoctorCheckTests : IDisposable
                 ["Embeddings"] = new Dictionary<string, object>
                 {
                     ["Enabled"] = enabled,
-                    ["ModelId"] = ModelId,
+                    ["ModelId"] = modelId,
                     ["AutoDownload"] = autoDownload,
                 }
             }
