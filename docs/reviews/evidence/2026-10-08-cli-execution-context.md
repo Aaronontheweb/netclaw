@@ -33,3 +33,15 @@ No OpenCover report or CRAP score exists.
 
 Other command migrations and shared path construction remain outside this slice.
 
+## Validation after the rebase
+
+The branch now uses `upstream/dev` at `b8f5cfaa4`.
+The range comparison shows no code change from the original implementation.
+Only the operations skill version differs. The version preserves the newer upstream release.
+
+- All 2,105 CLI tests passed with an isolated `NETCLAW_HOME`, with no skips.
+- The native refresh passed the `help`, `init-wizard`, and `approvals` tapes and the `pairing` scenario.
+- Slopwatch reported zero issues. Copyright headers and the diff check passed.
+
+The full native suite result above predates the rebase.
+The refresh uses the rebased code. The rebase retains the upstream retention feature.
