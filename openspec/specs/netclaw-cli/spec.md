@@ -162,7 +162,10 @@ executable-private grammar.
 
 For another tool, `trust-verb` SHALL write the compatible global non-shell
 exact entry. It SHALL keep support for an arbitrary `--tool` value. It SHALL
-not add shell members.
+not add shell members. The phrase SHALL equal the phrase that the approval
+matcher takes from a call to that tool, which is the canonical tool name. Any
+other phrase SHALL exit with code 1, store nothing, and print the command that
+works.
 
 The CLI SHALL add only global entries. A folder entry SHALL come from an
 interactive approval. An equal entry SHALL exit with code 0 and a no-change

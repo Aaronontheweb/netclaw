@@ -275,6 +275,17 @@ internal static class ApprovalsCommand
                 writer.WriteLine("Error: The verb must be nonempty and canonical.");
                 return 1;
             }
+
+            // A call to a non-shell tool has no command line to prefix-match: the
+            // daemon looks a grant up by the tool's canonical name, so a grant
+            // with another phrase would save and never apply.
+            var phrase = ApprovalPatternMatching.NonShellGrantPhrase(new ToolName(canonicalTool));
+            if (!ApprovalPatternMatching.MatchesAny(phrase, [entry]))
+            {
+                writer.WriteLine($"Error: '{opts.Verb}' never matches a call to {canonicalTool}. Grants for this tool match only the phrase '{phrase}'.");
+                writer.WriteLine($"If the tool is named '{canonicalTool}', run: netclaw approvals trust-verb {phrase} --tool {canonicalTool} --audience {opts.Audience.ToWireValue()}");
+                return 1;
+            }
         }
 
         var store = CreateStore(paths, clock);
@@ -346,7 +357,8 @@ internal static class ApprovalsCommand
             writer.WriteLine("Adds a global-wildcard approval. A shell phrase of two or more words covers its");
             writer.WriteLine("command words and any later words: 'git push' covers 'git push origin main'.");
             writer.WriteLine("A one-word phrase covers the program alone: 'gh' does not cover 'gh pr view'.");
-            writer.WriteLine("Other tools use exact phrases. Use it for unattended or scheduled tasks.");
+            writer.WriteLine("Other tools take the tool's name as the phrase: --tool demo/calculate takes");
+            writer.WriteLine("'demo/calculate'. Use it for unattended or scheduled tasks.");
             return null;
         }
 
@@ -425,7 +437,8 @@ internal static class ApprovalsCommand
         writer.WriteLine("                    Add one static canonical phrase as a global wildcard.");
         writer.WriteLine("                    A shell phrase of two or more words covers its command words");
         writer.WriteLine("                    and any later words. A one-word phrase covers the program alone:");
-        writer.WriteLine("                    'gh' does not cover 'gh pr view'. Other tools stay exact.");
+        writer.WriteLine("                    'gh' does not cover 'gh pr view'. Other tools take the tool's name");
+        writer.WriteLine("                    as the phrase (--tool demo/calculate takes 'demo/calculate').");
         writer.WriteLine("                    Flags: --audience <personal|team|public> (default personal)");
         writer.WriteLine("                           --tool <name>                       (default shell_execute)");
         writer.WriteLine("                           --shell <bash|powershell>           (shell_execute only)");

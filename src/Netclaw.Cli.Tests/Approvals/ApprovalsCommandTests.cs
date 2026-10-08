@@ -558,7 +558,7 @@ public sealed class ApprovalsCommandTests : IDisposable
     public async Task TrustVerb_keeps_non_shell_tool_exact()
     {
         var exit = await ApprovalsCommand.RunAsync(
-            ["approvals", "trust-verb", "create-page", "--tool", "notion/create-page"],
+            ["approvals", "trust-verb", "notion/create-page", "--tool", "notion/create-page"],
             _paths,
             _output);
 
@@ -567,32 +567,120 @@ public sealed class ApprovalsCommandTests : IDisposable
             _store.GetApprovedEntries(TrustAudience.Personal, "notion/create-page"));
         Assert.Null(entry.Shell);
         Assert.Null(entry.Match);
-        Assert.Equal("create-page", entry.Verb);
+        Assert.Equal("notion/create-page", entry.Verb);
     }
 
     [Theory]
-    [InlineData("tool in mode")]
-    [InlineData("status anywhere")]
     [InlineData("-private-operation")]
     public async Task TrustVerb_keeps_arbitrary_non_shell_phrase_exact(string phrase)
     {
+        // The phrase is the tool name, so a name that starts like a flag stays a literal.
         var exit = await ApprovalsCommand.RunAsync(
-            ["approvals", "trust-verb", phrase, "--tool", "custom/tool"],
+            ["approvals", "trust-verb", phrase, "--tool", phrase],
             _paths,
             _output);
 
         Assert.Equal(0, exit);
-        var entry = Assert.Single(
-            _store.GetApprovedEntries(TrustAudience.Personal, "custom/tool"));
+        var entry = Assert.Single(_store.GetApprovedEntries(TrustAudience.Personal, phrase));
         Assert.Equal(phrase, entry.Verb);
         Assert.Null(entry.Shell);
+    }
+
+    [Theory]
+    [InlineData("calculate", "demo-utilities/calculate", "personal")]
+    [InlineData("create-page", "notion/create-page", "personal")]
+    [InlineData("demo-utilities", "demo-utilities/calculate", "personal")]
+    [InlineData("web_fetch extra", "web_fetch", "team")]
+    [InlineData("fetch", "web_fetch", "public")]
+    public async Task TrustVerb_refuses_a_non_shell_phrase_that_the_tool_name_does_not_equal(
+        string phrase,
+        string tool,
+        string audience)
+    {
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "trust-verb", phrase, "--tool", tool, "--audience", audience],
+            _paths,
+            _output);
+
+        Assert.Equal(1, exit);
+        Assert.False(File.Exists(_paths.ToolApprovalsPath));
+        Assert.Contains(
+            $"Error: '{phrase}' never matches a call to {tool}. Grants for this tool match only the phrase '{tool}'.",
+            _output.ToString());
+        Assert.Contains(
+            $"If the tool is named '{tool}', run: netclaw approvals trust-verb {tool} --tool {tool} --audience {audience}",
+            _output.ToString());
+    }
+
+    [Fact]
+    public async Task TrustVerb_judges_a_case_different_non_shell_phrase_by_the_platform_comparison()
+    {
+        // Verb comparison is ordinal on POSIX and ignores case on Windows.
+        const string phrase = "DEMO-UTILITIES/CALCULATE";
+        const string tool = "demo-utilities/calculate";
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "trust-verb", phrase, "--tool", tool],
+            _paths,
+            _output);
+
+        if (string.Equals(phrase, tool, ToolApprovalEntryComparer.Comparison))
+        {
+            Assert.Equal(0, exit);
+            Assert.Single(_store.GetApprovedEntries(TrustAudience.Personal, tool));
+        }
+        else
+        {
+            Assert.Equal(1, exit);
+            Assert.False(File.Exists(_paths.ToolApprovalsPath));
+        }
+    }
+
+    [Theory]
+    [InlineData("demo-utilities/calculate", "demo-utilities/calculate", "personal")]
+    [InlineData("web_fetch", "web_fetch", "team")]
+    [InlineData("file_write", "file_write", "public")]
+    public async Task TrustVerb_saves_a_non_shell_phrase_that_equals_the_tool_name(
+        string phrase,
+        string tool,
+        string audience)
+    {
+        var exit = await ApprovalsCommand.RunAsync(
+            ["approvals", "trust-verb", phrase, "--tool", tool, "--audience", audience],
+            _paths,
+            _output);
+
+        Assert.Equal(0, exit);
+        var wire = TrustAudiences.All.Single(a => a.ToWireValue() == audience);
+        Assert.Equal(phrase, Assert.Single(_store.GetApprovedEntries(wire, tool)).Verb);
+    }
+
+    [Fact]
+    public async Task TrustVerb_resolves_the_llm_alias_before_it_compares_the_phrase()
+    {
+        // `demo-utilities__calculate` is the alias the model sees. The grant is stored
+        // and matched under the canonical name, so the phrase must be the canonical name.
+        var refused = await ApprovalsCommand.RunAsync(
+            ["approvals", "trust-verb", "demo-utilities__calculate", "--tool", "demo-utilities__calculate"],
+            _paths,
+            _output);
+        Assert.Equal(1, refused);
+        Assert.Contains(
+            "If the tool is named 'demo-utilities/calculate', run: netclaw approvals trust-verb demo-utilities/calculate --tool demo-utilities/calculate --audience personal",
+            _output.ToString());
+
+        var saved = await ApprovalsCommand.RunAsync(
+            ["approvals", "trust-verb", "demo-utilities/calculate", "--tool", "demo-utilities__calculate"],
+            _paths,
+            _output);
+        Assert.Equal(0, saved);
+        Assert.Single(_store.GetApprovedEntries(TrustAudience.Personal, "demo-utilities/calculate"));
     }
 
     [Fact]
     public async Task TrustVerb_rejects_shell_selector_for_non_shell_tool()
     {
         var exit = await ApprovalsCommand.RunAsync(
-            ["approvals", "trust-verb", "create-page", "--tool", "notion/create-page", "--shell", "bash"],
+            ["approvals", "trust-verb", "notion/create-page", "--tool", "notion/create-page", "--shell", "bash"],
             _paths,
             _output);
 
@@ -764,7 +852,7 @@ public sealed class ApprovalsCommandTests : IDisposable
         // grant should land under the canonical key so the runtime
         // approval gate — which queries canonical — finds it.
         var exit = await ApprovalsCommand.RunAsync(
-            ["approvals", "trust-verb", "freshdesk", "--tool", "notion__create-pages"],
+            ["approvals", "trust-verb", "notion/create-pages", "--tool", "notion__create-pages"],
             _paths, _output);
 
         Assert.Equal(0, exit);
