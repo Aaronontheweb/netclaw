@@ -32,6 +32,7 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
         .NoWrap();
     private int _gridCursor;
     private bool _confirmingSave;
+    private bool _confirmingEnableAll;
 
     private const int AudienceRow = 0;
     private const int ServerEnabledRow = 1;
@@ -279,11 +280,22 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
                 return _confirmSaveFooterNode;
             }
 
+            if (_confirmingEnableAll)
+            {
+                return new TextNode(
+                        $"Grant all {ViewModel.DiscoveredTools.Count} tools on '{ViewModel.SelectedServer}' to {ViewModel.SelectedAudience.ToWireValue()}?  " +
+                        "[Enter/Y] Enable all  [N/Esc] Cancel")
+                    .WithForeground(Color.Yellow)
+                    .Bold()
+                    .NoWrap();
+            }
+
+            var serverHint = ViewModel.IsServerAllowedForSelectedAudience() ? "[E] Disable" : "[E] Enable all";
             var hints = ViewModel.CurrentState.Value switch
             {
                 ToolPermissionsState.ServerList => "[Enter] Select  [Esc] Quit  [Ctrl+Q] Quit",
                 ToolPermissionsState.ToolGrid =>
-                    "[↑/↓] Navigate  [←/→] Change  [Space] Toggle  [A] All  [Enter] Done  [Esc] Back",
+                    $"[↑/↓] Navigate  [←/→] Change  [Space] Toggle  [A] All  {serverHint}  [Enter] Done  [Esc] Back",
                 _ => ""
             };
 
@@ -341,6 +353,12 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
             return;
         }
 
+        if (_confirmingEnableAll)
+        {
+            HandleEnableAllConfirmation(keyInfo);
+            return;
+        }
+
         if (keyInfo.Key == ConsoleKey.Escape)
         {
             if (ViewModel.CurrentState.Value == ToolPermissionsState.ToolGrid)
@@ -394,7 +412,7 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
                     return;
 
                 case ConsoleKey.E:
-                    ViewModel.ToggleServerAccess();
+                    RequestToggleServerAccess();
                     return;
 
                 case ConsoleKey.M:
@@ -422,19 +440,19 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
 
     private void HandleRightArrow() => DispatchGridAction(
         ViewModel.CycleAudience,
-        ViewModel.ToggleServerAccess,
+        RequestToggleServerAccess,
         ViewModel.CycleServerDefault,
         idx => ViewModel.CycleToolOverride(new ToolName(ViewModel.DiscoveredTools[idx])));
 
     private void HandleLeftArrow() => DispatchGridAction(
         ViewModel.CycleAudienceBack,
-        ViewModel.ToggleServerAccess,
+        RequestToggleServerAccess,
         ViewModel.CycleServerDefaultBack,
         idx => ViewModel.CycleToolOverrideBack(new ToolName(ViewModel.DiscoveredTools[idx])));
 
     private void HandleToggle() => DispatchGridAction(
         ViewModel.CycleAudience,
-        ViewModel.ToggleServerAccess,
+        RequestToggleServerAccess,
         ViewModel.CycleServerDefault,
         idx => ViewModel.ToggleTool(new ToolName(ViewModel.DiscoveredTools[idx])));
 
@@ -462,6 +480,38 @@ public sealed class McpToolPermissionsPage : ReactivePage<McpToolPermissionsView
                 {
                     toolAction(_gridCursor - FirstToolRow);
                 }
+                break;
+        }
+    }
+
+    // Enabling an Allowlist server grants every tool on it. That replaces a trimmed grant list,
+    // so it waits for a yes. Disabling, and enabling in the All mode, grant nothing.
+    private void RequestToggleServerAccess()
+    {
+        if (!ViewModel.EnablingServerGrantsAllTools())
+        {
+            ViewModel.ToggleServerAccess();
+            return;
+        }
+
+        _confirmingEnableAll = true;
+        InvalidateAndRedraw();
+    }
+
+    private void HandleEnableAllConfirmation(ConsoleKeyInfo keyInfo)
+    {
+        switch (keyInfo.Key)
+        {
+            case ConsoleKey.Enter:
+            case ConsoleKey.Y:
+                _confirmingEnableAll = false;
+                ViewModel.ToggleServerAccess();
+                break;
+
+            case ConsoleKey.N:
+            case ConsoleKey.Escape:
+                _confirmingEnableAll = false;
+                InvalidateAndRedraw();
                 break;
         }
     }

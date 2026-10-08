@@ -327,6 +327,126 @@ public sealed class McpToolPermissionsPageTests : IDisposable
         Assert.NotEqual(wasBefore, vm.IsServerAllowedForSelectedAudience());
     }
 
+    private static readonly string[] EnableAllTools = ["create-pages", "search", "list-databases"];
+
+    private async Task<(VirtualTerminal Terminal, McpToolPermissionsViewModel Vm)> RunTeamGridAsync(
+        Action<VirtualInputSource> keys)
+    {
+        // Team starts as an empty Allowlist, so enabling the server grants every tool.
+        var (terminal, app, vm) = CreateHeadlessApp(out var input);
+        vm.InitializeForTests(new McpServerName("notion"), EnableAllTools);
+        vm.SetSelectedAudienceForTests(TrustAudience.Team);
+
+        keys(input);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+        return (terminal, vm);
+    }
+
+    [Fact]
+    public async Task ToolGrid_FooterLabelsEOnADisabledAllowlistServerAsEnableAll()
+    {
+        var (terminal, _) = await RunTeamGridAsync(_ => { });
+
+        Assert.True(terminal.Contains("[E] Enable all"), $"Screen:\n{terminal}");
+        Assert.False(terminal.Contains("[E] Disable"), $"Screen:\n{terminal}");
+    }
+
+    [Fact]
+    public async Task ToolGrid_E_OnADisabledAllowlistServer_AsksBeforeGrantingAnything()
+    {
+        var (terminal, vm) = await RunTeamGridAsync(input => input.EnqueueKey(ConsoleKey.E));
+
+        Assert.True(terminal.Contains("Grant all 3 tools on 'notion' to team?"), $"Screen:\n{terminal}");
+        Assert.False(vm.IsServerAllowedForSelectedAudience());
+        Assert.False(vm.HasUnsavedChanges);
+        Assert.All(EnableAllTools, tool => Assert.False(vm.IsToolGranted(new ToolName(tool))));
+    }
+
+    [Theory]
+    [InlineData(ConsoleKey.Enter)]
+    [InlineData(ConsoleKey.Y)]
+    public async Task ToolGrid_E_ThenConfirm_EnablesTheServerWithEveryTool(ConsoleKey confirm)
+    {
+        var (terminal, vm) = await RunTeamGridAsync(input =>
+        {
+            input.EnqueueKey(ConsoleKey.E);
+            input.EnqueueKey(confirm);
+        });
+
+        Assert.True(vm.IsServerAllowedForSelectedAudience());
+        Assert.All(EnableAllTools, tool => Assert.True(vm.IsToolGranted(new ToolName(tool))));
+        Assert.False(terminal.Contains("Grant all"), $"Screen:\n{terminal}");
+    }
+
+    [Theory]
+    [InlineData(ConsoleKey.N)]
+    [InlineData(ConsoleKey.Escape)]
+    public async Task ToolGrid_E_ThenCancel_GrantsNothing(ConsoleKey cancel)
+    {
+        var (terminal, vm) = await RunTeamGridAsync(input =>
+        {
+            input.EnqueueKey(ConsoleKey.E);
+            input.EnqueueKey(cancel);
+        });
+
+        Assert.False(vm.IsServerAllowedForSelectedAudience());
+        Assert.False(vm.HasUnsavedChanges);
+        Assert.All(EnableAllTools, tool => Assert.False(vm.IsToolGranted(new ToolName(tool))));
+        Assert.False(terminal.Contains("Grant all"), $"Screen:\n{terminal}");
+        Assert.True(terminal.Contains("Navigate"), $"Screen:\n{terminal}");
+    }
+
+    [Fact]
+    public async Task ToolGrid_SpaceOnServerEnabledRow_AsksTheSameQuestionAsE()
+    {
+        var (terminal, vm) = await RunTeamGridAsync(input =>
+        {
+            input.EnqueueKey(ConsoleKey.DownArrow);
+            input.EnqueueKey(ConsoleKey.Spacebar);
+        });
+
+        Assert.True(terminal.Contains("Grant all 3 tools on 'notion' to team?"), $"Screen:\n{terminal}");
+        Assert.False(vm.IsServerAllowedForSelectedAudience());
+    }
+
+    [Fact]
+    public async Task ToolGrid_E_OnAnEnabledServer_DisablesWithoutAsking()
+    {
+        var (terminal, vm) = await RunTeamGridAsync(input =>
+        {
+            input.EnqueueKey(ConsoleKey.E);
+            input.EnqueueKey(ConsoleKey.Y);
+            input.EnqueueKey(ConsoleKey.E);
+        });
+
+        Assert.False(vm.IsServerAllowedForSelectedAudience());
+        Assert.False(terminal.Contains("Grant all"), $"Screen:\n{terminal}");
+        Assert.True(terminal.Contains("[E] Enable all"), $"Screen:\n{terminal}");
+    }
+
+    [Fact]
+    public async Task ToolGrid_E_InAllMode_TogglesWithoutAsking()
+    {
+        // An All profile keeps no grant list, so enabling there grants nothing.
+        var (terminal, app, vm) = CreateHeadlessApp(out var input);
+        vm.InitializeForTests(new McpServerName("notion"), EnableAllTools);
+        vm.SetSelectedAudienceForTests(TrustAudience.Personal);
+
+        input.EnqueueKey(ConsoleKey.E);
+        input.EnqueueKey(ConsoleKey.E);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        Assert.True(vm.IsServerAllowedForSelectedAudience());
+        Assert.False(terminal.Contains("Grant all"), $"Screen:\n{terminal}");
+        Assert.True(terminal.Contains("[E] Disable"), $"Screen:\n{terminal}");
+    }
+
     [Fact]
     public async Task ToolGrid_ManyTools_HeaderRowsNotOverwrittenByScrollContent()
     {

@@ -743,6 +743,16 @@ public sealed class McpToolPermissionsViewModel : ReactiveViewModel
         return IsServerAllowed(new McpServerName(SelectedServer), profile);
     }
 
+    /// <summary>
+    /// Whether enabling the selected server for the selected audience grants every discovered
+    /// tool. An All-mode profile already allows the server and keeps no grant list.
+    /// </summary>
+    public bool EnablingServerGrantsAllTools()
+        => SelectedServer is not null
+           && DiscoveredTools.Count > 0
+           && !UsesAllMcpServersMode()
+           && !IsServerAllowedForSelectedAudience();
+
     public void ToggleServerAccess()
     {
         if (SelectedServer is null)

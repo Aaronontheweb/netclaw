@@ -1529,7 +1529,7 @@ internal static class McpCommand
         writer.WriteLine("Options:");
         writer.WriteLine("  --audience <name>     Filter to a specific audience (public, team, personal)");
         writer.WriteLine("  --snapshot            Populate McpServerToolGrants from currently discovered tools");
-        writer.WriteLine("  --grant <tools>       Grant comma-separated tools (requires --audience)");
+        writer.WriteLine("  --grant <tools>       Grant comma-separated tools (requires --audience); also allows the server for that audience");
         writer.WriteLine("  --revoke <tools>      Revoke comma-separated tools (requires --audience)");
         writer.WriteLine();
         writer.WriteLine("Examples:");
@@ -1766,6 +1766,11 @@ internal static class McpCommand
             return 0;
         }
 
+        // A grant has no effect while the server is missing from the audience allow-list, so a
+        // grant adds the server. Removing the last tool never takes the server off the list.
+        var serverAllowed = profile.AllowedMcpServers.Contains(serverName.Value, StringComparer.OrdinalIgnoreCase);
+        var allowServer = grantTools is { Count: > 0 } && !serverAllowed;
+
         HashSet<string> currentTools;
         if (profile.McpServerToolGrants is { } existing
             && existing.TryGetValue(serverName.Value, out var currentList))
@@ -1774,8 +1779,12 @@ internal static class McpCommand
         }
         else
         {
-            // No grants configured yet — start from all discovered tools
-            currentTools = new HashSet<string>(discoveredTools, StringComparer.Ordinal);
+            // A server without a grants entry exposes every tool once the audience allows it.
+            // Start from all tools only when the audience already allows the server, so
+            // allowing it for a single grant never exposes the rest.
+            currentTools = allowServer
+                ? new HashSet<string>(StringComparer.Ordinal)
+                : new HashSet<string>(discoveredTools, StringComparer.Ordinal);
         }
 
         if (grantTools is not null)
@@ -1800,6 +1809,9 @@ internal static class McpCommand
         grants[serverName.Value] = currentTools.Order(StringComparer.Ordinal).ToList();
         audienceSection["McpServerToolGrants"] = grants;
 
+        if (allowServer)
+            audienceSection["AllowedMcpServers"] = new List<string>(profile.AllowedMcpServers) { serverName.Value };
+
         WriteConfigFile(paths.NetclawConfigPath, config);
 
         var changes = new List<string>();
@@ -1809,6 +1821,10 @@ internal static class McpCommand
             changes.Add($"revoked {revokeTools.Count}");
 
         writer.WriteLine($"Updated {audienceName} profile for '{serverName.Value}': {string.Join(", ", changes)} tool(s). {currentTools.Count} total granted.");
+        if (allowServer)
+            writer.WriteLine($"Also allowed server '{serverName.Value}' for {audienceName}.");
+        else if (serverAllowed && currentTools.Count == 0)
+            writer.WriteLine($"No tools remain granted. Server '{serverName.Value}' stays in the {audienceName} AllowedMcpServers list.");
         return 0;
     }
 
