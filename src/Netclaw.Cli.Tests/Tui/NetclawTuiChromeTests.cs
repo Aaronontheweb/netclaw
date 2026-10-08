@@ -30,10 +30,22 @@ public sealed class NetclawTuiChromeTests
     public void SeedTextInput_ReseedingAnExistingNodeMovesTheCursorToTheNewEnd()
     {
         var input = new TextInputNode();
-        NetclawTuiChrome.SeedTextInput(input, "a-much-longer-first-value");
-
         NetclawTuiChrome.SeedTextInput(input, "short");
 
-        Assert.Equal(5, input.CursorPosition);
+        NetclawTuiChrome.SeedTextInput(input, "a-much-longer-second-value");
+
+        Assert.Equal("a-much-longer-second-value".Length, input.CursorPosition);
+    }
+
+    [Fact]
+    public void SeedTextInput_OnAFocusedNode_TypedTextAppendsToTheSeed()
+    {
+        var input = new TextInputNode();
+        input.OnFocused();
+
+        NetclawTuiChrome.SeedTextInput(input, "abc");
+        input.HandleInput(new ConsoleKeyInfo('Z', ConsoleKey.Z, shift: true, alt: false, control: false));
+
+        Assert.Equal("abcZ", input.Text);
     }
 }
