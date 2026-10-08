@@ -27,6 +27,73 @@ public sealed class ConfigEditorSessionTests : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
+    // `netclaw config` and the redo flow save through this writer.
+    [Fact]
+    public void Save_keeps_the_mode_of_an_owner_only_config()
+    {
+        if (OperatingSystem.IsWindows())
+            return; // file modes are a POSIX concept
+
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "configVersion": 1 }""");
+        File.SetUnixFileMode(_paths.NetclawConfigPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        var session = new ConfigEditorSession(_paths);
+        session.Apply(new SectionContribution([new SectionFieldAction("Daemon.Port", SectionFieldActionKind.Set, 5299)]));
+        session.Save();
+
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(_paths.NetclawConfigPath));
+    }
+
+    // A link into a directory that cannot take a new file: the save replaces the link, as it did
+    // before links were followed, and does not fail.
+    [Fact]
+    public void Save_replaces_a_symbolic_link_whose_target_directory_is_read_only()
+    {
+        if (OperatingSystem.IsWindows() || Environment.UserName == "root")
+            return; // needs POSIX permissions and a non-root user
+
+        var targetDir = Path.Combine(_dir.Path, "dotfiles");
+        Directory.CreateDirectory(targetDir);
+        var real = Path.Combine(targetDir, "netclaw.json");
+        File.WriteAllText(real, """{ "configVersion": 1, "Security": { "DeploymentPosture": "Team" } }""");
+        File.CreateSymbolicLink(_paths.NetclawConfigPath, real);
+        File.SetUnixFileMode(targetDir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            var session = new ConfigEditorSession(_paths);
+            session.Apply(new SectionContribution([new SectionFieldAction("Daemon.Port", SectionFieldActionKind.Set, 5299)]));
+            session.Save();
+
+            Assert.Null(new FileInfo(_paths.NetclawConfigPath).LinkTarget);
+            Assert.Contains("5299", File.ReadAllText(_paths.NetclawConfigPath), StringComparison.Ordinal);
+            Assert.Contains("Team", File.ReadAllText(_paths.NetclawConfigPath), StringComparison.Ordinal);
+        }
+        finally
+        {
+            File.SetUnixFileMode(targetDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
+    [Fact]
+    public void Save_writes_into_the_key_spelling_the_file_already_has()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "daemon": { "port": 5000, "Host": "10.0.0.5" } }""");
+
+        var session = new ConfigEditorSession(_paths);
+        session.Apply(new SectionContribution(
+        [
+            new SectionFieldAction("Daemon.Port", SectionFieldActionKind.Set, 5299),
+            new SectionFieldAction("Daemon.Host", SectionFieldActionKind.Delete)
+        ]));
+        session.Save();
+
+        using var doc = JsonDocument.Parse(File.ReadAllText(_paths.NetclawConfigPath));
+        var daemon = Assert.Single(doc.RootElement.EnumerateObject(), p => p.Name.Equals("daemon", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal("daemon", daemon.Name);
+        Assert.Equal(5299, daemon.Value.GetProperty("port").GetInt32());
+        Assert.False(daemon.Value.TryGetProperty("Host", out _));
+    }
+
     [Fact]
     public void Save_AppliesFieldActionsAndPreservesSiblings()
     {

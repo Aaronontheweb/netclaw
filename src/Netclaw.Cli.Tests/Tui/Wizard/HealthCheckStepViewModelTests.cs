@@ -93,7 +93,7 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
         Assert.DoesNotContain("Daemon did not become ready", failure.Label, StringComparison.Ordinal);
         Assert.Contains(crashLogPath, failure.Label, StringComparison.Ordinal);
         Assert.Equal(
-            "Setup complete with warnings. Run `netclaw daemon start`, then `netclaw chat`. Adjust settings with `netclaw config`.",
+            "Setup complete with warnings. Run `netclaw daemon start`, then `netclaw chat --onboarding`. Adjust settings with `netclaw config`.",
             context.StatusMessage.Value);
         Assert.False(step.Succeeded.Value);
     }

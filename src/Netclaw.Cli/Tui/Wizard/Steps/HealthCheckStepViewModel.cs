@@ -296,7 +296,7 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         else if (_context is not null)
         {
             _context.StatusMessage.Value =
-                "Setup complete with warnings. Run `netclaw daemon start`, then `netclaw chat`. Adjust settings with `netclaw config`.";
+                "Setup complete with warnings. Run `netclaw daemon start`, then `netclaw chat --onboarding`. Adjust settings with `netclaw config`.";
         }
     }
 

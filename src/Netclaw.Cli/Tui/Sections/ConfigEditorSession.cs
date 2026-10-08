@@ -65,14 +65,17 @@ internal sealed class ConfigEditorSession
         var changed = false;
         foreach (var action in contribution.FieldActionsOrEmpty)
         {
+            // The daemon reads keys without case: write into the spelling the file already has,
+            // or the file gets a second "Identity" beside "identity" and the daemon will not start.
+            var path = ConfigFileHelper.ResolveExistingKeyPath(config, action.Path);
             switch (action.Action)
             {
                 case SectionFieldActionKind.Set:
-                    ConfigFileHelper.SetPathValue(config, action.Path, action.Value);
+                    ConfigFileHelper.SetPathValue(config, path, action.Value);
                     changed = true;
                     break;
                 case SectionFieldActionKind.Delete:
-                    changed |= ConfigFileHelper.RemovePath(config, action.Path);
+                    changed |= ConfigFileHelper.RemovePath(config, path);
                     break;
             }
         }

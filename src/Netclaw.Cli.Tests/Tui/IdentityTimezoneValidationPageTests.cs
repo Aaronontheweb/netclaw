@@ -47,6 +47,7 @@ public sealed class IdentityTimezoneValidationPageTests : IDisposable
     [Fact]
     public async Task Unknown_stored_timezone_is_shown_and_blocks_the_save()
     {
+        var configBefore = File.ReadAllText(_paths.NetclawConfigPath);
         var (terminal, app, vm) = CreateHeadlessApp(out var input);
 
         input.EnqueueKey(ConsoleKey.Enter); // agent name
@@ -63,11 +64,13 @@ public sealed class IdentityTimezoneValidationPageTests : IDisposable
         Assert.True(terminal.Contains("Unknown time zone 'Not/AZone'. Use an IANA id such as America/Chicago."),
             $"Expected the unknown-zone message. Screen:\n{terminal}");
         Assert.False(File.Exists(_paths.SoulPath), "SOUL.md must not be written for an invalid timezone.");
+        Assert.Equal(configBefore, File.ReadAllText(_paths.NetclawConfigPath));
     }
 
     [Fact]
     public async Task Pressing_enter_again_on_a_rejected_timezone_is_rejected_again()
     {
+        var configBefore = File.ReadAllText(_paths.NetclawConfigPath);
         var (terminal, app, vm) = CreateHeadlessApp(out var input);
 
         input.EnqueueKey(ConsoleKey.Enter); // agent name
@@ -83,6 +86,7 @@ public sealed class IdentityTimezoneValidationPageTests : IDisposable
         Assert.False(vm.IsSaved.Value, $"A second Enter must not save the host default. Screen:\n{terminal}");
         Assert.Equal("Not/AZone", vm.Step.UserTimezone);
         Assert.False(File.Exists(_paths.SoulPath), "SOUL.md must not be written for an invalid timezone.");
+        Assert.Equal(configBefore, File.ReadAllText(_paths.NetclawConfigPath));
     }
 
     [Fact]

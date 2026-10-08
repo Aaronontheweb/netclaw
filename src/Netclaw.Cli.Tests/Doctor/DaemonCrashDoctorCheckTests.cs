@@ -74,6 +74,34 @@ public sealed class DaemonCrashDoctorCheckTests : IDisposable
         Assert.Equal(DoctorSeverity.Pass, result.Severity);
     }
 
+    [Fact]
+    public async Task Notes_a_retention_shorter_than_the_window()
+    {
+        var paths = CreateTempPaths();
+        await File.WriteAllTextAsync(paths.NetclawConfigPath,
+            """{ "configVersion": 1, "Retention": { "Logs": { "Days": 3 } } }""", TestContext.Current.CancellationToken);
+
+        var result = await new DaemonCrashDoctorCheck(paths, new FakeTimeProvider(DateTimeOffset.Parse("2026-04-14T18:30:00Z")))
+            .RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.Contains("Log retention is set to 3 days", result.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("""{ "configVersion": 1, "Retention": { "Logs": { "Days": 0 } } }""")]
+    [InlineData("""{ "configVersion": 1, "Retention": { "Logs": { "Days": 7 } } }""")]
+    [InlineData("""{ "configVersion": 1 }""")]
+    public async Task Stays_silent_when_retention_covers_the_window(string json)
+    {
+        var paths = CreateTempPaths();
+        await File.WriteAllTextAsync(paths.NetclawConfigPath, json, TestContext.Current.CancellationToken);
+
+        var result = await new DaemonCrashDoctorCheck(paths, new FakeTimeProvider(DateTimeOffset.Parse("2026-04-14T18:30:00Z")))
+            .RunAsync(TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain("retention", result.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     private NetclawPaths CreateTempPaths()
     {
         var basePath = Path.Combine(_temp.Path, Guid.NewGuid().ToString("N"));
