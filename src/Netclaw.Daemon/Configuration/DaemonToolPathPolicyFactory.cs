@@ -50,11 +50,7 @@ internal static class DaemonToolPathPolicyFactory
         // process, which no path operand names.
         var home = shellEnvironment.HomeDirectory
             ?? Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        string[] credentialLocations =
-        [
-            Path.Combine(home, ".ssh"),
-            Path.Combine(home, ".aws"),
-        ];
+        var credentialLocations = CredentialLocations(home);
         string[] writeDenyList =
         [
             paths.ConfigDirectory,
@@ -93,4 +89,10 @@ internal static class DaemonToolPathPolicyFactory
             readDenyList,
             shellIndicatorList);
     }
+
+    // A home that is not fully qualified would put a relative entry in the lists.
+    internal static string[] CredentialLocations(string? home)
+        => home is not null && Path.IsPathFullyQualified(home)
+            ? [Path.Combine(home, ".ssh"), Path.Combine(home, ".aws")]
+            : [];
 }

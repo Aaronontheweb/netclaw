@@ -159,6 +159,27 @@ public sealed class ToolPathPolicyTests
         Assert.True(policy.CommandReferencesDeniedPath("cat $HOME/.netclaw/config/secrets.json"));
     }
 
+    // A dot directory entry shows in command text only in its home-anchored
+    // spellings. A bare name or a "/name" substring would also deny a workspace
+    // path or a pattern.
+    [SlopwatchSuppress("SW001", "The entry is a POSIX path and needs a POSIX host.")]
+    [Theory(SkipUnless = nameof(IsPosix), Skip = "The entry is a POSIX path")]
+    [InlineData("cat ~/.vault/token", true)]
+    [InlineData("cat $HOME/.vault/token", true)]
+    [InlineData("cat ${HOME}/.vault/token", true)]
+    [InlineData("cat /home/user/.vault/token", true)]
+    [InlineData("cat app/.vault/token", false)]
+    [InlineData("grep -rn '\\.vault' .", false)]
+    [InlineData("grep -rn \"/.vault\" .", false)]
+    [InlineData("curl https://example.com/x/.vault/token", false)]
+    [InlineData("curl https://docs.vault.example.com", false)]
+    public void A_dot_directory_entry_is_a_text_indicator_only_in_home_anchored_spellings(string command, bool denied)
+    {
+        var policy = new ToolPathPolicy(["/home/user/.vault"]);
+
+        Assert.Equal(denied, policy.CommandReferencesDeniedPath(command));
+    }
+
     private static ToolPathPolicy CreateProductionPolicy()
     {
         var writeDeny = new[]
