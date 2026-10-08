@@ -531,6 +531,11 @@ internal sealed class ReminderExecutionActor : ReceiveActor, IWithTimers
         {
             case OutputAction.TurnCompleted:
                 {
+                    // A failed turn emits its ErrorOutput first and a closing TurnCompleted(Failed) after it.
+                    // The error already settled the run as failed, so do not log it again as a success.
+                    if (_completed)
+                        break;
+
                     var result = _accumulator.GetAccumulatedText();
                     var notifyFailureMessage = _accumulator.BuildNotifyFailureMessage(
                         _definition.Delivery.Kind == DeliveryKind.Channel,
