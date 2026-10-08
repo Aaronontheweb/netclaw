@@ -22,6 +22,8 @@ class SpillSteerAssertionTests(unittest.TestCase):
                 for name, call_id, arguments in calls]}))
             (home / "logs" / "signalr-abc.log").write_text(
                 "[2026-10-08T16:30:03.0000000+00:00] Headless session started: signalr/abc\n"
+                "[2026-10-08T16:30:03.5000000+00:00] TOOL_RESULT: skill_load call_id=load0 "
+                "result=Error: Required meta argument '_rationale' must be a non-empty string.\n"
                 f"[2026-10-08T16:30:04.0000000+00:00] TOOL_RESULT: skill_load call_id=load1 result=## Probe{load_result}\n"
                 "[2026-10-08T16:30:05.0000000+00:00] USAGE: in=1 out=1\n")
             script = Path(__file__).with_name("run-evals.sh")
@@ -36,6 +38,15 @@ class SpillSteerAssertionTests(unittest.TestCase):
 
     def test_a_run_that_follows_the_continuation_line_passes(self):
         self.assertTrue(self.passes([self.LOAD, self.READ], "The phrase is cobalt-heron-4471.", STEER))
+
+    def test_a_repeated_load_after_a_validation_error_passes(self):
+        rejected = ("skill_load", "load0", {"Name": "eval-spill-probe"})
+        self.assertTrue(self.passes(
+            [rejected, self.LOAD, self.READ], "The phrase is cobalt-heron-4471.", STEER))
+
+    def test_a_read_through_another_call_id_fails(self):
+        other = ("tool_output_read", "read1", {"CallId": "load0", "Start": 6000})
+        self.assertFalse(self.passes([self.LOAD, other], "The phrase is cobalt-heron-4471.", STEER))
 
     def test_a_result_with_no_continuation_line_fails(self):
         self.assertFalse(self.passes([self.LOAD, self.READ], "The phrase is cobalt-heron-4471.", NO_STEER))

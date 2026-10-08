@@ -2193,20 +2193,30 @@ headless_log_result_has_spill_steer() {
 assert_complex_skill_spill_steer_single_turn() {
     local load_call_id
     stdout_json_envelope_valid || return 1
-    load_call_id=$(jq -r '
-        first(.toolCalls[]?
-            | select(.toolName == "skill_load")
-            | select((.argumentsJson // "") | ascii_downcase | contains("eval-spill-probe"))
-            | .callId) // empty' "$STDOUT_FILE" 2>/dev/null)
-    [[ -n "$load_call_id" ]] || return 1
-    headless_log_result_has_spill_steer 'skill_load' "$load_call_id" || return 1
-    jq -e --arg id "$load_call_id" '
-        any(.toolCalls[]?; .toolName == "tool_output_read" and ((.argumentsJson // "") | contains($id)))
-        and (any(.toolCalls[]?;
+    jq -e '
+        any(.toolCalls[]?;
             .toolName == "shell_execute" or .toolName == "file_read"
-            or .toolName == "file_search" or .toolName == "file_list") | not)
+            or .toolName == "file_search" or .toolName == "file_list") | not
     ' "$STDOUT_FILE" >/dev/null 2>&1 || return 1
-    stdout_response_contains 'cobalt-heron-4471'
+    stdout_response_contains 'cobalt-heron-4471' || return 1
+    # A model can repeat skill_load, for example after a validation error on
+    # its first call. One load must have the continuation line for its own call
+    # id, and the agent must read more through that same call id.
+    while IFS= read -r load_call_id; do
+        [[ -n "$load_call_id" ]] || continue
+        headless_log_result_has_spill_steer 'skill_load' "$load_call_id" || continue
+        if jq -e --arg id "$load_call_id" '
+                any(.toolCalls[]?;
+                    .toolName == "tool_output_read" and ((.argumentsJson // "") | contains($id)))
+            ' "$STDOUT_FILE" >/dev/null 2>&1; then
+            return 0
+        fi
+    done < <(jq -r '
+        .toolCalls[]?
+        | select(.toolName == "skill_load")
+        | select((.argumentsJson // "") | ascii_downcase | contains("eval-spill-probe"))
+        | .callId' "$STDOUT_FILE" 2>/dev/null)
+    return 1
 }
 
 # Large FILE: a pre-seeded ~314 KB file (>256 KB, so file_read returns a bounded
