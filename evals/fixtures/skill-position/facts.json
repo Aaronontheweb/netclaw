@@ -12,14 +12,15 @@
     {"case": "skill_position_reference_middle", "file": "netclaw-operations/references/scheduling.md", "needle": "12 days after it ran", "zones": ["hidden"], "exclusive": true},
     {"case": "skill_position_reference_middle_steer", "file": "netclaw-operations/references/scheduling.md", "needle": "12 days after it ran", "zones": ["hidden"], "exclusive": true},
     {"case": "skill_position_right_reference_operations", "file": "netclaw-operations/references/webhooks.md", "needle": "X-TextForge-Signature", "zones": ["visible"], "exclusive": true},
-    {"case": "skill_position_memory_no_recall_block", "file": "netclaw-memory/SKILL.md", "needle": "Never tell the user \"my memory isn't\n  working\" just because a turn had no `[memory-recall]` block.", "zones": ["head"], "exclusive": true},
-    {"case": "skill_position_memory_tool_choice", "file": "netclaw-memory/SKILL.md", "needle": "### `find_memories` + `get_memories`", "zones": ["hidden"], "exclusive": true},
-    {"case": "skill_position_memory_tool_choice", "file": "netclaw-memory/SKILL.md", "needle": "Use only to correct or supersede an existing memory.", "zones": ["tail"], "exclusive": true},
+    {"case": "skill_position_memory_no_recall_block", "file": "netclaw-memory/SKILL.md", "needle": "it is not evidence that memory is broken", "zones": ["visible"], "exclusive": true},
+    {"case": "skill_position_memory_tool_choice", "file": "netclaw-memory/SKILL.md", "needle": "### `find_memories` + `get_memories`", "zones": ["visible"], "exclusive": true},
+    {"case": "skill_position_memory_tool_choice", "file": "netclaw-memory/SKILL.md", "needle": "Use it only to correct or supersede an existing memory.", "zones": ["visible"], "exclusive": true},
+    {"case": "skill_position_right_reference_memory", "file": "netclaw-memory/references/recall-internals.md", "needle": "The floor is 0.24", "zones": ["visible"], "exclusive": true},
     {"case": "skill_progressive_disclosure", "file": "netclaw-operations/references/scheduling.md", "needle": "5 consecutive", "zones": ["head"], "exclusive": true},
     {"case": "skill_progressive_disclosure", "file": "netclaw-operations/references/scheduling.md", "needle": "ReminderAutoDisabled", "zones": ["head"], "exclusive": true},
     {"case": "skill_cron_tz_timezone", "file": "netclaw-operations/references/scheduling.md", "needle": "CRON_TZ", "zones": ["head"], "exclusive": false},
     {"case": "skill_mattermost_current_session", "file": "netclaw-operations/references/scheduling.md", "needle": "current_session", "zones": ["head"], "exclusive": false},
     {"case": "skill_device_pairing_procedure", "file": "netclaw-operations/references/devices.md", "needle": "docker exec", "zones": ["visible"], "exclusive": true},
-    {"case": "skill_memory_knowledge", "file": "netclaw-memory/SKILL.md", "needle": "| `evidence` | Search (`find_memories`)", "zones": ["tail"], "exclusive": true}
+    {"case": "skill_memory_knowledge", "file": "netclaw-memory/SKILL.md", "needle": "| `evidence` | Search (`find_memories`)", "zones": ["visible"], "exclusive": true}
   ]
 }

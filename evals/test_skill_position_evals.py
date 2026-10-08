@@ -312,6 +312,22 @@ class AssertionTests(unittest.TestCase):
         passed, _ = self.run_assertion("applicable_skill_position_right_reference_memory", [], [])
         self.assertFalse(passed)
 
+    def test_memory_reference_case_reads_only_the_recall_reference(self):
+        load = ("skill_load", "load1", {"Name": "netclaw-memory"})
+        recall = ("skill_read_resource", "r1", {
+            "SkillName": "netclaw-memory", "ResourcePath": "references/recall-internals.md"})
+        other = ("skill_read_resource", "r2", {
+            "SkillName": "netclaw-memory", "ResourcePath": "references/diagnostics.md"})
+        passed, _ = self.run_assertion(
+            "assert_skill_position_right_reference_memory",
+            [envelope([load, recall], "The floor is 0.24.")], [])
+        self.assertTrue(passed)
+        passed, details = self.run_assertion(
+            "assert_skill_position_right_reference_memory",
+            [envelope([load, recall, other], "The floor is 0.24.")], [])
+        self.assertFalse(passed)
+        self.assertEqual("unrelated-reference-read", details)
+
 
 if __name__ == "__main__":
     unittest.main()
