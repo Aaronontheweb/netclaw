@@ -1644,9 +1644,9 @@ public sealed record ShellCommandAnalysis
         return redirect switch
         {
             HereDocumentRedirectAnalysis heredoc =>
-                !HasBoundedDataOnlyStdin(occurrence, heredoc),
+                !HasFixedTextStdin(occurrence, heredoc),
             HereStringRedirectAnalysis hereString =>
-                !HasBoundedDataOnlyStdin(occurrence, hereString),
+                !HasFixedTextStdin(occurrence, hereString),
             DescriptorDuplicateRedirectAnalysis duplicate =>
                 duplicate.TargetDescriptor < 0,
             DescriptorMoveRedirectAnalysis move => move.TargetDescriptor < 0,
@@ -1658,41 +1658,114 @@ public sealed record ShellCommandAnalysis
         };
     }
 
-    private static bool HasBoundedDataOnlyStdin(
+    /// <summary>
+    /// Returns true when a heredoc gives fixed text on stdin to a command that
+    /// can take it as data.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A heredoc with a quoted delimiter does not expand its body. Netclaw
+    /// treats the text as it treats text from a pipe: it reads no path and no
+    /// command from it. The command keeps its normal candidate: a grant for
+    /// <c>python3</c> covers <c>python3 - &lt;&lt;'EOF'</c> as it covers
+    /// <c>python3 -c '...'</c>. Each interpreter rule that applies to the
+    /// argument form also applies to this form.
+    /// </para>
+    /// <para>
+    /// SECURITY: an unquoted delimiter expands the body. ShellSyntaxTree marks
+    /// such a heredoc <c>Expand</c> and does not prove that the body has no
+    /// expansion, so it stays unresolved. Some receivers also stay unresolved:
+    /// see <see cref="CanTakeFixedStdinText(CommandOccurrence)"/>.
+    /// </para>
+    /// </remarks>
+    private static bool HasFixedTextStdin(
         CommandOccurrence occurrence,
         HereDocumentRedirectAnalysis redirect)
-    {
-        var clause = occurrence.Clause;
-        if (!IsStandardInputSource(redirect.Source)
-            || clause.Verb.Tokens.Count != 1
-            || !string.Equals(
-                LegacyShellTextScan.TrimShellPunctuation(clause.Verb.Tokens[0]),
-                "cat",
-                StringComparison.Ordinal)
-            || clause.Args.Any(static arg => !arg.IsCwdAttribution))
-        {
-            return false;
-        }
+        => IsStandardInputSource(redirect.Source)
+            && CanTakeFixedStdinText(occurrence)
+            && HasLiteralHereDocument(
+                redirect.Document,
+                occurrence.Clause.IsCommandStringWrapped);
 
-        return HasLiteralHereDocument(
-            redirect.Document,
-            clause.IsCommandStringWrapped);
-    }
-
-    private static bool HasBoundedDataOnlyStdin(
+    /// <summary>
+    /// Returns true when a here string gives a proved value on stdin to a
+    /// command that can take it as data. The rule is the heredoc rule of
+    /// <see cref="HasFixedTextStdin(CommandOccurrence, HereDocumentRedirectAnalysis)"/>.
+    /// </summary>
+    /// <remarks>
+    /// SECURITY: ShellSyntaxTree gives an <c>Exact</c> or <c>FiniteSet</c>
+    /// value only when it proves the word. A word with an unknown variable or
+    /// a command substitution has an unknown value and stays unresolved.
+    /// </remarks>
+    private static bool HasFixedTextStdin(
         CommandOccurrence occurrence,
         HereStringRedirectAnalysis redirect)
-    {
-        var clause = occurrence.Clause;
-        return IsStandardInputSource(redirect.Source)
-            && clause.Verb.Tokens.Count == 1
-            && string.Equals(
-                LegacyShellTextScan.TrimShellPunctuation(clause.Verb.Tokens[0]),
-                "cat",
-                StringComparison.Ordinal)
-            && !clause.Args.Any(static arg => !arg.IsCwdAttribution)
+        => IsStandardInputSource(redirect.Source)
+            && CanTakeFixedStdinText(occurrence)
             && HasBoundedData(redirect.Data);
-    }
+
+    /// <summary>
+    /// Returns true when the command has known command words and no word that
+    /// can name a shell.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// A command with Unknown command words has no grant identity, for example
+    /// <c>python3 - "$f"</c> in a loop. Its literal twins (F1) cannot carry a
+    /// heredoc, so the resolved command would get a rewrite correction that no
+    /// rewrite can satisfy. Such a command keeps the one exact candidate.
+    /// </para>
+    /// <para>
+    /// SECURITY: a shell reads stdin as a script. For <c>bash -c '...'</c>,
+    /// Netclaw analyzes the script as child commands, so the hard-deny and
+    /// path rules see each command. Netclaw does not analyze the text of a
+    /// heredoc or a here string as a script. Thus such text to a shell stays
+    /// unresolved, and a grant for the shell does not cover it. Text from a
+    /// pipe (<c>printf ... | bash</c>) is outside this rule.
+    /// </para>
+    /// <para>
+    /// The file name of each verb word decides (<c>bash</c>, <c>./bash</c>,
+    /// <c>/usr/local/bin/bash</c>, <c>env sh</c>, <c>xargs bash</c>). An
+    /// argument with a proved value that is a shell file name
+    /// (<c>timeout 5 /opt/x/bash</c>), and an argument with no proved value,
+    /// also keep the command unresolved. The existing <c>-c</c> wrapper rule
+    /// reads a shell word in an argument in the same way. A shell can also
+    /// be one word inside an argument: <c>env -S 'bash -s'</c>,
+    /// <c>ssh host 'bash -s'</c>, <c>flock x -c 'bash -s'</c>. Netclaw does
+    /// not read the private grammar of a program, so each part of a proved
+    /// value between white space gets the same file name test. The cost is
+    /// that <c>grep bash &lt;&lt;'EOF'</c> and
+    /// <c>grep 'run bash now' &lt;&lt;'EOF'</c> are also unresolved; this is
+    /// the safe direction. The shell names are policy data.
+    /// </para>
+    /// </remarks>
+    private static bool CanTakeFixedStdinText(CommandOccurrence occurrence)
+        => occurrence.CommandWords is ShellCommandWords.Known
+            && !HasShellReceiver(occurrence);
+
+    private static bool HasShellReceiver(CommandOccurrence occurrence)
+        => occurrence.Clause.Verb.Tokens.Any(ShellVerbPolicyData.IsScriptShellProgram)
+            || occurrence.Arguments.Any(static argument =>
+                !argument.Argument.IsCwdAttribution
+                && MayNameScriptShell(argument.Value));
+
+    private static bool MayNameScriptShell(ShellValueDomain value)
+        => value switch
+        {
+            ShellValueDomain.Exact exact => exact.Value is null
+                || HasScriptShellWord(exact.Value),
+            ShellValueDomain.FiniteSet finite => finite.Values.Any(static item =>
+                item is null || HasScriptShellWord(item)),
+            _ => true
+        };
+
+    // Owner decision 2026-10-08: each part of the value between white space
+    // gets the test, so a shell inside one argument stays strict. To test only
+    // the whole value, return ShellVerbPolicyData.IsScriptShellProgram(value).
+    private static bool HasScriptShellWord(string value)
+        => value
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries)
+            .Any(ShellVerbPolicyData.IsScriptShellProgram);
 
     private static bool IsKnownRedirectSource(RedirectSource source)
         => source is RedirectSource.Default

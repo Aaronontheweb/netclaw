@@ -428,6 +428,49 @@ Leaks today:
 | Data | Call-local. |
 | Rules | [TA-7](../../openspec/specs/tool-authorization/spec.md#requirement-ta-7-shell-analysis-uses-general-syntax-facts) |
 
+Fixed text on stdin (owner decision 2026-10-07, heredoc parity):
+
+- A heredoc with a quoted delimiter and a here string with a proved value
+  give fixed text on stdin. Netclaw treats the text as it treats text from a
+  pipe: it reads no path and no command from it.
+- The command keeps its normal candidate. A grant for `python3` covers
+  `python3 - <<'EOF'` as it covers `python3 -c '...'`. Each interpreter rule
+  of the argument form also applies to the stdin form.
+- These forms stay unresolved (one exact candidate, "Once" only):
+  - an unquoted delimiter (ShellSyntaxTree marks it `Expand`);
+  - a here string with an unknown value;
+  - a descriptor other than stdin;
+  - a command with Unknown command words, for example `python3 - "$f"` in a
+    loop, because a literal twin cannot carry a heredoc;
+  - a shell receiver. The file name of each verb word decides: `bash`,
+    `./bash`, `/usr/local/bin/bash`, `bash.exe`, `env sh`, `xargs bash`,
+    `pwsh`, `cmd`. An argument counts too when a part of its proved value
+    between white space is a shell file name (`timeout 5 /opt/x/bash`,
+    `env -S 'bash -s'`, `ssh host 'bash -s'`), or when it has no proved value
+    (`env "$tool"`, a glob).
+- Netclaw analyzes the script of `bash -c` as child commands. It does not
+  analyze the text of a heredoc or a here string as a script. Thus a grant for
+  a shell does not cover such text. Text from a pipe (`printf ... | bash`) is
+  outside this rule.
+- Known limits:
+  - A program that reads paths from stdin gets its normal candidate. A folder
+    grant for `xargs cat` covers `xargs cat <<< /etc/passwd`, as it covers
+    `printf /etc/passwd | xargs cat`.
+  - Netclaw does not read the private grammar of a program. It tests each
+    part of an argument value, so a shell name in a data argument makes the
+    call exact (`grep bash <<'EOF'`, `grep 'run bash now' <<'EOF'`). This is
+    the safe direction (owner decision 2026-10-08).
+  - The shell names are a list, and a list cannot be complete. A shell that
+    is not in the list (`elvish`, `nu`, `xonsh`) gets the result of its `-c`
+    form. A program that gives stdin text to `sh` (`at now`, `batch`,
+    `crontab -`, `parallel`) gets the result of its pipe form.
+  - ShellSyntaxTree 0.4.0-beta.24 does not parse source after the heredoc
+    operator on its line (`cat <<'EOF' > out.txt`, `python3 - <<'EOF' | head`).
+    Such a call keeps the "Once" prompt. A redirect before the operator
+    (`cat > out.txt <<'EOF'`) gets the normal candidate.
+- Owner: `ShellCommandAnalysis.HasFixedTextStdin`. The shell names are policy
+  data in `ShellVerbPolicyData.ScriptShellNames`. The data is call-local.
+
 Leaks today:
 
 - Two parsers read one command: ShellSyntaxTree and the legacy tokenizer.

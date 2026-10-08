@@ -696,6 +696,26 @@
       "reason": "Owner decision (2026-10-07): echo runs no program, so it needs no command words and no grant. The file rules allow the write with no prompt. A program with a write redirect still prompts.",
       "negativeControl": "workload-edit-search-pipeline-redirect-in-project-prompts-for-writer",
       "approvedBy": "owner (2026-10-07, no prompt when nothing runs)"
+    },
+    {
+      "section": "Fresh Personal approval matrix",
+      "id": "inline-python-heredoc-uses-interpreter-grant",
+      "renamedFrom": "inline-python-heredoc-fails-closed",
+      "from": "RequiresApproval",
+      "to": "Allowed",
+      "reason": "Owner decision (heredoc parity): a heredoc with a quoted delimiter gives fixed text on stdin. The text is data, as the same text in 'python3 -c' is data. The command keeps its normal candidate, so the stored 'python3' grant covers it, as it covers 'python3 -c' (inline-python-interpreter-grant-currently-allows). An expanding heredoc and a shell receiver stay strict.",
+      "negativeControl": "here-string-interpreter-grant-prompts",
+      "approvedBy": "owner (2026-10-07, heredoc parity)"
+    },
+    {
+      "section": "Fresh Personal approval matrix",
+      "id": "here-string-cat-with-argument-uses-grant",
+      "renamedFrom": "here-string-cat-with-argument-prompts",
+      "from": "RequiresApproval",
+      "to": "Allowed",
+      "reason": "Owner decision (heredoc parity): a here string with a proved value gives fixed text on stdin. The command keeps its normal candidate, so the stored 'cat' grant covers 'cat -n', as it covers 'cat -n' with no here string. A here string with an unknown value stays strict (dynamic-here-string-cat-prompts).",
+      "negativeControl": "dynamic-here-string-cat-prompts",
+      "approvedBy": "owner (2026-10-07, heredoc parity)"
     }
   ]
 }

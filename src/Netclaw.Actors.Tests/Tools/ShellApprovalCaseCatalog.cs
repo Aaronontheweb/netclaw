@@ -1754,15 +1754,154 @@ public static class ShellApprovalCases
             Approvals.PersistentAnywhere("cat"),
             ExpectedApproval.RequireFullText()),
         Case(
-            "here-string-cat-with-argument-prompts",
+            "here-string-cat-with-argument-uses-grant",
             Bash("cat -n <<< \"hello\""),
             Approvals.PersistentAnywhere("cat"),
-            ExpectedApproval.Require(["cat -n <<< \"hello\""])),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:cat")),
         Case(
             "here-string-interpreter-grant-prompts",
             Bash("bash <<< \"echo ok\""),
             Approvals.PersistentAnywhere("bash"),
             ExpectedApproval.Require(["bash <<< \"echo ok\""])),
+        // Owner decision 2026-10-07 (heredoc parity): fixed text on stdin is
+        // data. Each parity row below has an argument twin with the same
+        // expected result. These rows keep the strict rule.
+        Case(
+            "heredoc-substitution-body-prompts-for-inner-command",
+            Bash("python3 - <<EOF\n$(rm -rf x)\nEOF"),
+            Approvals.PersistentAnywhere("python3"),
+            ExpectedApproval.Require(["rm", "python3 - <<EOF"])),
+        Case(
+            "heredoc-expanding-body-stays-strict",
+            Bash("python3 - <<EOF\n$HOME\nEOF"),
+            Approvals.PersistentAnywhere("python3"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        Case(
+            "heredoc-unquoted-literal-body-stays-strict",
+            Bash("python3 - <<EOF\nprint(1)\nEOF"),
+            Approvals.PersistentAnywhere("python3"),
+            ExpectedApproval.Require(["python3 - <<EOF"])),
+        Case(
+            "here-string-variable-word-stays-strict",
+            Bash("python3 - <<< \"$CODE\""),
+            Approvals.PersistentAnywhere("python3"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        Case(
+            "heredoc-protected-redirect-denies",
+            Bash("python3 - <<'EOF' > ~/.netclaw/config/secrets.json\nprint(1)\nEOF"),
+            Approvals.PersistentAnywhere("python3"),
+            ExpectedApproval.Deny("shell_references_protected_path")),
+        Case(
+            "heredoc-shell-receiver-stays-strict",
+            Bash("bash <<'EOF'\necho ok\nEOF"),
+            Approvals.PersistentAnywhere("bash"),
+            ExpectedApproval.Require(["bash <<'EOF'"])),
+        Case(
+            "heredoc-wrapped-shell-receiver-stays-strict",
+            Bash("env sh <<'EOF'\necho ok\nEOF"),
+            Approvals.PersistentAnywhere("env", "sh", "env sh"),
+            ExpectedApproval.Require(["env sh <<'EOF'"])),
+        // The file name of the program decides, so a shell with a path stays
+        // strict. Its -c twin is not analyzed as child commands (follow-up issue).
+        Case(
+            "heredoc-path-shell-receiver-stays-strict",
+            Bash("/usr/local/bin/bash <<'EOF'\necho ok\nEOF"),
+            Approvals.PersistentAnywhere("/usr/local/bin/bash"),
+            ExpectedApproval.Require(["/usr/local/bin/bash <<'EOF'"])),
+        Case(
+            "path-shell-command-string-uses-grant",
+            Bash("/usr/local/bin/bash -c 'echo ok'"),
+            Approvals.PersistentAnywhere("/usr/local/bin/bash"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:/usr/local/bin/bash")),
+        Case(
+            "heredoc-shell-in-argument-stays-strict",
+            Bash("timeout 5 /opt/x/bash <<'EOF'\necho ok\nEOF"),
+            Approvals.PersistentAnywhere("timeout"),
+            ExpectedApproval.Require(["timeout 5 /opt/x/bash <<'EOF'"])),
+        // The literal twins (F1) cannot carry a heredoc, and the loop command
+        // has Unknown command words. It keeps the one exact candidate, as
+        // before the heredoc parity change. The argument form has twins.
+        Case(
+            "heredoc-loop-unknown-words-keeps-exact-prompt",
+            Bash52("for f in a b; do python3 - \"$f\" <<'EOF'\nprint(1)\nEOF\ndone"),
+            Approvals.PersistentAnywhere("python3"),
+            ExpectedApproval.Require(["python3 - \"$f\" <<'EOF'"])),
+        Case(
+            "loop-argument-form-uses-grant-for-each-twin",
+            Bash52("for f in a b; do python3 -c 'print(1)' \"$f\"; done"),
+            Approvals.PersistentAnywhere("python3"),
+            ExpectedApproval.Allow(
+                ApprovalAllowReason.StoredApproval,
+                1,
+                "persistent:python3",
+                "persistent:python3",
+                "persistent:python3",
+                "persistent:python3")),
+        // Known limit: ShellSyntaxTree 0.4.0-beta.24 does not parse source after
+        // the heredoc operator on its line. The call keeps the "Once" prompt.
+        // A redirect before the operator gets the normal candidate.
+        Case(
+            "heredoc-pipe-after-operator-keeps-exact-prompt",
+            Bash("python3 - <<'EOF' | head -5\nprint(1)\nEOF"),
+            Approvals.PersistentAnywhere("python3", "head"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        Case(
+            "heredoc-redirect-after-operator-keeps-exact-prompt",
+            Bash("cat <<'EOF' > out.txt\nx\nEOF"),
+            Approvals.PersistentAnywhere("cat"),
+            ExpectedApproval.Require([], isMessy: true, approvalChecks: 0)),
+        Case(
+            "heredoc-redirect-before-operator-uses-grant",
+            Bash("python3 - 2>&1 <<'EOF'\nprint(1)\nEOF"),
+            Approvals.PersistentAnywhere("python3"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:python3")),
+        // Known limit: Netclaw reads no path from stdin text, as for a pipe. A
+        // program that reads paths from stdin gets its normal candidate.
+        Case(
+            "here-string-path-text-uses-folder-grant",
+            Bash("xargs cat <<< /etc/passwd"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "xargs cat"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:xargs cat")),
+        Case(
+            "pipe-path-text-uses-folder-grant",
+            Bash("printf /etc/passwd | xargs cat"),
+            Approvals.PersistentHere(ApprovalDirectoryShape.Project, "xargs cat"),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:xargs cat")),
+        // Owner decision 2026-10-08: a shell can be one word inside an argument.
+        // Each part of a proved value between white space gets the shell name
+        // test, so these forms keep the result that they had before the heredoc
+        // parity change. The last row is the accepted cost.
+        Case(
+            "heredoc-shell-inside-argument-env-split-string-stays-strict",
+            Bash("env -S 'bash -s' <<'EOF'\necho ok\nEOF"),
+            Approvals.PersistentAnywhere("env"),
+            ExpectedApproval.Require(["env -S 'bash -s' <<'EOF'"])),
+        Case(
+            "heredoc-shell-inside-argument-ssh-remote-command-stays-strict",
+            Bash("ssh host 'bash -s' <<'EOF'\necho ok\nEOF"),
+            Approvals.PersistentAnywhere("ssh host"),
+            ExpectedApproval.Require(["ssh host 'bash -s' <<'EOF'"])),
+        Case(
+            "heredoc-shell-inside-argument-sg-command-stays-strict",
+            Bash("sg grp 'bash -s' <<'EOF'\necho ok\nEOF"),
+            Approvals.PersistentAnywhere("sg grp"),
+            ExpectedApproval.Require(["sg grp 'bash -s' <<'EOF'"])),
+        Case(
+            "heredoc-shell-inside-argument-flock-command-stays-strict",
+            Bash("flock x -c 'bash -s' <<'EOF'\necho ok\nEOF"),
+            Approvals.PersistentAnywhere("flock x"),
+            ExpectedApproval.Require(["flock x -c 'bash -s' <<'EOF'"])),
+        Case(
+            "heredoc-shell-inside-argument-script-command-stays-strict",
+            Bash("script -c 'bash -s' <<'EOF'\necho ok\nEOF"),
+            Approvals.PersistentAnywhere("script"),
+            ExpectedApproval.Require(["script -c 'bash -s' <<'EOF'"])),
+        Case(
+            "heredoc-shell-word-in-data-argument-is-exact",
+            Bash("grep 'run bash now' <<'EOF'\nx\nEOF"),
+            Approvals.PersistentAnywhere("grep"),
+            ExpectedApproval.Require(["grep 'run bash now' <<'EOF'"])),
+        .. HeredocParityCases(),
 
         // These synthetic cases represent the dominant search, pipeline, and
         // file-change shapes in the sanitized local approval-prompt sample.
@@ -2377,10 +2516,10 @@ public static class ShellApprovalCases
             Approvals.PersistentAnywhere("eval"),
             ExpectedApproval.RequireFullText()),
         Case(
-            "inline-python-heredoc-fails-closed",
+            "inline-python-heredoc-uses-interpreter-grant",
             Bash("python3 <<'PY'\nprint('hello')\nPY"),
             Approvals.PersistentAnywhere("python3"),
-            ExpectedApproval.Require(["python3 <<'PY'"])),
+            ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, "persistent:python3")),
         Case(
             "empty-command-fails-closed",
             Bash(string.Empty),
@@ -3666,6 +3805,58 @@ public static class ShellApprovalCases
             $"{Escape(DisplayCandidates(testCase.Expected.Candidates))} | {DisplayComplexity(testCase.Expected.IsMessy)} |"));
 
         return string.Join(Environment.NewLine, lines) + Environment.NewLine;
+    }
+
+    /// <summary>
+    /// Owner decision 2026-10-07 (heredoc parity): a quoted heredoc and a
+    /// proved here string give fixed text on stdin. Each form gets the result
+    /// of its argument twin in each grant state. One expected value serves
+    /// both rows of a pair, so a drift fails the catalog test.
+    /// </summary>
+    private static IEnumerable<ShellApprovalCase> HeredocParityCases()
+    {
+        (string Name, string Stdin, string Twin, string Grant, string Match, string[] Candidates)[] forms =
+        [
+            ("python-heredoc", "python3 - <<'EOF'\nprint(1)\nEOF", "python3 -c 'print(1)'", "python3", "python3", ["python3"]),
+            ("python-here-string", "python3 - <<< 'print(1)'", "python3 -c 'print(1)'", "python3", "python3", ["python3"]),
+            ("grep-heredoc", "grep x <<'EOF'\nx\nEOF", "grep x", "grep", "grep x", []),
+            ("cat-heredoc", "cat <<'EOF'\nx\nEOF", "cat", "cat", "cat", [])
+        ];
+
+        foreach (var form in forms)
+        {
+            // A matching grant decides before the reviewed-safe policy. The match
+            // text is the phrase of the command words (#2382).
+            (string State, bool Interactive, ApprovalState Approvals, ExpectedApproval Expected)[] states =
+            [
+                ("no-grant", true, Approvals.None, form.Candidates.Length == 0
+                    ? ExpectedApproval.Allow(ApprovalAllowReason.ReviewedSafePolicy)
+                    : ExpectedApproval.Require(form.Candidates)),
+                ("chat-grant", true, Approvals.Session(form.Grant),
+                    ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, $"session:{form.Match}")),
+                ("folder-grant", true, Approvals.PersistentHere(ApprovalDirectoryShape.Project, form.Grant),
+                    ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, $"persistent:{form.Match}")),
+                ("anywhere-grant", true, Approvals.PersistentAnywhere(form.Grant),
+                    ExpectedApproval.Allow(ApprovalAllowReason.StoredApproval, 1, $"persistent:{form.Match}")),
+                ("unattended", false, Approvals.None, form.Candidates.Length == 0
+                    ? ExpectedApproval.Allow(ApprovalAllowReason.ReviewedSafePolicy)
+                    : ExpectedApproval.DenyUnattended())
+            ];
+
+            foreach (var state in states)
+            {
+                yield return Case(
+                    $"heredoc-parity-{form.Name}-{state.State}",
+                    Bash(form.Stdin, interactive: state.Interactive),
+                    state.Approvals,
+                    state.Expected);
+                yield return Case(
+                    $"heredoc-parity-{form.Name}-twin-{state.State}",
+                    Bash(form.Twin, interactive: state.Interactive),
+                    state.Approvals,
+                    state.Expected);
+            }
+        }
     }
 
     private static ShellApprovalCase Case(

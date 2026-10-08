@@ -75,6 +75,7 @@ Keep shell approval friction bounded:
 12. If you require the exact platform path, retry unchanged once through normal policy.
 13. Reviewed diagnostics without file output do not receive temporary relocation advice. Normal approval and denial rules still apply.
 14. Write long text (PR bodies, issue bodies, commit messages, file contents) to a file first, then pass the file to the command (for example `gh pr create --body-file <file>`, `gh issue create --body-file <file>`, `git commit -F <file>`). Do not inline long text in a shell command: a command that needs approval and is longer than 900 characters gets a `shorten_shell_command` correction, not a prompt.
+15. To send fixed text on stdin, quote the heredoc delimiter (`python3 - <<'EOF'`) or use a literal here string (`<<< 'text'`). Such a call gets the same approval as the same text in an argument (`python3 -c '...'`), so a saved grant can cover it. Put each file redirect before the heredoc operator (`cat > out.txt <<'EOF'`), and put the next command on a new line after the end word. Use only literal arguments with the heredoc. An unquoted delimiter, a here string with a variable, a pipe or `&&` on the operator line, a loop variable in the command, stdin text to a shell (`bash`, `sh`), and an argument that holds a shell name (`ssh host 'bash -s'`, `grep 'run bash now'`) get a one-time prompt.
 
 ## Project Directory
 

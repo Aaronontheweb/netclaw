@@ -149,6 +149,43 @@ internal static class ShellVerbPolicyData
     };
 
     /// <summary>
+    /// File names of programs that read stdin as a script: POSIX shells,
+    /// <c>fish</c>, C shells, <c>cmd</c>, and PowerShell. Policy data for the
+    /// fixed stdin text rule (<c>ShellCommandAnalysis.HasShellReceiver</c>).
+    /// A name has no <c>.exe</c> end: <see cref="IsScriptShellProgram"/>
+    /// removes it.
+    /// </summary>
+    /// <remarks>
+    /// This list is wider than <see cref="PosixShellInvokers"/>. That list
+    /// selects the <c>-c</c> wrappers whose child source Netclaw parses as
+    /// POSIX shell text, so a shell with another grammar must not join it.
+    /// A list cannot be complete: a shell that is not here gets the result
+    /// of its <c>-c</c> form.
+    /// </remarks>
+    internal static readonly HashSet<string> ScriptShellNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "bash", "sh", "dash", "ash", "ksh", "mksh", "zsh", "fish", "csh", "tcsh",
+        "rbash", "rksh", "ksh93", "posh", "yash",
+        "cmd", "powershell", "pwsh"
+    };
+
+    /// <summary>
+    /// Returns true when the file name of a program word is a script shell.
+    /// The path and a <c>.exe</c> end do not matter: <c>bash</c>,
+    /// <c>./bash</c>, <c>/usr/local/bin/bash</c>, and <c>bash.exe</c> name
+    /// the same kind of program.
+    /// </summary>
+    internal static bool IsScriptShellProgram(string word)
+    {
+        var program = LegacyShellTextScan.TrimShellPunctuation(word);
+        var name = program[(program.LastIndexOfAny(['/', '\\']) + 1)..];
+        if (name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
+            name = name[..^4];
+
+        return ScriptShellNames.Contains(name);
+    }
+
+    /// <summary>
     /// Keeps only the first token of a parser verb chain when that token is a
     /// path-aware verb, a data command, or a single-token command.
     /// </summary>

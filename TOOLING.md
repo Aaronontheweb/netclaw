@@ -49,7 +49,7 @@ coverage. They do not replace positive and negative behavior tests.
 | `ShellGrantCandidateResult.IsFor` | Approval evidence keeps the requested candidate facts | 1 killed | `./scripts/run-tool-authorization-mutations.sh` |
 | `ShellPolicyEvaluation.CandidateState.ValidateActorEvidence` | Actor evidence cannot replace existing candidate coverage (`Coverage != null`) | 1 killed | `./scripts/run-tool-authorization-mutations.sh` |
 | `ToolAuthorizer` shell rule order (hard deny, trusted root, covering grant) | No rule can move ahead of an earlier rule: hard deny and today's trusted-root check precede a covering grant | 3 killed | `./scripts/run-tool-authorizer-order-mutations.sh` |
-| Shell analysis, denial-only, tree effects, and reviewed-safe gates | Parser-proved regions and authored diagnostic syntax preserve hard denials; only bounded audited non-path values and consistent non-link-following tree facts can use reusable approval; a control-character word gets only the ancestor scope of its clean text; only a word below an absent top-level directory loses its path scope; an unresolved command is one exact candidate, and only decision D1 (an unknown operand with a safe phrase or a grant for anywhere, attended or not) covers it; a glob word gets the decision of each protected path that it can match (D5), and its link walk stays inside the covering directory; a bound value gets the hard-deny decision of its literal twin; a Bash test builtin is data only with proved operand values without `[`; a data command keeps its assignment digest unless each operand is proved data, and only such a data command with no redirect keeps its normal candidate after an unknown directory; a variable word that is not a path word is an unknown operand, so a folder grant cannot cover a loop or an assignment value outside the folder; an option value that the parser splits from its option (`--name=value`, `-p:Name=value`) and that can leave the working directory gets the scope of a path word with the same text, so a folder or repository grant cannot cover it | 306 killed | `./scripts/run-shell-command-analysis-mutations.sh` |
+| Shell analysis, denial-only, tree effects, and reviewed-safe gates | Parser-proved regions and authored diagnostic syntax preserve hard denials; only bounded audited non-path values and consistent non-link-following tree facts can use reusable approval; a control-character word gets only the ancestor scope of its clean text; only a word below an absent top-level directory loses its path scope; an unresolved command is one exact candidate, and only decision D1 (an unknown operand with a safe phrase or a grant for anywhere, attended or not) covers it; a glob word gets the decision of each protected path that it can match (D5), and its link walk stays inside the covering directory; a bound value gets the hard-deny decision of its literal twin; a Bash test builtin is data only with proved operand values without `[`; a data command keeps its assignment digest unless each operand is proved data, and only such a data command with no redirect keeps its normal candidate after an unknown directory; a variable word that is not a path word is an unknown operand, so a folder grant cannot cover a loop or an assignment value outside the folder; an option value that the parser splits from its option (`--name=value`, `-p:Name=value`) and that can leave the working directory gets the scope of a path word with the same text, so a folder or repository grant cannot cover it; fixed text on stdin (a quoted heredoc or a proved here string) is data only on stdin and only for a receiver that is not a shell and has no argument that can name one | 330 killed | `./scripts/run-shell-command-analysis-mutations.sh` |
 | Shell assignment identity, wrapper fallback, wrapper child source, hard-deny screen, syntax reconciliation, host mode, prompt rollback, and Bash sanitation | Reusable grants require exact facts, fallback wrappers and wrappers with an assignment prefix must stay one-time, a wrapper child source is the decoded argument value, unresolved Bash source and each list element meet the hard-deny screen, versioned prompts must fail closed, and strong modes require the reviewed launch contract; only an assignment that can reach the program qualifies a grant, a Bash data command keeps every assignment, and the parser names are the names of the one environment snapshot that each process receives (F3) | 81 killed | `./scripts/run-shell-assignment-mutations.sh` |
 | Filesystem authority folder membership, repository identity, repository persistence, the folder of a new grant, and the link target scope | Folder and repository grants require candidate scope, identity, registration, and containment; a folder grant trusts its own root and refuses a link below it; a `..` after a link makes the shell scope unresolved; a word that names a link also has the scope of its final target, and a target after a `..` that leaves a link is unknown (#2375); a new folder grant uses the directory where its occurrence runs | 24 killed | `./scripts/run-approval-directory-mutations.sh` |
 | `ReminderManagerActor.HandleExecutionOutcomeAsync` | Only the current attempt can settle; the manager replies after settlement | 2 killed | `./scripts/run-reminder-execution-mutations.sh` |
@@ -393,7 +393,7 @@ Run the shell analysis gate:
 ./scripts/run-shell-command-analysis-mutations.sh
 ```
 
-The script tests 238 mutants across execution-region accounting, denial-only
+The script tests 330 mutants across execution-region accounting, denial-only
 matching, tree traversal and root correspondence, bounded non-filesystem
 values, data operands of output commands and test builtins, candidate extraction, approval
 mode, path facts, and reviewed-safe policy. The job fails unless every mutant
@@ -497,6 +497,22 @@ from the exact-candidate rule; the `echo` rows and the `git log -n $?` rows
 kill the new mutants. `IsProvedValueDenied` is also a target:
 `Decoded_word_gets_the_decision_of_its_proved_value` kills its mutants with
 decoded ANSI-C paths. The gate now kills 214 Security and 27 Actors mutants.
+
+The heredoc parity change (owner decision 2026-10-07) adds five targets (24
+mutants): the heredoc and here-string arms of `HasUnresolvedRedirect`,
+`HasFixedTextStdin` with `CanTakeFixedStdinText` and `HasShellReceiver`,
+`MayNameScriptShell`, the expansion-mode check of `HasLiteralHereDocument`, and
+`ShellVerbPolicyData.IsScriptShellProgram`. A quoted heredoc or a proved here
+string on stdin is data. These forms stay unresolved:
+
+- an expanding heredoc, an unknown here string, and another descriptor;
+- a command with Unknown command words;
+- a shell receiver, by the file name of each verb word;
+- an argument with a part that is a shell file name, or with no proved value.
+
+`Fixed_stdin_text_is_data_only_for_a_receiver_that_is_not_a_shell` and
+`Fixed_stdin_text_fails_closed_for_an_argument_that_can_name_a_shell` kill the
+mutants. The gate now kills 303 Security and 27 Actors mutants.
 
 The script groups targets by source project. Stryker analyzes each source project once.
 The local run on 2026-09-24 took under four minutes.

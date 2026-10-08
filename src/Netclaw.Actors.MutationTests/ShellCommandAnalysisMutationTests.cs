@@ -342,6 +342,74 @@ public sealed class ShellCommandAnalysisMutationTests
         Assert.True(other.IsMessy);
     }
 
+    // Owner decision 2026-10-07 (heredoc parity): fixed text on stdin is data
+    // for a receiver that is not a shell. An expanding heredoc, an unknown
+    // here string, a descriptor other than stdin, and a shell receiver stay
+    // unresolved.
+    [Theory]
+    [InlineData("python3 - <<'EOF'\nprint(1)\nEOF", false)]
+    [InlineData("grep -n x <<'EOF'\nx\nEOF", false)]
+    [InlineData("python3 - <<< 'print(1)'", false)]
+    [InlineData("cat -n <<< 'body'", false)]
+    [InlineData("python3 - <<EOF\nprint(1)\nEOF", true)]
+    [InlineData("python3 - <<< \"$(date)\"", true)]
+    [InlineData("python3 - <<< \"$1\"", true)]
+    [InlineData("xargs -n1 $1 <<< 'value'", true)]
+    [InlineData("xargs -n1 \"$(date)\" <<< 'value'", true)]
+    [InlineData("cat 3<<'EOF'\nbody\nEOF", true)]
+    [InlineData("cat 3<<< 'body'", true)]
+    [InlineData("bash <<'EOF'\necho ok\nEOF", true)]
+    [InlineData("bash <<< 'echo ok'", true)]
+    [InlineData("command bash <<< 'echo ok'", true)]
+    [InlineData("xargs -n1 bash <<'EOF'\nscript.sh\nEOF", true)]
+    [InlineData("xargs -n1 sh <<< 'script.sh'", true)]
+    [InlineData("/usr/local/bin/bash <<'EOF'\necho ok\nEOF", true)]
+    [InlineData("./bash <<< 'echo ok'", true)]
+    [InlineData("fish <<'EOF'\necho ok\nEOF", true)]
+    [InlineData("timeout 5 /opt/x/bash <<'EOF'\necho ok\nEOF", true)]
+    [InlineData("timeout 5 /opt/x/python3 - <<'EOF'\nprint(1)\nEOF", false)]
+    [InlineData("/usr/bin/python3 - <<'EOF'\nprint(1)\nEOF", false)]
+    [InlineData("bash.exe <<'EOF'\necho ok\nEOF", true)]
+    [InlineData("/bin/BASH.EXE <<'EOF'\necho ok\nEOF", true)]
+    [InlineData("python3.exe - <<'EOF'\nprint(1)\nEOF", false)]
+    [InlineData("exe - <<'EOF'\nprint(1)\nEOF", false)]
+    [InlineData("env -S 'bash -s' <<'EOF'\necho ok\nEOF", true)]
+    [InlineData("ssh host '/bin/sh -s' <<'EOF'\necho ok\nEOF", true)]
+    [InlineData("grep 'run bash now' <<'EOF'\nx\nEOF", true)]
+    [InlineData("grep 'run it now' <<'EOF'\nx\nEOF", false)]
+    public void Fixed_stdin_text_is_data_only_for_a_receiver_that_is_not_a_shell(string command, bool dynamic)
+    {
+        var analysis = new ShellCommandAnalyzer(ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux))
+            .Analyze(command, "/work");
+
+        Assert.Equal(ShellAnalysisFailure.None, analysis.Failure);
+        Assert.Equal(dynamic, analysis.HasDynamicSyntax);
+    }
+
+    // A proved argument value can name a shell, and an unproved value can name
+    // any program. The Bash 5.2 host proves bindings and loop values. The rule
+    // is general, so a receiver that does not read stdin also fails closed. A
+    // loop word in the verb slot gives Unknown command words, which stay strict.
+    [Theory]
+    [InlineData("x=a; echo \"$x\" <<< 'a'", false)]
+    [InlineData("for s in a b; do echo \"$s\" <<< 'a'; done", true)]
+    [InlineData("for s in a b; do echo hi there \"$s\" <<< 'a'; done", false)]
+    [InlineData("for s in a sh; do echo hi there \"$s\" <<< 'a'; done", true)]
+    [InlineData("echo hi there \"$1\" <<< 'a'", true)]
+    [InlineData("echo hi there \"$1\"", false)]
+    [InlineData("x=sh; echo \"$x\" <<< 'echo ok'", true)]
+    [InlineData("for s in a sh; do echo \"$s\" <<< 'echo ok'; done", true)]
+    [InlineData("echo \"$tool\" <<< 'echo ok'", true)]
+    public void Fixed_stdin_text_fails_closed_for_an_argument_that_can_name_a_shell(string command, bool dynamic)
+    {
+        var analysis = new ShellCommandAnalyzer(
+                ShellExecutionEnvironment.CreateBash(ShellPlatform.Linux, new Version(5, 2)))
+            .Analyze(command, "/work");
+
+        Assert.Equal(ShellAnalysisFailure.None, analysis.Failure);
+        Assert.Equal(dynamic, analysis.HasDynamicSyntax);
+    }
+
     // The data-operand rule is Bash only. In PowerShell, echo is an alias of
     // Write-Output, so a dynamic value keeps the call unresolved.
     [Fact]
