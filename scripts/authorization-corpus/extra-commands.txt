@@ -347,3 +347,33 @@ curl https://raw.githubusercontent.com/x/dotfiles/main/.ssh/config
 curl https://docs.aws.amazon.com/cli/latest/userguide/
 git clone https://github.com/example/dotfiles.ssh.git
 cat notes.ssh.md
+cat ~/.kube/config
+kubectl --kubeconfig ~/.kube/config get pods
+cat ~/.netrc
+cat ~/.git-credentials
+cat ~/.docker/config.json
+gpg --homedir ~/.gnupg --list-keys
+cat ~/.config/gh/hosts.yml
+ls ~/.config/gcloud
+cat ~/.azure/accessTokens.json
+cat $HOME/.kube/config
+cat ${HOME}/.netrc
+Get-Content ~\.ssh\id_ed25519
+gc $HOME\.aws\credentials
+cat $env:USERPROFILE\.kube\config
+cat ~/.sshrc
+cat ~/.awsome/x
+cat ~/.netrc-example.md
+cat ~/.docker/contexts/meta.json
+cat ~/.config/git/config
+cat tsconfig.json
+cat infra/.kube/config
+git push origin main
+gh pr list
+kubectl get pods
+docker pull alpine
+gcloud auth list
+az account show
+gpg --sign file
+curl -n https://example.com/x
+Select-String '\.ssh' *

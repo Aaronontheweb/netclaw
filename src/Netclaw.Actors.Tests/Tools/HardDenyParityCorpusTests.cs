@@ -282,6 +282,10 @@ public sealed class HardDenyParityCorpusTests(ShellApprovalMatrixFixture fixture
         Deny("credential-ssh-list", "Credential locations", "ls ~/.ssh", ProtectedPath),
         Deny("credential-aws-home-var", "Credential locations", "cat $HOME/.aws/credentials", ProtectedPath),
         Deny("credential-aws-cd", "Credential locations", "cd ~/.aws && cat credentials", ProtectedPath),
+        Deny("credential-kube-config", "Credential locations", "cat ~/.kube/config", ProtectedPath),
+        Deny("credential-netrc", "Credential locations", "cat ~/.netrc", ProtectedPath),
+        Deny("credential-gh-hosts", "Credential locations", "cat $HOME/.config/gh/hosts.yml", ProtectedPath),
+        Control("credential-docker-contexts-control", "Credential locations", "cat ~/.docker/contexts/meta.json"),
         Control("credential-neighbour-control", "Credential locations", "cat ~/.bashrc"),
     ];
 

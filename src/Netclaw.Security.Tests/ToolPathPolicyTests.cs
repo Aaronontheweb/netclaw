@@ -159,23 +159,117 @@ public sealed class ToolPathPolicyTests
         Assert.True(policy.CommandReferencesDeniedPath("cat $HOME/.netclaw/config/secrets.json"));
     }
 
-    // A dot directory entry shows in command text only in its home-anchored
-    // spellings. A bare name or a "/name" substring would also deny a workspace
-    // path or a pattern.
-    [SlopwatchSuppress("SW001", "The entry is a POSIX path and needs a POSIX host.")]
-    [Theory(SkipUnless = nameof(IsPosix), Skip = "The entry is a POSIX path")]
+    // A home-anchored entry shows in command text only in its anchored spellings
+    // and its absolute path, each ending at a name boundary. A bare name, a
+    // "/name" substring or a longer name would also deny a workspace path, a
+    // pattern or a neighbour file. The spellings are Bash and PowerShell forms
+    // and compare without case, with backslashes read as slashes.
+    private static readonly ToolPathPolicy.HomeAnchor[] PosixAnchors =
+    [
+        new("/home/u", ToolPathPolicy.HomeSpellings)
+    ];
+
+    private static readonly ToolPathPolicy.HomeAnchor[] WindowsAnchors =
+    [
+        new(@"C:\Users\u", ToolPathPolicy.HomeSpellings),
+        new(@"C:\Users\u\AppData\Roaming", ToolPathPolicy.AppDataSpellings),
+        new(@"C:\ProgramData", ToolPathPolicy.ProgramDataSpellings),
+    ];
+
+    private static bool AnchoredMatch(
+        IReadOnlyList<ToolPathPolicy.HomeAnchor> anchors,
+        string[] entries,
+        string command)
+    {
+        var text = command.Replace('\\', '/');
+        return ToolPathPolicy.BuildAnchoredIndicators(entries, anchors).Any(regex => regex.IsMatch(text));
+    }
+
+    [Theory]
+    [InlineData("cat ~/.ssh/id_ed25519", true)]
+    [InlineData("cat $HOME/.ssh", true)]
+    [InlineData("cat ${HOME}/.ssh/x", true)]
+    [InlineData("ls \"~/.ssh\"", true)]
+    [InlineData("docker run -v $HOME/.aws:/root/.aws:ro img", true)]
+    [InlineData("cat /home/u/.ssh/id_ed25519", true)]
+    [InlineData("cat ~/.docker/config.json", true)]
+    [InlineData("cat ~/.netrc", true)]
+    [InlineData("cat ~/.config/gh/hosts.yml", true)]
+    [InlineData("cat ~/.SSH/id", true)]
+    [InlineData("cat ~/.sshrc", false)]
+    [InlineData("cat ~/.awsome/x", false)]
+    [InlineData("cat ~/.ssh-backup/x", false)]
+    [InlineData("cat /home/u/.sshrc", false)]
+    [InlineData("cat ~/.docker/config.json.bak", false)]
+    [InlineData("cat ~/.docker/contexts/meta.json", false)]
+    [InlineData("cat ~/.netrc-example.md", false)]
+    [InlineData("cat ~/.config/ghx/x", false)]
+    [InlineData("cat app/.ssh/config", false)]
+    [InlineData("cat tsconfig.json", false)]
+    [InlineData("grep -rn '\\.ssh' .", false)]
+    [InlineData("grep -c 'docs\\.aws\\.amazon\\.com' README.md", false)]
+    [InlineData("curl https://docs.aws.amazon.com", false)]
+    public void Posix_home_anchored_entry_matches_only_its_anchored_spellings(string command, bool denied)
+    {
+        string[] entries =
+        [
+            "/home/u/.ssh", "/home/u/.aws", "/home/u/.docker/config.json", "/home/u/.netrc", "/home/u/.config/gh"
+        ];
+
+        Assert.Equal(denied, AnchoredMatch(PosixAnchors, entries, command));
+    }
+
+    [Theory]
+    [InlineData(@"Get-Content ~\.ssh\id_ed25519", true)]
+    [InlineData(@"gc $HOME\.ssh\id_ed25519", true)]
+    [InlineData(@"cat $env:USERPROFILE\.aws\credentials", true)]
+    [InlineData(@"cat ${env:USERPROFILE}\.aws\credentials", true)]
+    [InlineData(@"gc $ENV:userprofile\.SSH\x", true)]
+    [InlineData(@"gc ~/.ssh/x", true)]
+    [InlineData(@"type %USERPROFILE%\.ssh\id_ed25519", true)]
+    [InlineData(@"cmd /c type %APPDATA%\gcloud\credentials.db", true)]
+    [InlineData(@"type %PROGRAMDATA%\ssh\ssh_host_rsa_key", true)]
+    [InlineData(@"gc C:\Users\u\.ssh\id_ed25519", true)]
+    [InlineData(@"gc c:/users/U/.SSH/id_ed25519", true)]
+    [InlineData(@"gc $env:USERPROFILE\.docker\config.json", true)]
+    [InlineData(@"gc $env:USERPROFILE\_netrc", true)]
+    [InlineData(@"gc $env:APPDATA\gcloud\credentials.db", true)]
+    [InlineData(@"gc ${env:APPDATA}\GitHub CLI\hosts.yml", true)]
+    [InlineData(@"gc $env:PROGRAMDATA\ssh\administrators_authorized_keys", true)]
+    [InlineData(@"Select-String '\.ssh' *", false)]
+    [InlineData(@"gc infra\.ssh\config", false)]
+    [InlineData(@"gc .devcontainer\.aws\config", false)]
+    [InlineData(@"gc C:\Users\u\.sshrc", false)]
+    [InlineData(@"gc $env:APPDATA\gcloudx\x", false)]
+    [InlineData(@"gc $env:USERPROFILE\projects\app\.aws\config", false)]
+    public void Windows_home_anchored_entry_matches_only_its_anchored_spellings(string command, bool denied)
+    {
+        string[] entries =
+        [
+            @"C:\Users\u\.ssh", @"C:\Users\u\.aws", @"C:\Users\u\.docker\config.json", @"C:\Users\u\_netrc",
+            @"C:\Users\u\AppData\Roaming\gcloud", @"C:\Users\u\AppData\Roaming\GitHub CLI", @"C:\ProgramData\ssh"
+        ];
+
+        Assert.Equal(denied, AnchoredMatch(WindowsAnchors, entries, command));
+    }
+
+    // The policy builds the anchors from the launch home of this host.
+    [Theory]
     [InlineData("cat ~/.vault/token", true)]
     [InlineData("cat $HOME/.vault/token", true)]
-    [InlineData("cat ${HOME}/.vault/token", true)]
-    [InlineData("cat /home/user/.vault/token", true)]
     [InlineData("cat app/.vault/token", false)]
+    [InlineData("cat ~/.vaultrc", false)]
     [InlineData("grep -rn '\\.vault' .", false)]
-    [InlineData("grep -rn \"/.vault\" .", false)]
-    [InlineData("curl https://example.com/x/.vault/token", false)]
     [InlineData("curl https://docs.vault.example.com", false)]
-    public void A_dot_directory_entry_is_a_text_indicator_only_in_home_anchored_spellings(string command, bool denied)
+    public void A_home_anchored_entry_of_the_policy_uses_the_launch_home(string command, bool denied)
     {
-        var policy = new ToolPathPolicy(["/home/user/.vault"]);
+        var entry = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".vault");
+        var policy = new ToolPathPolicy(
+            ShellExecutionEnvironmentDefaults.Bash,
+            [entry],
+            [entry],
+            [entry],
+            [entry]);
 
         Assert.Equal(denied, policy.CommandReferencesDeniedPath(command));
     }
