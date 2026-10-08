@@ -8,9 +8,7 @@ metadata:
 
 # Eval Spill Probe
 
-This skill is an eval fixture. It is longer than the inline budget for a tool
-result, so the model gets its first part and its last part. One line in the
-middle part holds a verification phrase.
+This skill is an eval fixture. It holds a list of records.
 
 Record 1: this record is filler text and holds no phrase.
 Record 2: this record is filler text and holds no phrase.

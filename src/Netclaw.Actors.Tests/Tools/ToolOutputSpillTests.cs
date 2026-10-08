@@ -120,30 +120,6 @@ public sealed class ToolOutputSpillTests : IDisposable
         Assert.StartsWith(new string('M', 100), continuation);
     }
 
-    [Theory]
-    [InlineData(TrustAudience.Team)]
-    [InlineData(TrustAudience.Public)]
-    public async Task Continuation_reads_a_spill_in_a_created_folder_for_each_audience(TrustAudience audience)
-    {
-        // tool_output_read addresses a spill by call id inside the session of the
-        // caller. The audience controls whether the tool is exposed, not this read.
-        var workspace = Path.Combine(_sessionDir, "workspace-" + audience);
-        var options = new TestToolExecutionContextOptions { Audience = audience };
-        var input = new string('H', 200) + new string('M', 200) + new string('T', 200);
-
-        var result = await ToolOutputSpill.BoundAndSpillAsync(
-            input, "call_audience", budget: 100,
-            TestToolExecutionContext.CreateBound("session/audience", workspace, options).Invocation,
-            NullLogger.Instance, CancellationToken.None);
-        var continuation = await new ToolOutputReadTool().ExecuteAsync(
-            ToolInput.Create("CallId", "call_audience", "Start", 200, "Limit", 200),
-            TestToolExecutionContext.CreateBound("session/audience", workspace, options),
-            CancellationToken.None);
-
-        Assert.Contains("CallId='call_audience'", result);
-        Assert.StartsWith(new string('M', 100), continuation);
-    }
-
     [Fact]
     public async Task A_spill_that_cannot_be_written_says_so_and_logs_a_warning()
     {
@@ -159,12 +135,16 @@ public sealed class ToolOutputSpillTests : IDisposable
 
         Assert.Contains("[output truncated to 100 chars of 400", result);
         Assert.Contains("did not keep the full output, so tool_output_read cannot continue this call", result);
+        Assert.Contains("skill_read_resource", result);
+        Assert.DoesNotContain("file_read", result);
+        Assert.DoesNotContain("shell", result);
         Assert.DoesNotContain("CallId=", result);
         Assert.DoesNotContain(blocked, result, StringComparison.Ordinal);
         var warning = Assert.Single(logger.Entries);
         Assert.Equal(LogLevel.Warning, warning.Level);
         Assert.Contains("tool_output_spill_not_retained", warning.Message);
         Assert.Contains("call_blocked", warning.Message);
+        Assert.Contains("reason=WriteFailed", warning.Message);
     }
 
     [Fact]
@@ -204,11 +184,16 @@ public sealed class ToolOutputSpillTests : IDisposable
             link,
             new TestToolExecutionContextOptions { Audience = TrustAudience.Personal }).Invocation;
 
-        var result = await ToolOutputSpill.BoundAndSpillAsync(
-            new string('x', 100), "call_dangling", budget: 5, context, NullLogger.Instance, CancellationToken.None);
+        var logger = new RecordingLogger();
 
-        // The spill must not create the folder that the link names.
+        var result = await ToolOutputSpill.BoundAndSpillAsync(
+            new string('x', 100), "call_dangling", budget: 5, context, logger, CancellationToken.None);
+
+        // The link check refuses the path before the creation. Without the check,
+        // CreateDirectory fails on the link and the reason is WriteFailed.
         Assert.DoesNotContain("CallId=", result);
+        Assert.Contains("did not keep the full output", result);
+        Assert.Contains("reason=UnsafeSessionFolder", Assert.Single(logger.Entries).Message);
         Assert.False(Directory.Exists(target));
     }
 

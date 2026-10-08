@@ -48,6 +48,11 @@ class SpillSteerAssertionTests(unittest.TestCase):
         self.assertFalse(self.passes(
             [self.LOAD, self.READ, physical], "The phrase is cobalt-heron-4471.", STEER))
 
+    def test_a_search_of_the_skills_folder_fails(self):
+        search = ("shell_execute", "s1", {"Command": 'grep -r "verification phrase" ~/.netclaw/skills'})
+        self.assertFalse(self.passes(
+            [self.LOAD, self.READ, search], "The phrase is cobalt-heron-4471.", STEER))
+
     def test_a_response_with_no_phrase_fails(self):
         self.assertFalse(self.passes([self.LOAD, self.READ], "I did not find a phrase.", STEER))
 

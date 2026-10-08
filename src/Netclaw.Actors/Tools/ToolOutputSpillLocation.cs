@@ -46,20 +46,23 @@ internal static class ToolOutputSpillLocation
 
     /// <summary>
     /// Creates the session workspace folder when it does not exist. Returns false
-    /// when the path is not a usable session folder or when it is a link.
+    /// when the path is not a usable session folder or when the path itself is a link.
     /// </summary>
     /// <remarks>
     /// Only the spill writer calls this. <c>tool_output_read</c> never creates a
-    /// folder: a missing folder has no retained output. The link check runs before
-    /// and after the creation, so a link at the session folder path gets no
-    /// <c>tool-calls</c> folder behind it.
+    /// folder: a missing folder has no retained output. This method checks the
+    /// last path segment only, before the creation. The caller checks the folder
+    /// and the spill file again with <see cref="IsSafeForIo"/>. No check covers a
+    /// link above the session folder; the shell launcher has the same limit.
     /// </remarks>
     public static bool TryEnsureSessionDirectory(string? sessionDirectory)
     {
         if (!IsWellFormedSessionDirectory(sessionDirectory))
             return false;
 
-        // A link reports its own attributes, also when its target is missing.
+        // A link reports a target also when the target is missing, so this refuses
+        // a dangling link before CreateDirectory can fail on it. Windows keeps file
+        // links and directory links apart, so both forms are read.
         if (new DirectoryInfo(sessionDirectory!).LinkTarget is not null
             || new FileInfo(sessionDirectory!).LinkTarget is not null)
         {

@@ -65,18 +65,18 @@ internal static class ToolOutputSpill
 
         var inline = BoundedOutputReader.Window(modelFacingResult, budget);
         var spill = await TryWriteSpillAsync(spillContent, toolCallId, context, ct);
-        if (spill.Failure is { } failure)
+        if (spill.FailureReason is { } reason)
         {
             // The model loses the middle of this result and cannot read it again.
             // The result text says so; this record tells the operator why.
             logger.LogWarning(
                 "tool_output_spill_not_retained reason={Reason} sessionId={SessionId} callId={CallId} fullLength={FullLength} budget={Budget} detail={Detail}",
-                failure.Reason,
-                context?.SessionId,
+                reason,
+                context.SessionId,
                 toolCallId,
                 modelFacingResult.Length,
                 budget,
-                failure.Detail);
+                spill.FailureDetail);
         }
 
         return Compose(inline, spill, modelFacingResult.Length, budget);
@@ -86,7 +86,7 @@ internal static class ToolOutputSpill
         string redacted, string? toolCallId, ToolInvocationContext context, CancellationToken ct)
     {
         // A spill needs a place (the session workspace folder) and a name (the call id).
-        if (context is null || string.IsNullOrWhiteSpace(context.SessionDirectory))
+        if (string.IsNullOrWhiteSpace(context.SessionDirectory))
             return SpillOutcome.NotRetained(SpillFailureReason.NoSessionFolder);
 
         if (!ToolOutputSpillLocation.IsValidCallId(toolCallId))
@@ -146,9 +146,12 @@ internal static class ToolOutputSpill
         else
         {
             // No silent fallback: the model must know that the middle is gone and
-            // that tool_output_read has nothing for this call. The text names no path.
-            sb.Append("; Netclaw did not keep the full output, so tool_output_read cannot continue this call. ");
-            sb.Append("Run the source tool again with narrower output bounds");
+            // that tool_output_read has nothing for this call. The text must be
+            // true for each tool, so it names a narrower bound only as an option.
+            // It names no path, and it must not send the model to the file system.
+            sb.Append("; Netclaw did not keep the full output, so tool_output_read cannot continue this call ");
+            sb.Append("and the middle is not available. If the source tool has an output bound, call it again ");
+            sb.Append("with a narrower bound. For a skill, read one specific resource with skill_read_resource");
         }
         sb.Append(']');
         return sb.ToString();
@@ -162,13 +165,12 @@ internal static class ToolOutputSpill
         WriteFailed,
     }
 
-    private sealed record SpillFailure(SpillFailureReason Reason, string? Detail);
-
-    private readonly record struct SpillOutcome(string? CallId, SpillFailure? Failure)
+    // CallId is set when the spill was written. FailureReason is set when it was not.
+    private readonly record struct SpillOutcome(string? CallId, SpillFailureReason? FailureReason, string? FailureDetail)
     {
-        public static SpillOutcome Retained(string callId) => new(callId, null);
+        public static SpillOutcome Retained(string callId) => new(callId, null, null);
 
         public static SpillOutcome NotRetained(SpillFailureReason reason, string? detail = null)
-            => new(null, new SpillFailure(reason, detail));
+            => new(null, reason, detail);
     }
 }

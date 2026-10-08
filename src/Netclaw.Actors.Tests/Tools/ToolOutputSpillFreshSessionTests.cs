@@ -31,6 +31,7 @@ public sealed class ToolOutputSpillFreshSessionTests : IDisposable
     private readonly NetclawPaths _paths;
     private readonly string _sessionDirectory;
     private readonly DispatchingToolExecutor _executor;
+    private readonly DispatchingToolExecutor _probeOnlyExecutor;
     private readonly int _budget = new SessionTuning().MaxInlineToolResultChars;
 
     public ToolOutputSpillFreshSessionTests()
@@ -61,7 +62,16 @@ public sealed class ToolOutputSpillFreshSessionTests : IDisposable
         registry.RegisterCore(new ToolOutputReadTool());
         registry.Register(new FakeNetclawTool(OversizedProbe, OversizedText()));
 
-        _executor = new DispatchingToolExecutor(registry, TestToolAccessPolicy.Create(new ToolConfig()));
+        // Team and Public get the probe and the continuation tool. A second Public
+        // profile has the probe only, so the audience profile has an effect.
+        var config = new ToolConfig();
+        config.AudienceProfiles.Team.AllowedTools = [OversizedProbe, ToolOutputReadTool.ToolName];
+        config.AudienceProfiles.Public.AllowedTools = [OversizedProbe, ToolOutputReadTool.ToolName];
+        _executor = new DispatchingToolExecutor(registry, TestToolAccessPolicy.Create(config));
+
+        var probeOnly = new ToolConfig();
+        probeOnly.AudienceProfiles.Public.AllowedTools = [OversizedProbe];
+        _probeOnlyExecutor = new DispatchingToolExecutor(registry, TestToolAccessPolicy.Create(probeOnly));
     }
 
     public void Dispose() => _temp.Dispose();
@@ -85,15 +95,35 @@ public sealed class ToolOutputSpillFreshSessionTests : IDisposable
         await AssertHiddenMiddleIsReadableAsync("call-skill-resource", result);
     }
 
-    [Fact]
-    public async Task Another_tool_in_a_session_with_no_shell_call_gives_a_call_id_for_the_hidden_middle()
+    [Theory]
+    [InlineData(TrustAudience.Personal)]
+    [InlineData(TrustAudience.Team)]
+    [InlineData(TrustAudience.Public)]
+    public async Task Another_tool_in_a_session_with_no_shell_call_gives_a_call_id_for_the_hidden_middle(
+        TrustAudience audience)
     {
-        var result = await ExecuteAsync("call-probe", OversizedProbe, ToolInput.Empty());
+        var result = await ExecuteAsync("call-probe", OversizedProbe, ToolInput.Empty(), audience);
 
-        await AssertHiddenMiddleIsReadableAsync("call-probe", result);
+        await AssertHiddenMiddleIsReadableAsync("call-probe", result, audience);
     }
 
-    private async Task AssertHiddenMiddleIsReadableAsync(string callId, string result)
+    [Fact]
+    public async Task An_audience_without_the_continuation_tool_cannot_read_the_spill()
+    {
+        var result = await ExecuteAsync(
+            "call-probe", OversizedProbe, ToolInput.Empty(), TrustAudience.Public, _probeOnlyExecutor);
+        Assert.Contains("tool_output_read using CallId='call-probe'", result, StringComparison.Ordinal);
+
+        await Assert.ThrowsAsync<ToolAccessDeniedException>(() => ExecuteAsync(
+            "call-probe-read",
+            ToolOutputReadTool.ToolName,
+            ToolInput.Create("CallId", "call-probe", "Start", 0, "Limit", ToolOutputReadTool.MaximumLimit),
+            TrustAudience.Public,
+            _probeOnlyExecutor));
+    }
+
+    private async Task AssertHiddenMiddleIsReadableAsync(
+        string callId, string result, TrustAudience audience = TrustAudience.Personal)
     {
         // The inline window has the head and the tail, not the middle.
         Assert.Contains("[output truncated to", result, StringComparison.Ordinal);
@@ -108,7 +138,8 @@ public sealed class ToolOutputSpillFreshSessionTests : IDisposable
             var window = await ExecuteAsync(
                 $"{callId}-read-{start}",
                 ToolOutputReadTool.ToolName,
-                ToolInput.Create("CallId", callId, "Start", start, "Limit", ToolOutputReadTool.MaximumLimit));
+                ToolInput.Create("CallId", callId, "Start", start, "Limit", ToolOutputReadTool.MaximumLimit),
+                audience);
             found = window.Contains(HiddenRule, StringComparison.Ordinal);
             if (window.Contains("complete=true", StringComparison.Ordinal))
                 break;
@@ -117,7 +148,12 @@ public sealed class ToolOutputSpillFreshSessionTests : IDisposable
         Assert.True(found, "tool_output_read did not return the text that the inline window removed.");
     }
 
-    private Task<string> ExecuteAsync(string callId, string toolName, IDictionary<string, object?> arguments)
+    private Task<string> ExecuteAsync(
+        string callId,
+        string toolName,
+        IDictionary<string, object?> arguments,
+        TrustAudience audience = TrustAudience.Personal,
+        DispatchingToolExecutor? executor = null)
     {
         var callArguments = new Dictionary<string, object?>(arguments, StringComparer.Ordinal)
         {
@@ -126,8 +162,8 @@ public sealed class ToolOutputSpillFreshSessionTests : IDisposable
         var context = TestToolExecutionContext.CreateBound(
             "signalr/fresh-session",
             _sessionDirectory,
-            new TestToolExecutionContextOptions { Audience = TrustAudience.Personal });
-        return _executor.ExecuteAsync(
+            new TestToolExecutionContextOptions { Audience = audience });
+        return (executor ?? _executor).ExecuteAsync(
             new FunctionCallContent(callId, toolName, callArguments),
             context,
             TestContext.Current.CancellationToken);

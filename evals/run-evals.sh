@@ -2188,7 +2188,8 @@ headless_log_result_has_spill_steer() {
 # the inline budget, and its phrase is in the part that the window removes.
 # Evidence: the skill_load result names tool_output_read with its own call id,
 # the agent reads more through that call id, and the response has the phrase.
-# A read of the physical skill file is a failure: it goes around the spill.
+# The case needs no shell call and no file tool. Each such call is a failure,
+# because it can read the physical skill file and go around the spill.
 assert_complex_skill_spill_steer_single_turn() {
     local load_call_id
     stdout_json_envelope_valid || return 1
@@ -2202,7 +2203,8 @@ assert_complex_skill_spill_steer_single_turn() {
     jq -e --arg id "$load_call_id" '
         any(.toolCalls[]?; .toolName == "tool_output_read" and ((.argumentsJson // "") | contains($id)))
         and (any(.toolCalls[]?;
-            (.toolName != "skill_load") and ((.argumentsJson // "") | test("eval-spill-probe|SKILL\\.md"))) | not)
+            .toolName == "shell_execute" or .toolName == "file_read"
+            or .toolName == "file_search" or .toolName == "file_list") | not)
     ' "$STDOUT_FILE" >/dev/null 2>&1 || return 1
     stdout_response_contains 'cobalt-heron-4471'
 }
