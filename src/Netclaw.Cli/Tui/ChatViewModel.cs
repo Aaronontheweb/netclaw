@@ -21,6 +21,9 @@ namespace Netclaw.Cli.Tui;
 /// </summary>
 public partial class ChatViewModel : ReactiveViewModel
 {
+    /// <summary>Termina route every host registers the chat page under.</summary>
+    public const string Route = "/chat";
+
     /// <summary>
     /// Cap on the approval body shown in the expanded (Ctrl+O) view.
     /// Without it, a multi-KB command handed verbatim to a TextNode can

@@ -222,7 +222,7 @@ static async Task RunAsync(string[] args)
                 termina.RegisterRoute<InitWizardPage, InitWizardViewModel>("/init");
                 termina.RegisterRoute<InitExistingInstallPage, InitExistingInstallViewModel>(InitExistingInstallViewModel.MenuRoute);
                 termina.RegisterRoute<IdentityRedoPage, IdentityRedoViewModel>(InitExistingInstallViewModel.IdentityRoute);
-                termina.RegisterRoute<ChatPage, ChatViewModel>("/chat");
+                termina.RegisterRoute<ChatPage, ChatViewModel>(ChatViewModel.Route);
             });
 
             using var initApp = builder.Build();
@@ -1140,10 +1140,10 @@ static async Task RunAsync(string[] args)
     switch (mode)
     {
         case "chat":
-            webBuilder.Services.AddTermina("/chat", termina =>
+            webBuilder.Services.AddTermina(ChatViewModel.Route, termina =>
             {
                 ConfigureNativeSelection(termina);
-                termina.RegisterRoute<ChatPage, ChatViewModel>("/chat");
+                termina.RegisterRoute<ChatPage, ChatViewModel>(ChatViewModel.Route);
             });
             break;
 
@@ -1152,7 +1152,7 @@ static async Task RunAsync(string[] args)
             {
                 ConfigureNativeSelection(termina);
                 termina.RegisterRoute<SessionsPage, SessionsViewModel>("/sessions");
-                termina.RegisterRoute<ChatPage, ChatViewModel>("/chat");
+                termina.RegisterRoute<ChatPage, ChatViewModel>(ChatViewModel.Route);
             });
             break;
 

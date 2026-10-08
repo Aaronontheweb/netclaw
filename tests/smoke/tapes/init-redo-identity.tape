@@ -55,8 +55,12 @@ Type "UTC"
 Enter
 Wait+Screen@10s /Identity updated/
 
-# ─── Exit the saved screen back to the shell ────────────────────────
-Enter
+# ─── Skip the guided chat: Esc exits to the shell, no chat opens ─────
+# Enter would start the guided identity chat (see init-redo-chat.tape). This seed
+# has no provider, so only the skip path is exercised here.
+Wait+Screen@10s /Start guided identity chat/
+Escape
+Sleep 1s
 Wait+Screen@10s /TAPE\$/
 
 Type "exit"

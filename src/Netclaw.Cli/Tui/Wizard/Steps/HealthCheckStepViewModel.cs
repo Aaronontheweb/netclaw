@@ -298,7 +298,7 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
 
     /// <summary>Launch the chat experience after a successful bootstrap. Routed through
     /// the wrapped <see cref="Navigate"/> delegate so the onboarding trigger is set first.</summary>
-    public void LaunchChat() => Navigate?.Invoke("/chat");
+    public void LaunchChat() => Navigate?.Invoke(ChatViewModel.Route);
 
     /// <summary>
     /// Applies the freshly-written config and waits for the daemon to be ready on it.
