@@ -469,11 +469,28 @@ public sealed class DaemonApi
         => ProbeReadinessAsync(ResolveEndpoint(_paths), ct);
 
     /// <summary>
-    /// Probes the daemon this home runs, ignoring <c>NETCLAW_DAEMON_ENDPOINT</c> and any paired
-    /// remote endpoint, for callers that ask about the local process (<c>netclaw daemon status</c>).
+    /// Probes the daemon this home runs for <c>netclaw daemon status</c>: a plain anonymous GET of
+    /// <c>/api/health/ready</c> at the endpoint <see cref="ResolveLocalControlEndpoint"/> yields
+    /// (ignoring <c>NETCLAW_DAEMON_ENDPOINT</c> and any paired remote endpoint). It builds no host
+    /// and no authenticated client, so it reads no secrets or keys, and it never throws: any failure
+    /// reports not ready.
     /// </summary>
-    internal Task<DaemonReadiness> ProbeLocalReadinessAsync(CancellationToken ct = default)
-        => ProbeReadinessAsync(LocalControlEndpoint, ct);
+    internal static async Task<(bool Ready, string Endpoint)> ProbeLocalReadinessAsync(
+        NetclawPaths paths, CancellationToken ct = default)
+    {
+        var endpoint = DefaultEndpoint;
+        try
+        {
+            endpoint = ResolveLocalControlEndpoint(paths);
+            using var http = new HttpClient(CreateLocalControlHttpHandler()) { Timeout = DefaultTimeout };
+            using var response = await http.GetAsync($"{endpoint}/api/health/ready", ct);
+            return (response.IsSuccessStatusCode, endpoint);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            return (false, endpoint);
+        }
+    }
 
     private async Task<DaemonReadiness> ProbeReadinessAsync(string endpoint, CancellationToken ct)
     {

@@ -544,21 +544,11 @@ static async Task RunAsync(string[] args)
                 // The container HEALTHCHECK runs this command, so readiness is probed at the
                 // endpoint the CLI resolves (netclaw.json, NETCLAW_* env, default) instead of a
                 // port baked into the image.
-                using var statusHost = CreateQuietHostBuilder(args).Build();
-                var statusApi = statusHost.Services.GetRequiredService<DaemonApi>();
-                bool ready;
-                try
-                {
-                    ready = (await statusApi.ProbeLocalReadinessAsync()).Healthy;
-                }
-                catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
-                {
-                    ready = false;
-                }
+                var (ready, readyEndpoint) = await DaemonApi.ProbeLocalReadinessAsync(paths);
 
                 if (!ready)
                 {
-                    Console.WriteLine($"Daemon process is running but {statusApi.LocalControlEndpoint}/api/health/ready did not answer.");
+                    Console.WriteLine($"Daemon process is running but {readyEndpoint}/api/health/ready did not answer.");
                     Environment.ExitCode = 1;
                     return;
                 }

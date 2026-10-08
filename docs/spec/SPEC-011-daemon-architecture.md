@@ -238,7 +238,8 @@ unit's `Environment` property decides: no `NETCLAW_HOME` means the default home.
 A unit whose `NETCLAW_HOME` comes only from an `EnvironmentFile`, sampled at an
 instant when it has no main process, is therefore treated as serving the default
 home. For a home the unit does not serve, `start` and `stop` act on that home's
-own daemon process and never on the unit.
+own daemon process and never on the unit. A stale PID file that names another
+home's live `netclawd` is still trusted by a direct `stop`, as in 0.27.1.
 
 The session journals each accepted input before it acknowledges the source.
 The record retains the text, media, source message ID, and original authority.

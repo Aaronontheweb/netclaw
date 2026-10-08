@@ -555,6 +555,28 @@ public sealed class DaemonCommandWiringTests : IDisposable
         Assert.Contains("netclaw status", output);
     }
 
+    [SlopwatchSuppress("SW001", "Needs a non-root Linux user: root may chmod the stand-in directory.")]
+    [Fact(SkipUnless = nameof(IsLinuxNonRoot), Skip = "Needs a non-root Linux user: root may chmod the stand-in directory.")]
+    public async Task Status_DoesNotTouchKeysOrSecrets_SoItSucceedsWhenTheKeysDirectoryIsNotOurs()
+    {
+        // A CLI user other than the daemon's owner cannot chmod the home's keys directory, and
+        // building the data-protection provider does exactly that. The keys directory is a link to a
+        // root-owned directory here, which the test user cannot chmod either (the attempt fails).
+        var port = FreePort();
+        WriteDaemonConfig(ScratchHome, port);
+        Directory.CreateSymbolicLink(Path.Combine(ScratchHome, "keys"), "/usr");
+        using var lockHolder = HoldDaemonLock(ScratchHome);
+        using var daemon = Listen(port, request =>
+            request.Url!.AbsolutePath == "/api/health/ready" ? (200, "{}") : (404, "{}"));
+
+        var (exitCode, output) = await RunAsync(ScratchHome, ["daemon", "status"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("netclaw status", output);
+    }
+
+    public static bool IsLinuxNonRoot => OperatingSystem.IsLinux() && Environment.UserName != "root";
+
     [Fact]
     public async Task Status_ProbesThisHomesDaemon_NotTheEndpointFromTheEnvironment()
     {
