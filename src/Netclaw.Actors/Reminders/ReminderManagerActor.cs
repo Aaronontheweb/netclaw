@@ -33,17 +33,16 @@ public sealed partial class ReminderManagerActor : ReceiveActor, IWithTimers
     internal const int FailurePauseThreshold = 5;
 
     /// <summary>
-    /// How long a reminder that reached a terminal outcome (a completed one-shot, or a
-    /// reminder paused as failed) keeps its definition and execution history before it
+    /// How long a completed one-shot keeps its definition and execution history before it
     /// is pruned. Not configurable. Also handed to Akka.Reminders as its
     /// <c>PruneOlderThan</c> (the library's own default), so both stores agree.
     /// </summary>
     internal static readonly TimeSpan TerminalRetention = TimeSpan.FromDays(12);
 
-    /// <summary>How often terminal reminders past <see cref="TerminalRetention"/> are pruned.</summary>
+    /// <summary>How often completed one-shots past <see cref="TerminalRetention"/> are pruned.</summary>
     internal static readonly TimeSpan TerminalPruneInterval = TimeSpan.FromHours(12);
 
-    private static readonly object TerminalPruneTimerKey = new();
+    internal static readonly object TerminalPruneTimerKey = new();
 
     /// <summary>Recent run records returned by the per-reminder status query.</summary>
     internal const int RecentHistoryCount = 5;
@@ -1202,16 +1201,19 @@ public sealed partial class ReminderManagerActor : ReceiveActor, IWithTimers
     }
 
     /// <summary>
-    /// Removes every disabled reminder that reached a terminal outcome more than
-    /// <see cref="TerminalRetention"/> ago, with its history. This is the only rule that
-    /// clears completed one-shots and reminders paused as failed. Returns the removed ids.
+    /// Removes every completed one-shot (disabled, outcome <c>Completed</c>) whose last update is
+    /// more than <see cref="TerminalRetention"/> ago, with its history. Recurring reminders and
+    /// failed one-shots are never pruned; only an explicit delete removes them. Returns the removed ids.
     /// </summary>
     private async Task<IReadOnlyList<ReminderId>> PruneTerminalRemindersAsync()
     {
         var cutoffMs = _timeProvider.GetUtcNow().Subtract(TerminalRetention).ToUnixTimeMilliseconds();
         var pruned = new List<ReminderId>();
         foreach (var definition in _definitionStore.List().Where(d =>
-                     !d.Enabled && d.TerminalOutcome is not null && d.UpdatedAtMs < cutoffMs))
+                     !d.Enabled
+                     && d.Schedule.Type == ReminderScheduleType.OneShot
+                     && d.TerminalOutcome == ReminderTerminalOutcome.Completed
+                     && d.UpdatedAtMs < cutoffMs))
         {
             try
             {
@@ -1220,12 +1222,12 @@ public sealed partial class ReminderManagerActor : ReceiveActor, IWithTimers
             }
             catch (Exception ex)
             {
-                _log.Warning(ex, "Failed to prune terminal reminder '{0}'", definition.Id.Value);
+                _log.Warning(ex, "Failed to prune completed one-shot '{0}'", definition.Id.Value);
             }
         }
 
         if (pruned.Count > 0)
-            _log.Info("Pruned {0} terminal reminder(s) older than {1}", pruned.Count, TerminalRetention);
+            _log.Info("Pruned {0} completed one-shot(s) older than {1}", pruned.Count, TerminalRetention);
 
         return pruned;
     }
@@ -1536,7 +1538,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor, IWithTimers
         Sender.Tell(new ReminderHealthResponse(
             scheduledCount,
             _activeExecutions.Count,
-            _definitionStore.List().Count(d => d.ConsecutiveFailures > 0)));
+            _definitionStore.List().Count(d => d.Enabled && d.ConsecutiveFailures > 0)));
     }
 
     private async Task HandleGetStatusAsync(GetReminderStatusQuery query)

@@ -81,6 +81,16 @@ internal static class ReminderCommand
 
     private static async Task<int> RunListAsync(DaemonApi api, string[] args, TextWriter output, TextWriter error)
     {
+        foreach (var arg in args.Skip(2))
+        {
+            if (arg != "--json")
+            {
+                error.WriteLine($"[FAIL] list options: Unknown option '{arg}'.");
+                error.WriteLine("       usage: netclaw reminder list [--json]");
+                return 1;
+            }
+        }
+
         try
         {
             using var response = await api.ListRemindersAsync();
@@ -92,7 +102,7 @@ internal static class ReminderCommand
 
             var json = await response.Content.ReadAsStringAsync();
             var reminders = JsonSerializer.Deserialize<JsonElement>(json);
-            var asJson = args.Skip(2).Contains("--json", StringComparer.Ordinal);
+            var asJson = args.Length > 2;
 
             if (reminders.ValueKind == JsonValueKind.Array && reminders.GetArrayLength() == 0)
             {

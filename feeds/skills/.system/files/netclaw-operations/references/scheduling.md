@@ -101,10 +101,14 @@ A one-shot reminder stays enabled while an occurrence can retry. After a
 successful acknowledgement, it becomes disabled with a `Completed` outcome. A
 poison one-shot becomes disabled with a `Failed` outcome. Either way the
 definition and its history stay available (`netclaw reminder history <id>`,
-`netclaw reminder status <id>`) for 12 days, then Netclaw prunes both. The same
-rule clears reminders that were auto-disabled as failed, so they stop counting
-in `netclaw stats`. `netclaw reminder delete <id>` removes one sooner. Creating a
-reminder with the id of a completed one-shot replaces it and drops its old history.
+`netclaw reminder status <id>`). A `Completed` one-shot is pruned with its
+history 12 days after it ran. Netclaw never prunes a `Failed` one-shot or any
+recurring reminder, whatever its state; only `netclaw reminder delete <id>`
+removes those (or removes a completed one sooner). Reminders that are disabled
+or auto-disabled do not count in the `failed` figure of `netclaw stats`, which
+counts only enabled reminders with failures. Creating a reminder with the id of
+a completed one-shot replaces it and drops its old history; a failed one-shot
+keeps its id until you delete it.
 
 Each attempt has a 20-minute inactivity limit and a one-hour absolute limit.
 The durable acknowledgement lease is 70 minutes. A daemon crash therefore lets

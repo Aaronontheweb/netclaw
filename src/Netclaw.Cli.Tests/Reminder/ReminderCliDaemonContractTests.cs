@@ -202,6 +202,34 @@ public sealed class ReminderCliDaemonContractTests : IAsyncDisposable
         Assert.StartsWith("[", result.Stdout, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task List_table_shows_the_utc_stamp_not_the_sentence_the_daemon_formats()
+    {
+        await using var app = await StartDaemonAsync();
+        await ImportAsync(app, WriteFile("definition.json", NamedEnumDefinition));
+
+        var result = await RunAsync(app, "reminder", "list");
+
+        var row = result.Stdout.Split(Environment.NewLine, StringSplitOptions.RemoveEmptyEntries)
+            .Single(l => l.StartsWith("import-e2e", StringComparison.Ordinal));
+        Assert.Matches(@"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}Z", row);
+        Assert.DoesNotContain("(", row, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("--jsno")]
+    [InlineData("extra")]
+    public async Task List_rejects_unknown_options_without_calling_the_daemon(string option)
+    {
+        await using var app = await StartDaemonAsync();
+
+        var result = await RunAsync(app, "reminder", "list", option);
+
+        Assert.Equal(1, result.ExitCode);
+        Assert.Contains($"Unknown option '{option}'", result.Stderr, StringComparison.Ordinal);
+        Assert.Equal("", result.Stdout);
+    }
+
     [Theory]
     [InlineData(false, "No reminders.")]
     [InlineData(true, "No active reminders.")]
@@ -318,7 +346,7 @@ public sealed class ReminderCliDaemonContractTests : IAsyncDisposable
             Receive<ListRemindersCommand>(_ =>
                 Sender.Tell(new ReminderListResponse(state.Saved.Values.Select(d => new ReminderInfo(
                     d.Id, d.Title, d.Instructions, d.Delivery, d.DeliveryRequired, d.DeliveryInstructions,
-                    d.Schedule, d.Schedule.FireAt, d.Enabled, null, d.Audience,
+                    d.Schedule, new DateTimeOffset(2026, 10, 8, 9, 0, 0, TimeSpan.Zero), d.Enabled, null, d.Audience,
                     ConsecutiveFailures: d.ConsecutiveFailures, TerminalOutcome: d.TerminalOutcome)).ToList())));
 
             Receive<GetReminderHistoryQuery>(query =>
