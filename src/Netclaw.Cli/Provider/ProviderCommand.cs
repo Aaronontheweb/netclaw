@@ -30,6 +30,10 @@ internal static class ProviderCommand
         var writer = output ?? Console.Out;
         var subcommand = args.Length > 1 ? args[1] : "help";
 
+        // Each subcommand takes operands, so a help flag after it would be read as a name.
+        if (CliArgsParser.HasTrailingHelpToken(args, startIndex: 2, includeBareHelp: false))
+            return Task.FromResult(WriteHelp(registry, writer));
+
         return subcommand switch
         {
             "list" => Task.FromResult(RunList(paths, registry, writer)),

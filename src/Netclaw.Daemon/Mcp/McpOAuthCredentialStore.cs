@@ -150,7 +150,7 @@ internal sealed class PendingRefreshGrant(string presentedRefreshToken)
 /// </summary>
 internal sealed class McpOAuthCredentialStore
 {
-    internal const string SectionKey = "McpOAuthTokens";
+    internal const string SectionKey = McpOAuthTokenSet.SecretsSectionKey;
 
     private static readonly JsonSerializerOptions JsonOptions = new()
     {
