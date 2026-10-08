@@ -237,7 +237,7 @@ public sealed class ChatOnboardingTests : IDisposable
     [Fact]
     public async Task Cli_onboarding_chat_without_a_daemon_exits_1_and_names_the_flag()
     {
-        Assert.SkipUnless(File.Exists(ScriptPath), "needs script(1) to give the TUI a pty");
+        Assert.SkipUnless(OperatingSystem.IsLinux() && File.Exists(ScriptPath), "needs util-linux script(1) to give the TUI a pty");
         WriteConfiguredHome();
 
         var (exitCode, output) = await RunCliAsync("chat --onboarding", usePty: true);
@@ -250,7 +250,7 @@ public sealed class ChatOnboardingTests : IDisposable
     [Fact]
     public async Task Cli_plain_chat_without_a_daemon_exits_1_without_the_hint()
     {
-        Assert.SkipUnless(File.Exists(ScriptPath), "needs script(1) to give the TUI a pty");
+        Assert.SkipUnless(OperatingSystem.IsLinux() && File.Exists(ScriptPath), "needs util-linux script(1) to give the TUI a pty");
         WriteConfiguredHome();
 
         var (exitCode, output) = await RunCliAsync("chat", usePty: true);
