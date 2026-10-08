@@ -536,46 +536,54 @@ public partial class ChatViewModel : ReactiveViewModel
             IsInputEnabled.Value = true;
             _connectAttempts = 0;
 
-            // A message leaves its queue (or the initial-message slot) only after it was sent, so
-            // a send that throws leaves it first in line for the next set-up. The chat is marked
-            // ready only once the queue is empty: until then a new submit queues behind the
-            // messages already waiting instead of overtaking them.
+            // Each queued message (and the initial message) is taken out first and sent once. One
+            // whose send throws is dropped, not put back: a message that can never be sent (too
+            // large for the connection, for one) would otherwise stay first in line and make every
+            // reconnect fail again. After a failure the method returns; the connection event that
+            // follows a torn-down connection flushes the messages still queued. The chat is marked
+            // ready only once the queue is empty, so a new submit queues behind the messages already
+            // waiting instead of overtaking them.
             var triggerSent = false;
-            try
+            do
             {
                 while (true)
                 {
-                    if (_pendingMessages.TryPeek(out var pending))
+                    var isTrigger = false;
+                    var found = _pendingMessages.TryDequeue(out var next);
+                    if (!found && _initialMessage is { } trigger)
                     {
-                        await _daemonClient.SendAsync(pending);
-                        _pendingMessages.TryDequeue(out _);
-                        continue;
-                    }
-
-                    // Auto-send hidden trigger message (e.g., onboarding interview prompt).
-                    // Not rendered as a user bubble — the LLM's greeting is the first visible thing.
-                    if (_initialMessage is { } trigger)
-                    {
+                        // Auto-send hidden trigger message (e.g., onboarding interview prompt).
+                        // Not rendered as a user bubble — the LLM's greeting is the first visible thing.
+                        next = trigger;
+                        _initialMessage = null;
+                        found = isTrigger = true;
                         IsGenerating.Value = true;
                         StatusMessage.Value = "Generating...";
                         RequestRedraw();
-                        await _daemonClient.SendAsync(trigger);
-                        _initialMessage = null;
-                        triggerSent = true;
-                        continue;
                     }
 
-                    break;
-                }
-            }
-            catch
-            {
-                _sessionReady = false;
-                IsGenerating.Value = false;
-                throw;
-            }
+                    if (!found)
+                        break;
 
-            _sessionReady = true;
+                    try
+                    {
+                        await _daemonClient.SendAsync(next!);
+                        triggerSent |= isTrigger;
+                    }
+                    catch (Exception ex)
+                    {
+                        _sessionReady = false;
+                        IsGenerating.Value = false;
+                        StatusMessage.Value = $"A message could not be sent and was dropped ({ex.Message}).";
+                        RequestRedraw();
+                        return;
+                    }
+                }
+
+                _sessionReady = true;
+            }
+            while (!_pendingMessages.IsEmpty); // a submit that queued itself just before the flag was set
+
             if (!triggerSent && !IsGenerating.Value)
                 StatusMessage.Value = "Ready";
 
@@ -583,7 +591,19 @@ public partial class ChatViewModel : ReactiveViewModel
         }
         finally
         {
+            ReleaseSessionSetup();
+        }
+    }
+
+    private void ReleaseSessionSetup()
+    {
+        try
+        {
             _sessionSetup.Release();
+        }
+        catch (ObjectDisposedException)
+        {
+            return; // the view model was disposed while the set-up was in flight
         }
     }
 

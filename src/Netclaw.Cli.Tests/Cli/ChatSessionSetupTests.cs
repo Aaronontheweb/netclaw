@@ -8,6 +8,7 @@ using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Tui;
 using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
+using R3;
 using Xunit;
 
 namespace Netclaw.Cli.Tests.Cli;
@@ -31,6 +32,9 @@ public sealed class ChatSessionSetupTests : IDisposable
     private readonly TaskCompletionSource _releaseFirstSetup = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private int _gated;
 
+    // Awaited by a SendMessage RPC before it is recorded; a test uses it to hold or fail a send.
+    private Func<string, Task>? _sendGate;
+
     public ChatSessionSetupTests()
     {
         _paths = new NetclawPaths(_dir.Path);
@@ -45,15 +49,16 @@ public sealed class ChatSessionSetupTests : IDisposable
                 await _releaseFirstSetup.Task;
             }
         };
-        _transport.VoidInvokeHook = (method, args, _) =>
+        _transport.VoidInvokeHook = async (method, args, _) =>
         {
             if (method == "SendMessage" && args.Length > 1 && args[1] is string text)
             {
+                if (_sendGate is not null)
+                    await _sendGate(text);
+
                 _sent.Enqueue(text);
                 _sentSignal.Release();
             }
-
-            return Task.CompletedTask;
         };
     }
 
@@ -100,7 +105,7 @@ public sealed class ChatSessionSetupTests : IDisposable
         await overlapping.WaitAsync(Timeout, TestContext.Current.CancellationToken);
         await WaitForSendsAsync(1);
 
-        await chat.SubmitAsync("closing-turn");
+        await chat.SubmitAsync("closing-turn").WaitAsync(Timeout, TestContext.Current.CancellationToken);
         await WaitForSendsAsync(1);
 
         // One set-up RPC, then the trigger; the next EnsureSession belongs to the closing turn.
@@ -117,43 +122,90 @@ public sealed class ChatSessionSetupTests : IDisposable
         using var _ = chat;
         await using var __ = client;
 
-        await chat.SubmitAsync("m1");
-        await chat.SubmitAsync("m2");
-        await chat.SubmitAsync("m3");
+        await chat.SubmitAsync("m1").WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        await chat.SubmitAsync("m2").WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        await chat.SubmitAsync("m3").WaitAsync(Timeout, TestContext.Current.CancellationToken);
         _releaseFirstSetup.SetResult();
 
         await WaitForSendsAsync(3);
-        await chat.SubmitAsync("sentinel");
+        await chat.SubmitAsync("sentinel").WaitAsync(Timeout, TestContext.Current.CancellationToken);
         await WaitForSendsAsync(1);
 
         Assert.Equal(["m1", "m2", "m3", "sentinel"], _sent.ToArray());
     }
 
+    // A message that can never be sent (too large for the connection, say) must not stay first in
+    // line: every reconnect would try it again and fail again. It is attempted once and dropped.
     [Fact]
-    public async Task A_message_whose_send_fails_stays_queued_and_goes_out_at_the_next_set_up()
+    public async Task A_message_whose_send_always_fails_is_attempted_once_and_dropped_and_the_next_one_goes_out()
     {
-        var failedOnce = 0;
-        var inner = _transport.VoidInvokeHook;
-        _transport.VoidInvokeHook = (method, args, ct) =>
+        var attemptsOfA = 0;
+        _sendGate = text =>
         {
-            if (method == "SendMessage" && args.Length > 1 && args[1] is "m1" && Interlocked.Exchange(ref failedOnce, 1) == 0)
+            if (text == "A")
+            {
+                Interlocked.Increment(ref attemptsOfA);
                 throw new IOException("the connection dropped during the send");
+            }
 
-            return inner!(method, args, ct);
+            return Task.CompletedTask;
+        };
+        var (chat, client) = await StartChatAsync();
+        using var _ = chat;
+        await using var __ = client;
+        var statuses = new ConcurrentQueue<string>();
+        using var subscription = chat.StatusMessage.Subscribe(statuses.Enqueue);
+
+        await chat.SubmitAsync("A").WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        await chat.SubmitAsync("B").WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        _releaseFirstSetup.SetResult();
+        await WaitForSendsAsync(1);
+
+        // A closing message: it is only delivered if A is no longer first in line.
+        await chat.SubmitAsync("closing").WaitAsync(Timeout, TestContext.Current.CancellationToken);
+        await WaitForSendsAsync(1);
+
+        Assert.Equal(["B", "closing"], _sent.ToArray());
+        Assert.Equal(1, Volatile.Read(ref attemptsOfA));
+        Assert.Contains(statuses, status => status.StartsWith("A message could not be sent and was dropped", StringComparison.Ordinal));
+        // The first set-up, the one that delivered B, and the closing message's own EnsureSession
+        // when it was sent directly. Nothing retries A, so there is no reconnect storm.
+        Assert.InRange(_transport.EnsureSessionCalls, 2, 3);
+    }
+
+    [Fact]
+    public async Task A_message_submitted_while_the_queue_is_being_flushed_waits_its_turn()
+    {
+        var firstSendReached = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseFirstSend = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _sendGate = async text =>
+        {
+            if (text == "q1")
+            {
+                firstSendReached.TrySetResult();
+                await releaseFirstSend.Task;
+            }
         };
         var (chat, client) = await StartChatAsync();
         using var _ = chat;
         await using var __ = client;
 
-        await chat.SubmitAsync("m1");
+        await chat.SubmitAsync("q1").WaitAsync(Timeout, TestContext.Current.CancellationToken);
         _releaseFirstSetup.SetResult();
+        await firstSendReached.Task.WaitAsync(Timeout, TestContext.Current.CancellationToken);
 
-        // The set-up that tried to send m1 failed. The next set-up must still find m1 first in line.
-        await chat.EnsureSessionAndFlushAsync().WaitAsync(Timeout, TestContext.Current.CancellationToken);
-        await WaitForSendsAsync(1);
-        await chat.SubmitAsync("sentinel");
+        // The flush is in flight and q1 is being sent. The chat is not ready yet, so q2 queues behind
+        // q1 and the submit returns at once; a chat that was already ready would send q2 directly.
+        var submit = chat.SubmitAsync("q2");
+        var queuedAtOnce = submit.IsCompleted;
+        releaseFirstSend.SetResult(); // before the assertion, so a failure cannot leave the send held
+        Assert.True(queuedAtOnce, "q2 was sent directly instead of queueing behind q1");
+        await submit.WaitAsync(Timeout, TestContext.Current.CancellationToken);
+
+        await WaitForSendsAsync(2);
+        await chat.SubmitAsync("sentinel").WaitAsync(Timeout, TestContext.Current.CancellationToken);
         await WaitForSendsAsync(1);
 
-        Assert.Equal(["m1", "sentinel"], _sent.ToArray());
+        Assert.Equal(["q1", "q2", "sentinel"], _sent.ToArray());
     }
 }
