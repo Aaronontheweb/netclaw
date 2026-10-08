@@ -1070,8 +1070,6 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
             Schedule = new ReminderSchedule
             {
                 Type = ReminderScheduleType.Interval,
-                // Must exceed the 1h execution timeout + settlement margin,
-                // otherwise the safe-execution-lease check skips the occurrence.
                 Interval = TimeSpan.FromHours(2),
                 FireAt = now.AddMilliseconds(100)
             },
@@ -1405,6 +1403,162 @@ public class ReminderManagerActorTests : TestKit, IAsyncDisposable
         Assert.Equal(0, health.ActiveExecutions);
         Assert.Equal(invocationCount, _sessionPipeline.InvocationCount);
     }
+
+    // The real scheduler makes each envelope here, so these cases also pin the
+    // Akka.Reminders deadline contract: an interval occurrence that has no later
+    // retry carries its next due time as the deadline.
+    [Theory]
+    [InlineData(1)]
+    [InlineData(5)]
+    [InlineData(15)]
+    [InlineData(30)]
+    [InlineData(60)]
+    [InlineData(90)]
+    public async Task Scheduled_interval_occurrence_starts_execution(int intervalMinutes)
+    {
+        var manager = await GetManagerAsync();
+        var invocationCount = _sessionPipeline.InvocationCount;
+        var definition = CreateIntervalDefinition(
+            $"interval-{intervalMinutes}m",
+            TimeSpan.FromMinutes(intervalMinutes),
+            fireAt: TimeProvider.System.GetUtcNow().AddMilliseconds(100));
+
+        var saved = await manager.Ask<ReminderSavedResponse>(
+            new SaveReminderCommand(
+                definition,
+                Authorization: new ReminderAudienceAuthorizationContext(TrustAudience.Team, "test")),
+            TimeSpan.FromSeconds(5),
+            TestContext.Current.CancellationToken);
+        Assert.True(saved.Success, saved.ErrorMessage);
+
+        await AwaitAssertAsync(async () =>
+        {
+            var status = await manager.Ask<ReminderStatusResponse>(
+                new GetReminderStatusQuery(definition.Id, OperatorAuthorization),
+                TimeSpan.FromSeconds(3),
+                TestContext.Current.CancellationToken);
+            Assert.Equal(0, status.SkippedDuplicates);
+            Assert.True(_sessionPipeline.InvocationCount > invocationCount,
+                "Expected the interval occurrence to start an execution.");
+        }, duration: TimeSpan.FromSeconds(5), cancellationToken: TestContext.Current.CancellationToken);
+    }
+
+    [Theory]
+    [InlineData(1)]
+    [InlineData(5)]
+    [InlineData(60)]
+    public async Task Interval_occurrence_starts_until_its_next_due_time(int intervalMinutes)
+    {
+        var manager = await GetManagerAsync();
+        var interval = TimeSpan.FromMinutes(intervalMinutes);
+        var due = _timeProvider.GetUtcNow();
+        var definition = CreateIntervalDefinition($"current-{intervalMinutes}m", interval, fireAt: due);
+        _definitionStore.Save(definition);
+        var invocationCount = _sessionPipeline.InvocationCount;
+
+        // One second remains before the next due time.
+        _timeProvider.Advance(interval - TimeSpan.FromSeconds(1));
+        manager.Tell(CreateIntervalEnvelope(definition, due, due + interval));
+
+        await AwaitAssertAsync(
+            () => Assert.True(_sessionPipeline.InvocationCount > invocationCount),
+            duration: TimeSpan.FromSeconds(5),
+            cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(0, await GetSkippedOccurrenceCountAsync(manager, definition.Id));
+    }
+
+    // A daemon that was down, or a manager that was busy, must not run an
+    // occurrence that a later occurrence has replaced.
+    [Fact]
+    public async Task Interval_occurrence_at_its_next_due_time_is_skipped()
+    {
+        var manager = await GetManagerAsync();
+        var interval = TimeSpan.FromMinutes(1);
+        var due = _timeProvider.GetUtcNow();
+        var definition = CreateIntervalDefinition("stale-interval", interval, fireAt: due);
+        _definitionStore.Save(definition);
+        var invocationCount = _sessionPipeline.InvocationCount;
+
+        _timeProvider.Advance(interval);
+        var controlProbe = CreateTestProbe("stale-interval-control");
+        controlProbe.Send(manager, CreateIntervalEnvelope(definition, due, due + interval));
+        controlProbe.Send(manager, GetReminderHealthQuery.Instance);
+        var health = await controlProbe.ExpectMsgAsync<ReminderHealthResponse>(
+            TimeSpan.FromSeconds(5),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, health.ActiveExecutions);
+        Assert.Equal(invocationCount, _sessionPipeline.InvocationCount);
+        Assert.Equal(1, await GetSkippedOccurrenceCountAsync(manager, definition.Id));
+    }
+
+    // Akka.Reminders retries this occurrence when the acknowledgement lease
+    // ends, because the deadline is earlier than the next due time. A one-hour
+    // attempt that starts with 60 minutes of lease can then run two times.
+    [Fact]
+    public async Task Interval_occurrence_with_short_acknowledgement_lease_is_skipped()
+    {
+        var manager = await GetManagerAsync();
+        var due = _timeProvider.GetUtcNow();
+        var definition = CreateIntervalDefinition("short-lease-interval", TimeSpan.FromHours(2), fireAt: due);
+        _definitionStore.Save(definition);
+        var invocationCount = _sessionPipeline.InvocationCount;
+
+        var controlProbe = CreateTestProbe("short-lease-interval-control");
+        controlProbe.Send(manager, CreateIntervalEnvelope(definition, due, due.AddMinutes(60)));
+        controlProbe.Send(manager, GetReminderHealthQuery.Instance);
+        var health = await controlProbe.ExpectMsgAsync<ReminderHealthResponse>(
+            TimeSpan.FromSeconds(5),
+            cancellationToken: TestContext.Current.CancellationToken);
+
+        Assert.Equal(0, health.ActiveExecutions);
+        Assert.Equal(invocationCount, _sessionPipeline.InvocationCount);
+        Assert.Equal(1, await GetSkippedOccurrenceCountAsync(manager, definition.Id));
+    }
+
+    private static async Task<int> GetSkippedOccurrenceCountAsync(IActorRef manager, ReminderId id)
+    {
+        var status = await manager.Ask<ReminderStatusResponse>(
+            new GetReminderStatusQuery(id, OperatorAuthorization),
+            TimeSpan.FromSeconds(3),
+            TestContext.Current.CancellationToken);
+        return status.SkippedDuplicates;
+    }
+
+    private static ReminderDefinition CreateIntervalDefinition(string id, TimeSpan interval, DateTimeOffset fireAt)
+    {
+        var now = TimeProvider.System.GetUtcNow();
+        return new ReminderDefinition
+        {
+            Id = new ReminderId(id),
+            Title = id,
+            Instructions = "Check status",
+            Delivery = new ReminderDelivery { Kind = DeliveryKind.None },
+            Schedule = new ReminderSchedule
+            {
+                Type = ReminderScheduleType.Interval,
+                Interval = interval,
+                FireAt = fireAt
+            },
+            Audience = TrustAudience.Team,
+            Boundary = TrustBoundary.Team,
+            Enabled = true,
+            CreatedBy = "test",
+            CreatedAt = now,
+            UpdatedAt = now
+        };
+    }
+
+    private static ReminderEnvelope<ReminderPayload> CreateIntervalEnvelope(
+        ReminderDefinition definition,
+        DateTimeOffset due,
+        DateTimeOffset deadline) =>
+        new(
+            new ReminderEntity(ReminderManagerActor.ShardRegionName, ReminderManagerActor.EntityId),
+            new ReminderKey(definition.Id.Value),
+            due,
+            new ReminderDeadline(deadline),
+            new ReminderPayload { Id = definition.Id });
 
     /// <summary>
     /// Test-only gateway stub: handles <see cref="DeliverTrustedSessionTurn"/>

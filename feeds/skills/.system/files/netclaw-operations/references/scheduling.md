@@ -114,8 +114,15 @@ notices plus the disabled notice), not the unbounded skip stream.
 
 A one-shot that cannot start receives a negative acknowledgement. Akka.Reminders
 then controls its retry delay. Netclaw acknowledges and skips a blocked recurring
-occurrence. It does not keep a stale catch-up queue. The status command shows the
-skip count:
+occurrence. It does not keep a stale catch-up queue.
+
+An interval can be shorter than the one-hour attempt limit. An interval
+occurrence starts when it arrives before its next due time. If the previous run
+is still active at the next due time, Netclaw skips that occurrence. After
+downtime, Netclaw runs the current occurrence at most. It does not replay the
+occurrences that it missed.
+
+The status command shows the skip count:
 
 ```
 netclaw reminder status <id>

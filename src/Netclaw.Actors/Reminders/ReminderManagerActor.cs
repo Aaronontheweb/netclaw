@@ -645,7 +645,7 @@ public sealed partial class ReminderManagerActor : ReceiveActor
             return;
         }
 
-        if (!HasSafeExecutionLease(envelope, _timeProvider.GetUtcNow()))
+        if (!HasSafeExecutionLease(definition, envelope, _timeProvider.GetUtcNow()))
         {
             var isOneShot = definition.Schedule.Type == ReminderScheduleType.OneShot;
             if (isOneShot)
@@ -683,10 +683,29 @@ public sealed partial class ReminderManagerActor : ReceiveActor
         && active.Deadline == candidate.Deadline;
 
     private static bool HasSafeExecutionLease(
+        ReminderDefinition definition,
         ReminderEnvelope<ReminderPayload> envelope,
-        DateTimeOffset now) =>
-        envelope.Deadline.IsInfinite
-        || envelope.Deadline.UtcDateTime - now >= ReminderExecutionActor.ExecutionAttemptTimeout + SettlementMargin;
+        DateTimeOffset now)
+    {
+        if (envelope.Deadline.IsInfinite)
+            return true;
+
+        var remaining = envelope.Deadline.UtcDateTime - now;
+
+        // Akka.Reminders gives an interval occurrence its next due time as the
+        // deadline when no retry fits before that time. That deadline is not an
+        // acknowledgement lease: Akka.Reminders does not redeliver the occurrence
+        // when the lease ends, so a long attempt cannot cause a duplicate
+        // execution. The occurrence starts while it is current. An occurrence
+        // that arrives at or after its next due time is stale.
+        if (definition.Schedule is { Type: ReminderScheduleType.Interval, Interval: { } interval }
+            && envelope.Deadline.UtcDateTime >= envelope.DueTimeUtc + interval)
+        {
+            return remaining > TimeSpan.Zero;
+        }
+
+        return remaining >= ReminderExecutionActor.ExecutionAttemptTimeout + SettlementMargin;
+    }
 
     private async Task SettleBlockedOccurrenceAsync(
         ReminderDefinition definition,
