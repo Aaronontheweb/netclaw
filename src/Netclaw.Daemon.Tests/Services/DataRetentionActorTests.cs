@@ -45,19 +45,19 @@ public sealed class DataRetentionActorTests(ITestOutputHelper output) : TestKit(
         services.AddSingleton<ILogger<DataRetentionActor>>(NullLogger<DataRetentionActor>.Instance);
 
         // The first job throws, so a run that stopped at the failure would never reach the second.
-        services.AddSingleton(new RetentionJob("failing", 5, (now, days) =>
+        services.AddSingleton(new RetentionJob("failing", 5, now =>
         {
-            Record("failing", now, days);
+            Record("failing", now, 5);
             return _throwingJobFails ? throw new InvalidOperationException("the prune failed") : (0, 0);
         }));
-        services.AddSingleton(new RetentionJob("counting", 14, (now, days) =>
+        services.AddSingleton(new RetentionJob("counting", 14, now =>
         {
-            Record("counting", now, days);
+            Record("counting", now, 14);
             return (2, 0);
         }));
-        services.AddSingleton(new RetentionJob("disabled", 0, (now, days) =>
+        services.AddSingleton(new RetentionJob("disabled", 0, now =>
         {
-            Record("disabled", now, days);
+            Record("disabled", now, 0);
             return (0, 0);
         }));
     }
@@ -175,18 +175,18 @@ public sealed class RetentionJobRegistrationTests : IDisposable
             .Build();
 
         var services = new ServiceCollection();
-        services.AddRetentionJobs(configuration, paths, out var warning);
+        var warnings = services.AddRetentionJobs(configuration, paths);
         using var provider = services.BuildServiceProvider();
 
-        Assert.Null(warning);
+        Assert.Empty(warnings);
         var job = Assert.Single(provider.GetServices<RetentionJob>());
-        Assert.Equal("daemon and crash logs", job.Name);
+        Assert.Equal("daemon and crash log", job.Name);
         Assert.Equal(7, job.Days);
 
         foreach (var day in new[] { "2026-01-01", "2026-05-17", "2026-05-18", "2026-05-19", "2026-05-20" })
             File.WriteAllText(Path.Combine(paths.LogsDirectory, $"daemon-{day}.log"), "x");
 
-        Assert.Equal((1, 0), job.Prune(DateTimeOffset.Parse("2026-05-20T12:00:00Z"), job.Days));
+        Assert.Equal((1, 0), job.Prune(DateTimeOffset.Parse("2026-05-20T12:00:00Z")));
         Assert.False(File.Exists(Path.Combine(paths.LogsDirectory, "daemon-2026-01-01.log")));
     }
 
@@ -198,10 +198,10 @@ public sealed class RetentionJobRegistrationTests : IDisposable
             .Build();
 
         var services = new ServiceCollection();
-        services.AddRetentionJobs(configuration, new NetclawPaths(_dir.Path), out var warning);
+        var warnings = services.AddRetentionJobs(configuration, new NetclawPaths(_dir.Path));
         using var provider = services.BuildServiceProvider();
 
         Assert.Equal(14, provider.GetRequiredService<RetentionJob>().Days);
-        Assert.Contains("Retention:Logs:Days", warning, StringComparison.Ordinal);
+        Assert.Contains("Retention:Logs:Days", Assert.Single(warnings), StringComparison.Ordinal);
     }
 }

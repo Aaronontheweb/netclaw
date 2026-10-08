@@ -15,15 +15,15 @@ using Netclaw.Daemon.Configuration;
 namespace Netclaw.Daemon.Services;
 
 /// <summary>
-/// One kind of data that expires. <see cref="Prune"/> receives the current time and
-/// <see cref="Days"/> and returns how many items it deleted and how many it could not.
+/// One kind of data that expires. <see cref="Prune"/> receives the current time (the job already
+/// knows its <see cref="Days"/>) and returns how many items it deleted and how many it could not.
 /// Another kind of data joins the schedule by registering one more <see cref="RetentionJob"/>
 /// in DI.
 /// </summary>
 /// <param name="Name">What the job prunes, as it reads in a log line.</param>
 /// <param name="Days">How long data is kept; zero or less keeps it forever.</param>
 /// <param name="Prune">Deletes the expired items.</param>
-internal sealed record RetentionJob(string Name, int Days, Func<DateTimeOffset, int, (int Deleted, int Failed)> Prune);
+internal sealed record RetentionJob(string Name, int Days, Func<DateTimeOffset, (int Deleted, int Failed)> Prune);
 
 internal sealed class DataRetentionActorKey;
 
@@ -72,7 +72,7 @@ internal sealed class DataRetentionActor : ReceiveActor, IWithTimers
 
             try
             {
-                var (deleted, failed) = job.Prune(_timeProvider.GetUtcNow(), job.Days);
+                var (deleted, failed) = job.Prune(_timeProvider.GetUtcNow());
                 if (deleted > 0)
                     _logger.LogInformation("Retention: deleted {Deleted} expired {Name} file(s) older than {Days} days.", deleted, job.Name, job.Days);
                 if (failed > 0)
@@ -99,15 +99,22 @@ internal static class DataRetentionActorHostingExtensions
 {
     /// <summary>
     /// Registers every <see cref="RetentionJob"/> the daemon runs. Another kind of data joins the
-    /// schedule by adding its job here. <paramref name="warning"/> is a configuration warning for the
-    /// caller to log once logging is up.
+    /// schedule by adding its job here and its warning, if any, to the list. The returned warnings
+    /// are configuration warnings for the caller to log once logging is up.
     /// </summary>
-    public static IServiceCollection AddRetentionJobs(
+    public static IReadOnlyList<string> AddRetentionJobs(
         this IServiceCollection services,
         IConfiguration configuration,
-        NetclawPaths paths,
-        out string? warning)
-        => services.AddSingleton(DaemonLogRetention.CreateJob(configuration, paths, out warning));
+        NetclawPaths paths)
+    {
+        var warnings = new List<string>();
+
+        services.AddSingleton(DaemonLogRetention.CreateJob(configuration, paths, out var logsWarning));
+        if (logsWarning is not null)
+            warnings.Add(logsWarning);
+
+        return warnings;
+    }
 
     /// <summary>
     /// Starts the retention actor. It runs the <see cref="RetentionJob"/> instances registered in DI.

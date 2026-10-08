@@ -46,9 +46,9 @@ internal static class DaemonLogRetention
     {
         var days = RetentionPolicy.ResolveDays(configuration, ConfigKey, DefaultRetentionDays, out warning);
         return new RetentionJob(
-            "daemon and crash logs",
+            "daemon and crash log",
             days,
-            (now, retentionDays) => Prune(paths.LogsDirectory, now, retentionDays));
+            now => Prune(paths.LogsDirectory, now, days));
     }
 
     /// <summary>

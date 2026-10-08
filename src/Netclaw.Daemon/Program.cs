@@ -1189,8 +1189,8 @@ static IReadOnlyList<string> ConfigureDaemonServices(
     services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<SessionRegistryShutdownService>());
 
     // Expired data is cleared by DataRetentionActor, which runs every RetentionJob registered here.
-    services.AddRetentionJobs(configuration, paths, out var retentionWarning);
-    return retentionWarning is null ? toolConfigWarnings : [.. toolConfigWarnings, retentionWarning];
+    var retentionWarnings = services.AddRetentionJobs(configuration, paths);
+    return [.. toolConfigWarnings, .. retentionWarnings];
 }
 
 static ISearchBackend? CreateSearchBackend(SearchConfig config)

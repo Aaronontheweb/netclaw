@@ -244,7 +244,7 @@ public sealed class DaemonLogRetentionTests : IDisposable
         Touch("daemon-2026-01-01.log", "daemon-2026-05-18.log", "daemon-2026-05-19.log", "daemon-2026-05-20.log", "daemon-2026-05-17.log");
         var job = DaemonLogRetention.CreateJob(new ConfigurationBuilder().Build(), paths, out _);
 
-        var (deleted, failed) = job.Prune(Now, job.Days);
+        var (deleted, failed) = job.Prune(Now);
 
         Assert.Equal((1, 0), (deleted, failed));
         Assert.False(File.Exists(Path.Join(LogsDir, "daemon-2026-01-01.log")));
