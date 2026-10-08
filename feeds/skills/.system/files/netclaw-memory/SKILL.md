@@ -3,7 +3,7 @@ name: netclaw-memory
 description: "REQUIRED when the user asks what you remember, recall, or know from past conversations, previous sessions, cross-session memory, memory classes, or memory types. Also before using memory tools: find_memories, get_memories, store_memory, update_memory."
 metadata:
   author: netclaw
-  version: "1.14.0"
+  version: "1.14.1"
 ---
 
 # Netclaw Memory
@@ -310,6 +310,8 @@ To repopulate existing memory vectors after enabling embeddings:
 ```
 netclaw memory backfill-embeddings [--force]
 ```
+
+The command does nothing while `Memory.Embeddings.Enabled` is false.
 
 ## Eval Gate
 
