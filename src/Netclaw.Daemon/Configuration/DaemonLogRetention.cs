@@ -7,6 +7,7 @@ using System.Globalization;
 using System.Text.RegularExpressions;
 using Microsoft.Extensions.Configuration;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Services;
 
 namespace Netclaw.Daemon.Configuration;
 
@@ -19,15 +20,19 @@ namespace Netclaw.Daemon.Configuration;
 /// </summary>
 internal static class DaemonLogRetention
 {
-    public const string ConfigKey = "Logging:File:RetentionDays";
+    public const string ConfigKey = "Retention:Logs:Days";
 
     /// <summary>Default for <see cref="ConfigKey"/>.</summary>
     public const int DefaultRetentionDays = 14;
 
     /// <summary>
-    /// The newest daemon logs are always kept, so a wrong clock cannot wipe the whole history.
+    /// The newest daemon logs and the newest crash logs are always kept, so a wrong clock cannot
+    /// wipe the whole history.
     /// </summary>
     internal const int AlwaysKeepNewestDaemonLogs = 3;
+
+    /// <inheritdoc cref="AlwaysKeepNewestDaemonLogs"/>
+    internal const int AlwaysKeepNewestCrashLogs = 3;
 
     // No Netclaw build predates this; it keeps a decoy like daemon-0001-01-01.log out of reach.
     private const int EarliestPlausibleYear = 2000;
@@ -36,43 +41,27 @@ internal static class DaemonLogRetention
         "^daemon-([0-9]{4}-[0-9]{2}-[0-9]{2})\\.log$",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
 
-    /// <summary>
-    /// Reads <see cref="ConfigKey"/>. A missing key gives the default; a value that is not an
-    /// integer gives the default plus a warning for the caller to surface (the daemon must start).
-    /// </summary>
-    public static int ResolveRetentionDays(IConfiguration configuration, out string? warning)
+    /// <summary>The retention job for the daemon and crash logs in <paramref name="paths"/>.</summary>
+    public static RetentionJob CreateJob(IConfiguration configuration, NetclawPaths paths, out string? warning)
     {
-        warning = null;
-        var raw = configuration[ConfigKey];
-        if (string.IsNullOrWhiteSpace(raw))
-            return DefaultRetentionDays;
-
-        if (int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var days))
-            return days;
-
-        warning = $"Configuration warning: {ConfigKey} value '{raw}' is not an integer; using the default of {DefaultRetentionDays} days.";
-        return DefaultRetentionDays;
+        var days = RetentionPolicy.ResolveDays(configuration, ConfigKey, DefaultRetentionDays, out warning);
+        return new RetentionJob(
+            "daemon and crash logs",
+            days,
+            (now, retentionDays) => Prune(paths.LogsDirectory, now, retentionDays));
     }
 
     /// <summary>
     /// Deletes daemon and crash logs dated before <c>today - retentionDays</c> (UTC). Zero keeps
     /// everything (a negative value is treated the same, defensively). Today's file is never old
     /// enough to qualify, and the newest <see cref="AlwaysKeepNewestDaemonLogs"/> daemon logs stay
-    /// whatever the clock says. Returns the number deleted and the number that could not be
+    /// whatever the clock says, as do the newest <see cref="AlwaysKeepNewestCrashLogs"/> crash logs. Returns the number deleted and the number that could not be
     /// (read-only volume, file held open elsewhere).
     /// </summary>
     public static (int Deleted, int Failed) Prune(string logsDirectory, DateTimeOffset now, int retentionDays)
     {
-        if (retentionDays <= 0 || !Directory.Exists(logsDirectory))
+        if (!RetentionPolicy.TryGetCutoff(now, retentionDays, out var cutoff) || !Directory.Exists(logsDirectory))
             return (0, 0);
-
-        var today = DateOnly.FromDateTime(now.UtcDateTime);
-
-        // A retention longer than the calendar itself keeps everything; AddDays would throw.
-        if (retentionDays > today.DayNumber)
-            return (0, 0);
-
-        var cutoff = today.AddDays(-retentionDays);
 
         string[] files;
         try
@@ -85,17 +74,22 @@ internal static class DaemonLogRetention
         }
 
         var daemonLogs = new List<(string Path, DateOnly Date)>();
-        var candidates = new List<string>();
+        var crashLogs = new List<(string Path, DateTimeOffset Time)>();
         foreach (var file in files)
         {
             var name = Path.GetFileName(file);
             if (TryGetDaemonLogDate(name, out var daemonDate))
                 daemonLogs.Add((file, daemonDate));
-            else if (CrashLogWriter.TryParseFileName(name, out var crashTime)
-                && crashTime.Year >= EarliestPlausibleYear
-                && DateOnly.FromDateTime(crashTime.UtcDateTime) < cutoff)
-                candidates.Add(file);
+            else if (CrashLogWriter.TryParseFileName(name, out var crashTime) && crashTime.Year >= EarliestPlausibleYear)
+                crashLogs.Add((file, crashTime));
         }
+
+        var candidates = crashLogs
+            .OrderByDescending(static x => x.Time)
+            .Skip(AlwaysKeepNewestCrashLogs)
+            .Where(x => DateOnly.FromDateTime(x.Time.UtcDateTime) < cutoff)
+            .Select(static x => x.Path)
+            .ToList();
 
         candidates.AddRange(daemonLogs
             .OrderByDescending(static x => x.Date)

@@ -456,9 +456,6 @@ are not size-rotated today (tracked separately).
     },
     "Console": {
       "Enabled": true
-    },
-    "File": {
-      "RetentionDays": 14
     }
   }
 }
@@ -468,7 +465,26 @@ are not size-rotated today (tracked separately).
 |-------|------|---------|-------------|
 | `LogLevel:Default` | string | `Warning` | Minimum log level (`Debug`, `Information`, `Warning`, `Error`, etc.) shared by MEL and Akka.NET. Standard `Logging:LogLevel:{Category}` overrides also apply. |
 | `Console:Enabled` | bool | `false` | Enables console logger provider output for daemon debugging. |
-| `File:RetentionDays` | int | `14` | Days to keep `daemon-{yyyy-MM-dd}.log` and `crash-*.log` in `~/.netclaw/logs`, judged by the date in the file name. Older files are deleted at daemon start and at each daily log roll. `0` keeps them forever; the newest 3 daemon logs are always kept. A value that is not an integer falls back to `14` with a startup warning. `logs/sessions/` and other files in the directory are never pruned. |
+
+### Retention
+
+A daemon actor (`DataRetentionActor`) deletes expired data shortly after the daemon starts and then every
+12 hours. Each kind of data is one retention job with its own `Days` setting; a value is read once, at
+daemon start.
+
+```json
+{
+  "Retention": {
+    "Logs": {
+      "Days": 14
+    }
+  }
+}
+```
+
+| Field | Type | Default | Description |
+|-------|------|---------|-------------|
+| `Logs:Days` | int | `14` | Days to keep `daemon-{yyyy-MM-dd}.log` and `crash-*.log` in `~/.netclaw/logs`, judged by the date in the file name. `0` keeps them forever. The newest 3 daemon logs and the newest 3 crash logs are always kept, so a wrong clock cannot delete the whole history. A value that is not an integer falls back to `14` with a startup warning. `logs/sessions/` and other files in the directory are never pruned. Environment form: `NETCLAW_Retention__Logs__Days`. |
 
 ### Webhooks
 

@@ -27,7 +27,7 @@ public sealed class MemoryCurationLogRetentionNoteTests : IDisposable
         var paths = new NetclawPaths(Path.Combine(_temp.Path, Guid.NewGuid().ToString("N")));
         paths.EnsureDirectoriesExist();
         await File.WriteAllTextAsync(paths.NetclawConfigPath,
-            $$"""{ "configVersion": 1, "Logging": { "File": { "RetentionDays": {{retentionDays}} } } }""", TestContext.Current.CancellationToken);
+            $$"""{ "configVersion": 1, "Retention": { "Logs": { "Days": {{retentionDays}} } } }""", TestContext.Current.CancellationToken);
 
         var result = await new MemoryCurationLlmDoctorCheck(paths, new FakeTimeProvider(DateTimeOffset.Parse("2026-05-20T12:00:00Z")))
             .RunAsync(TestContext.Current.CancellationToken);

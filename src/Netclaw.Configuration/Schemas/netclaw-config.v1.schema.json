@@ -116,19 +116,6 @@
             "Enabled": { "type": "boolean" }
           },
           "additionalProperties": false
-        },
-        "File": {
-          "type": "object",
-          "properties": {
-            "RetentionDays": {
-              "type": "integer",
-              "minimum": 0,
-              "maximum": 36500,
-              "default": 14,
-              "description": "Days to keep daemon-yyyy-MM-dd.log and crash-*.log files in the logs directory. Older files are deleted when the daemon starts and at each daily log roll; the newest 3 daemon logs are always kept. 0 keeps them forever. Per-session logs are not affected."
-            }
-          },
-          "additionalProperties": true
         }
       },
       "additionalProperties": true
@@ -860,6 +847,26 @@
         }
       },
       "additionalProperties": false
+    },
+    "Retention": {
+      "type": "object",
+      "description": "How long the daemon keeps data before a scheduled clean-up deletes it.",
+      "properties": {
+        "Logs": {
+          "type": "object",
+          "properties": {
+            "Days": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 36500,
+              "default": 14,
+              "description": "Days to keep daemon-yyyy-MM-dd.log and crash-*.log files in the logs directory. The daemon deletes older files shortly after it starts and every 12 hours; the newest 3 daemon logs and the newest 3 crash logs are always kept. 0 keeps them forever. Per-session logs are not affected."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
     },
     "Daemon": {
       "type": "object",

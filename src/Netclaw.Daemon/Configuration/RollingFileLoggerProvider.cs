@@ -43,7 +43,6 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider, ISupportExter
 
     private readonly string _basePath;
     private readonly TimeProvider _timeProvider;
-    private readonly int _retentionDays;
     private readonly ConcurrentDictionary<string, RollingFileLogger> _loggers = new();
     private readonly BlockingCollection<string> _queue = new(1024);
     private readonly Thread _writerThread;
@@ -58,14 +57,10 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider, ISupportExter
     private StreamWriter? _writer;
     private string _currentDate = "";
 
-    public RollingFileLoggerProvider(
-        string basePath,
-        TimeProvider? timeProvider = null,
-        int retentionDays = DaemonLogRetention.DefaultRetentionDays)
+    public RollingFileLoggerProvider(string basePath, TimeProvider? timeProvider = null)
     {
         _basePath = basePath;
         _timeProvider = timeProvider ?? TimeProvider.System;
-        _retentionDays = retentionDays;
         _writerThread = new Thread(ProcessQueue)
         {
             IsBackground = true,
@@ -258,7 +253,6 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider, ISupportExter
         }
 
         _writer?.Dispose();
-        var isNewDay = _currentDate != today;
         _currentDate = today;
 
         var dir = Path.GetDirectoryName(_basePath)!;
@@ -267,31 +261,6 @@ internal sealed class RollingFileLoggerProvider : ILoggerProvider, ISupportExter
         var path = Path.Combine(dir, $"{name}-{today}{ext}");
 
         _writer = new StreamWriter(path, append: true) { AutoFlush = false };
-
-        // Runs on the writer thread whenever the date changes (and at the first write after start),
-        // so a daemon that stays up for months still prunes once a day. Its summary line goes
-        // straight to the new writer, ahead of the line that triggered the roll. A size roll reopens the
-        // same day's file and does not re-run it.
-        if (isNewDay)
-            PruneExpired(dir);
-    }
-
-    private void PruneExpired(string logsDirectory)
-    {
-        // Housekeeping must never cost a log line: whatever the pruner does, the line that
-        // triggered the roll is still written.
-        try
-        {
-            var (deleted, failed) = DaemonLogRetention.Prune(logsDirectory, _timeProvider.GetUtcNow(), _retentionDays);
-            if (deleted > 0)
-                _writer!.WriteLine($"{GetTimestamp()} [INF] Netclaw.Logging: deleted {deleted} daemon/crash log file(s) older than {_retentionDays} days ({DaemonLogRetention.ConfigKey}).");
-            if (failed > 0)
-                _writer!.WriteLine($"{GetTimestamp()} [WRN] Netclaw.Logging: could not delete {failed} expired log file(s) in {logsDirectory}; will retry at the next daily roll.");
-        }
-        catch (Exception ex)
-        {
-            Console.Error.WriteLine($"[NetclawLogWriter] Log retention failed: {ex.Message}");
-        }
     }
 
     internal string GetTimestamp()

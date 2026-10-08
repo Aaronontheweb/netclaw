@@ -159,10 +159,11 @@ public sealed class ConfigSchemaDoctorCheckTests : IDisposable
     }
 
     [Theory]
-    [InlineData("""{ "configVersion": 1, "Logging": { "File": { "RetentionDays": 14 } } }""")]
-    [InlineData("""{ "configVersion": 1, "Logging": { "File": { "RetentionDays": 0 } } }""")]
-    [InlineData("""{ "configVersion": 1, "Logging": { "File": { "LogLevel": "Debug" } } }""")]
-    public async Task ReturnsPass_WhenLoggingFileConfigIsValid(string json)
+    [InlineData("""{ "configVersion": 1, "Retention": { "Logs": { "Days": 14 } } }""")]
+    [InlineData("""{ "configVersion": 1, "Retention": { "Logs": { "Days": 0 } } }""")]
+    // The Retention node stays open so a retention setting added later does not fail an older doctor.
+    [InlineData("""{ "configVersion": 1, "Retention": { "Logs": { "Days": 14 }, "Sessions": { "Days": 90 } } }""")]
+    public async Task ReturnsPass_WhenRetentionConfigIsValid(string json)
     {
         var paths = new NetclawPaths(CreateTempBasePath());
         paths.EnsureDirectoriesExist();
@@ -179,7 +180,7 @@ public sealed class ConfigSchemaDoctorCheckTests : IDisposable
         var paths = new NetclawPaths(CreateTempBasePath());
         paths.EnsureDirectoriesExist();
         await File.WriteAllTextAsync(paths.NetclawConfigPath,
-            """{ "configVersion": 1, "Logging": { "File": { "RetentionDays": -1 } } }""", TestContext.Current.CancellationToken);
+            """{ "configVersion": 1, "Retention": { "Logs": { "Days": -1 } } }""", TestContext.Current.CancellationToken);
 
         var result = await new ConfigSchemaDoctorCheck(paths).RunAsync(TestContext.Current.CancellationToken);
 
