@@ -392,9 +392,14 @@ public sealed class DispatchingToolExecutor : IToolExecutor, IApprovalShellProvi
         if (exception is ToolApprovalRequiredException or ToolCorrectionRequiredException)
             return;
 
+        if (exception is ToolAccessDeniedException)
+        {
+            context.Outputs.TryComplete(new ToolInvocationReceipt.AuthorizationDenied());
+            return;
+        }
+
         var category = exception switch
         {
-            ToolAccessDeniedException => ToolInvocationOutcomeCategory.AccessDenied,
             UnauthorizedAccessException => ToolInvocationOutcomeCategory.AccessDenied,
             FileNotFoundException or DirectoryNotFoundException => ToolInvocationOutcomeCategory.NotFound,
             IOException or TimeoutException => ToolInvocationOutcomeCategory.TransientFailure,

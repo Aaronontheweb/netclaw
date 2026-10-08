@@ -1020,18 +1020,32 @@ Netclaw SHALL disable the complete reminder when the count reaches `FailurePause
 
 Netclaw SHALL settle each one-shot reminder exactly once.
 
-After a successful execution, Netclaw SHALL remove the one-shot definition and its execution history.
+After a successful execution, Netclaw SHALL disable the one-shot, record the `Completed` terminal outcome, and retain the definition and its execution history.
 
-When a one-shot reaches `FailurePauseThreshold`, Netclaw SHALL retain the definition, disable it, and record the `Failed` terminal outcome. Only an explicit delete command SHALL remove that retained definition and its history.
+When a one-shot reaches `FailurePauseThreshold`, Netclaw SHALL retain the definition, disable it, and record the `Failed` terminal outcome. The same applies to a recurring reminder that reaches the threshold.
+
+Netclaw SHALL remove a disabled one-shot with outcome `Completed`, together with its execution history, once its last update is more than 12 days old. It SHALL check at startup reconciliation and every 12 hours. Netclaw SHALL NOT prune any other reminder: recurring reminders and `Failed` one-shots are removed only by an explicit delete command.
+
+The failed count reported by `netclaw stats` SHALL count only enabled reminders with at least one consecutive failure.
+
+Creating a reminder with the id of a retained `Completed` one-shot SHALL replace it and discard its old history. Creating a reminder with the id of a `Failed` one-shot SHALL be rejected as already existing.
 
 Below that threshold, Netclaw SHALL keep a failed one-shot enabled so Akka.Reminders can retry it.
 
-#### Scenario: Successful one-shot is removed
+#### Scenario: Successful one-shot is retained, then pruned
 
 - **GIVEN** a one-shot reminder succeeds
 - **WHEN** Netclaw completes its acknowledgement
-- **THEN** Netclaw deletes the definition and its history file
-- **AND** reconciliation removes any residual `Completed` one-shot
+- **THEN** Netclaw keeps the definition, disabled with outcome `Completed`, and its history file
+- **AND** reminder history for the id remains available
+- **AND** Netclaw removes both once the retention period has passed
+
+#### Scenario: Failed reminders are kept but stop counting in stats
+
+- **GIVEN** a recurring reminder or one-shot was disabled with outcome `Failed` more than 12 days ago
+- **WHEN** Netclaw prunes completed one-shots
+- **THEN** the definition and its history remain
+- **AND** the failed count in `netclaw stats` does not include it
 
 #### Scenario: Failed one-shot remains enabled for retry
 
@@ -1052,7 +1066,7 @@ Below that threshold, Netclaw SHALL keep a failed one-shot enabled so Akka.Remin
 - **GIVEN** a one-shot has a past fire time
 - **WHEN** reconciliation finds no active schedule
 - **THEN** reconciliation reads the durable occurrence state
-- **AND** reconciliation selects restoration, a terminal soft delete, or removal of a delivered one-shot
+- **AND** reconciliation selects restoration, a terminal soft delete, or retention of a delivered one-shot as `Completed`
 
 ### Requirement: Reminder attempts have bounded acknowledgement leases
 
@@ -1127,7 +1141,7 @@ Netclaw SHALL save a successful run and reset the poison count before it sends a
 - **GIVEN** Netclaw acknowledges a successful one-shot
 - **WHEN** the process stops before it saves the terminal outcome
 - **THEN** reconciliation reads the durable delivered state
-- **AND** reconciliation records the completed removal
+- **AND** reconciliation records the `Completed` outcome
 
 ### Requirement: Fail-closed reminder write validation
 

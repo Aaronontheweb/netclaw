@@ -608,7 +608,8 @@ internal sealed class SessionToolExecutionPipeline
                     [],
                     [],
                     authorizationAttemptId,
-                    Receipt: new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied),
+                    FailureCode: SessionProtocol.ToolResultOutput.AccessDeniedFailureCode,
+                    Receipt: new ToolInvocationReceipt.AuthorizationDenied(),
                     ManagedTemporaryCorrectionUpdate: consumedManagedTemporaryKey is { } deniedConsumed
                         ? new ManagedTemporaryCorrectionChange.Consume(deniedConsumed)
                         : null);
@@ -694,7 +695,8 @@ internal sealed class SessionToolExecutionPipeline
                 Name = tc.Name
             }, [], context.Outputs.FileAttachments, completedRuns, acceptedFindings,
                 authorizationAttemptId,
-                Receipt: new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied));
+                FailureCode: SessionProtocol.ToolResultOutput.AccessDeniedFailureCode,
+                Receipt: new ToolInvocationReceipt.AuthorizationDenied());
         }
         catch (ToolApprovalRequiredException approvalEx) when (approvalBridge is not null)
         {
@@ -779,7 +781,7 @@ internal sealed class SessionToolExecutionPipeline
                     invocation: context.Invocation,
                     canDeclare: batch.CanDeclareWorkingDirectory);
                 resultText = string.IsNullOrEmpty(hint) ? reason : $"{reason}\n{hint}";
-                context.Outputs.TryComplete(new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied));
+                context.Outputs.TryComplete(new ToolInvocationReceipt.AuthorizationDenied());
 
             }
         }
@@ -787,7 +789,7 @@ internal sealed class SessionToolExecutionPipeline
         {
             sw.Stop();
             resultText = ex.ToAgentResult();
-            context.Outputs.TryComplete(new ToolInvocationReceipt.OtherOutcome(ToolInvocationOutcomeCategory.AccessDenied));
+            context.Outputs.TryComplete(new ToolInvocationReceipt.AuthorizationDenied());
 
         }
         catch (OperationCanceledException) when (batch.CancellationToken.IsCancellationRequested)
@@ -840,6 +842,9 @@ internal sealed class SessionToolExecutionPipeline
             completedRuns,
             acceptedFindings,
             authorizationAttemptId,
+            FailureCode: receipt is ToolInvocationReceipt.AuthorizationDenied
+                ? SessionProtocol.ToolResultOutput.AccessDeniedFailureCode
+                : null,
             Receipt: receipt,
             ManagedTemporaryCorrectionUpdate: consumedManagedTemporaryKey is { } consumed
                 ? new ManagedTemporaryCorrectionChange.Consume(consumed)

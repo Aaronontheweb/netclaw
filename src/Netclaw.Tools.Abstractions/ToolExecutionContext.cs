@@ -108,6 +108,18 @@ internal abstract class ToolInvocationReceipt
         }
     }
 
+    /// <summary>
+    /// The call was refused by authorization (policy, hard deny, a consent that nobody can give, or a path
+    /// rule). It is <see cref="ToolInvocationOutcomeCategory.AccessDenied"/>, kept apart from an operating
+    /// system refusal such as a file permission error, which is an ordinary tool failure.
+    /// </summary>
+    internal sealed class AuthorizationDenied : ToolInvocationReceipt
+    {
+        public AuthorizationDenied() : base(ToolInvocationOutcomeCategory.AccessDenied)
+        {
+        }
+    }
+
     internal static bool IsCanonicalAbsolutePath(string path)
     {
         if (string.IsNullOrWhiteSpace(path)
