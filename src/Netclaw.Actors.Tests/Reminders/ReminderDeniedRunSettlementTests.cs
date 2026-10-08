@@ -159,7 +159,7 @@ public sealed class ReminderDeniedRunSettlementTests : TestKit
 
         await AwaitHistoryAsync(definition.Id, 1);
         // The retry backoff here is 25 ms: a nack would have run the model again long before this.
-        await Task.Delay(1500, TestContext.Current.CancellationToken);
+        await ExpectNoMsgAsync(TimeSpan.FromMilliseconds(1500), TestContext.Current.CancellationToken);
 
         var history = await _historyStore.ReadAsync(definition.Id, 50);
         var row = Assert.Single(history);
