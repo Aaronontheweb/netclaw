@@ -90,6 +90,7 @@ log patterns** (skill loading, memory recall, checkpoint formation).
 | Complex Task Execution | 5 | Multi-step tool chains complete successfully, incl. bounded tool output — given only the goal (no handling hints), the agent retrieves a deep line from oversized shell output and from a large file, which is only possible by coping with the bound the way AGENTS.md/skills/steer text direct |
 | Multi-Turn Conversation | 7 | Session resume and speaker attribution recall |
 | Built-in Tools Before CLI | 10 | The agent uses a built-in tool, not a `netclaw` shell command, when a tool exists: three regression cases, five guards, and two controls that need the CLI |
+| Skill Guidance Position | 13 | What the agent does with a rule in the first part, the last part, and the removed middle part of an oversized skill file; which reference it reads; and the recorded context cost |
 
 Each case defines multiple natural phrasings of the same intent. Each
 run picks a random variant, testing whether behavior is robust across
@@ -171,6 +172,106 @@ Use a timeout of 240 seconds for this category. A case can need five model calls
 
 ```bash
 NETCLAW_EVAL_CATEGORY='Built-in Tools' NETCLAW_EVAL_TIMEOUT=240 ./evals/run-evals.sh
+```
+
+### Skill Guidance Position Cases
+
+The daemon bounds each tool result to `Session.Tuning.MaxInlineToolResultChars`
+(default 12,000 characters). A longer result reaches the model as its first
+6,000 and its last 6,000 characters. This bound applies to `skill_load` and to
+`skill_read_resource`. The model does not read the middle of an oversized skill
+file unless it reads more.
+
+The daemon keeps the full text of a bounded result below the workspace folder
+of the session, and adds one line that names `tool_output_read` and a call ID.
+A session gets that folder with its first shell command. A session that has
+run no shell command has no folder: the result then has no `tool_output_read`
+line, and the daemon keeps no text. The two "steer" cases measure the session
+that has the folder.
+
+The Skill Discovery cases already prove the hop from the index to a reference:
+`skill_load`, then `skill_read_resource`, then an answer with a fact of that
+reference. Each fact that those cases assert is in a part that the model reads
+today. These cases add three measurements:
+
+- the position of a rule inside one oversized file
+- the choice of one reference among many
+- the context cost of each run
+
+Each prompt names the skill, so the skill load is a precondition and the
+position of the rule is the variable. No prompt names `tool_output_read`, a
+section, or the answer. Each case passes on tool calls and on an exact fact in
+the response. Each case requires the `skill_load` call, so a run that calls no
+tool cannot pass. A read of a physical skill file fails the case, as in the
+Skill Discovery cases. `skill_read_resource` prints the path of the resource,
+so an agent can find the skill folder. The runner records such a run as
+"facts correct" and as a failure, so a report can show the two results.
+
+| Case | Position of the rule | Required evidence |
+|------|----------------------|-------------------|
+| `skill_position_head` | First 6,000 characters of `netclaw-operations` | The response names `get_reminder_history`, `netclaw reminder enable`, and `delete_webhook`. |
+| `skill_position_tail` | Last 6,000 characters of `netclaw-operations` | The response names `file_search` and `tool_output_read`. |
+| `skill_position_middle_oauth_redirect` | Removed middle ("MCP OAuth") | The response holds `/api/mcp/oauth/callback`. |
+| `skill_position_middle_approvals_quarantine` | Removed middle ("Last-resort recovery") | The response holds `tool-approvals.json.invalid`. |
+| `skill_position_middle_long_commit` | Removed middle (rule 14 of "File and Shell Selection") | Behavior. The new commit holds the long message, and no shell command holds the message text. |
+| `skill_position_reference_middle` | Removed middle of `references/scheduling.md` | The run reads the scheduling reference, and the response holds "12 days". |
+| `skill_position_middle_oauth_redirect_steer` | Removed middle, in a session that has a workspace folder | Turn 1 runs `pwd` in the shell. Turn 2 is the OAuth question, with the same evidence. |
+| `skill_position_reference_middle_steer` | Removed middle of the reference, in a session that has a workspace folder | Turn 1 runs `pwd` in the shell. Turn 2 is the prune question, with the same evidence. |
+| `skill_position_right_reference_operations` | `references/webhooks.md` (it fits the budget) | The run reads that reference and no other reference. The response holds `X-TextForge-Signature`. |
+| `skill_position_memory_no_recall_block` | `netclaw-memory` | The response starts with the word NORMAL and does not hold the word BROKEN. |
+| `skill_position_memory_tool_choice` | `netclaw-memory` | Three turns: `store_memory`; then `find_memories` or `get_memories`; then `update_memory` and no second `store_memory`. |
+| `skill_position_right_reference_memory` | `netclaw-memory/references/recall-internals.md` | The run reads that reference and no other reference. The response holds `0.24`. |
+
+Six cases ask for a fact, and the question shows the agent that something is
+absent. `skill_position_middle_long_commit` does not: its prompt only tells the
+agent to follow the shell rules of the skill. It measures a rule that the
+agent does not know to look for, which is the production failure. Its setup
+adds a `git add` grant and a `git commit` grant to the eval grant file, and its
+teardown restores the file. With the grants, an inline message of any length
+runs, so only the skill rule keeps the long text out of the command.
+
+A case with an `applicable_<case>` function does not run when the function
+returns a failure. The runner prints `[N/A ]` and does not count the case.
+`skill_position_right_reference_memory` is not applicable to an image whose
+`netclaw-memory` skill has no `references/recall-internals.md`.
+
+#### Recorded evidence
+
+The runner records these values for each run of a position case. It does not
+assert them.
+
+- the number of tool calls
+- the characters that `skill_load`, `skill_read_resource`, and `tool_output_read` returned
+- whether a skill result was spilled, and whether its text named `tool_output_read`
+- the number of `tool_output_read` calls on a spilled skill result
+- the number of reads of a physical skill file
+- whether the facts were correct, and whether the run passed
+
+`evals/skill_position_evals.py` reads the tool calls from the `--json`
+envelopes and the returned text from the headless session log. The runner
+prints one summary row for each case and archives the records in
+`stdout/stdout_skill-position-evidence.txt`.
+
+#### Window analysis
+
+`evals/skill_visible_windows.py` builds the text that `skill_load` and
+`skill_read_resource` return, and applies the window of the daemon. It reads the
+budget from `SessionTuning.cs`.
+
+```bash
+python3 evals/skill_visible_windows.py                      # size and removed characters of each file
+python3 evals/skill_visible_windows.py --sections           # the zone of each heading
+python3 evals/skill_visible_windows.py --locate 'CRON_TZ'   # the zone of a text
+```
+
+`evals/fixtures/skill-position/facts.json` states the zone of each fact that a
+skill case asserts. It also has the facts of the Skill Discovery cases.
+`test_skill_position_evals.py` fails when a skill edit moves a fact to another
+zone. Then update the row and the comment of the case, because the case
+measures another position.
+
+```bash
+NETCLAW_EVAL_CATEGORY='Skill Guidance Position' NETCLAW_EVAL_TIMEOUT=240 ./evals/run-evals.sh
 ```
 
 ### Tool Cycle Cases

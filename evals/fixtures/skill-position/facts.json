@@ -1,0 +1,25 @@
+{
+  "comment": "The zone of each fact that a skill eval case needs. test_skill_position_evals.py checks each row against the current skill files. zones: head, hidden, tail, cut (crosses a window edge), visible (the file fits the budget). exclusive: the fact is in no other skill result and in no always-loaded layer.",
+  "facts": [
+    {"case": "skill_position_head", "file": "netclaw-operations/SKILL.md", "needle": "`get_reminder_history`", "zones": ["head"], "exclusive": false},
+    {"case": "skill_position_head", "file": "netclaw-operations/SKILL.md", "needle": "netclaw reminder show|status|enable|delete <id>", "zones": ["head"], "exclusive": false},
+    {"case": "skill_position_head", "file": "netclaw-operations/SKILL.md", "needle": "`list_webhooks`, `set_webhook`, `delete_webhook`", "zones": ["head"], "exclusive": true},
+    {"case": "skill_position_tail", "file": "netclaw-operations/SKILL.md", "needle": "If such a list lacks `file_search` or `tool_output_read`", "zones": ["tail"], "exclusive": true},
+    {"case": "skill_position_middle_oauth_redirect", "file": "netclaw-operations/SKILL.md", "needle": "/api/mcp/oauth/callback", "zones": ["hidden"], "exclusive": true},
+    {"case": "skill_position_middle_oauth_redirect_steer", "file": "netclaw-operations/SKILL.md", "needle": "/api/mcp/oauth/callback", "zones": ["hidden"], "exclusive": true},
+    {"case": "skill_position_middle_approvals_quarantine", "file": "netclaw-operations/SKILL.md", "needle": "tool-approvals.json.invalid", "zones": ["hidden"], "exclusive": true},
+    {"case": "skill_position_middle_long_commit", "file": "netclaw-operations/SKILL.md", "needle": "Write long text (PR bodies, issue bodies, commit messages, file contents) to a file first", "zones": ["hidden"], "exclusive": true},
+    {"case": "skill_position_reference_middle", "file": "netclaw-operations/references/scheduling.md", "needle": "12 days after it ran", "zones": ["hidden"], "exclusive": true},
+    {"case": "skill_position_reference_middle_steer", "file": "netclaw-operations/references/scheduling.md", "needle": "12 days after it ran", "zones": ["hidden"], "exclusive": true},
+    {"case": "skill_position_right_reference_operations", "file": "netclaw-operations/references/webhooks.md", "needle": "X-TextForge-Signature", "zones": ["visible"], "exclusive": true},
+    {"case": "skill_position_memory_no_recall_block", "file": "netclaw-memory/SKILL.md", "needle": "Never tell the user \"my memory isn't\n  working\" just because a turn had no `[memory-recall]` block.", "zones": ["head"], "exclusive": true},
+    {"case": "skill_position_memory_tool_choice", "file": "netclaw-memory/SKILL.md", "needle": "### `find_memories` + `get_memories`", "zones": ["hidden"], "exclusive": true},
+    {"case": "skill_position_memory_tool_choice", "file": "netclaw-memory/SKILL.md", "needle": "Use only to correct or supersede an existing memory.", "zones": ["tail"], "exclusive": true},
+    {"case": "skill_progressive_disclosure", "file": "netclaw-operations/references/scheduling.md", "needle": "5 consecutive", "zones": ["head"], "exclusive": true},
+    {"case": "skill_progressive_disclosure", "file": "netclaw-operations/references/scheduling.md", "needle": "ReminderAutoDisabled", "zones": ["head"], "exclusive": true},
+    {"case": "skill_cron_tz_timezone", "file": "netclaw-operations/references/scheduling.md", "needle": "CRON_TZ", "zones": ["head"], "exclusive": false},
+    {"case": "skill_mattermost_current_session", "file": "netclaw-operations/references/scheduling.md", "needle": "current_session", "zones": ["head"], "exclusive": false},
+    {"case": "skill_device_pairing_procedure", "file": "netclaw-operations/references/devices.md", "needle": "docker exec", "zones": ["visible"], "exclusive": true},
+    {"case": "skill_memory_knowledge", "file": "netclaw-memory/SKILL.md", "needle": "| `evidence` | Search (`find_memories`)", "zones": ["tail"], "exclusive": true}
+  ]
+}

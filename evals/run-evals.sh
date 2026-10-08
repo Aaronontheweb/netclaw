@@ -1079,6 +1079,14 @@ run_multi_turn_case() {
         return
     fi
 
+    # A case can state that it does not apply to the image under test. Such a
+    # case does not run and does not count as a pass or as a failure.
+    local applicable_fn="applicable_${case_name}"
+    if declare -f "$applicable_fn" >/dev/null 2>&1 && ! "$applicable_fn"; then
+        printf "  [N/A ] %-30s — %s\n" "$case_name" "${EVAL_NOT_APPLICABLE_REASON:-not applicable to this image}"
+        return
+    fi
+
     local passes=0
     local run
     for ((run = 1; run <= RUNS; run++)); do
@@ -1101,6 +1109,7 @@ run_multi_turn_case() {
             rendered_prompt="${rendered_prompt//\{\{TARGET_BRANCH\}\}/${CODING_CONTEXT_TARGET_BRANCH:-}}"
             rendered_prompt="${rendered_prompt//\{\{TARGET_FILE\}\}/${CODING_CONTEXT_TARGET_FILE:-}}"
             rendered_prompt="${rendered_prompt//\{\{DIRECT_ATTACHMENT_SOURCE\}\}/${DIRECT_ATTACHMENT_SOURCE_PATH:-}}"
+            rendered_prompt="${rendered_prompt//\{\{EVAL_POSITION_TOKEN\}\}/${EVAL_POSITION_TOKEN:-}}"
             run_prompt_resume "$session_id" "$rendered_prompt" "$output_format"
             store_metrics "$case_name" "$run" "$turn" "$LAST_TURN_USAGE_LINE"
             turn=$((turn + 1))
@@ -1119,6 +1128,9 @@ run_multi_turn_case() {
 
         # Use the first prompt as the representative prompt_used for eval_results.
         store_result "$case_name" "$run" "${prompts[0]}" "$passed" "$details"
+        if [[ -n "${CASE_EVIDENCE_FN:-}" ]]; then
+            "$CASE_EVIDENCE_FN" "$case_name" "$run" "$passed"
+        fi
     done
 
     local score
@@ -2908,6 +2920,372 @@ assert_cli_control_daemon_status() {
         && stdout_json_shell_ran_netclaw_cli_with '(status|doctor)'
 }
 
+# ─── Skill Guidance Position ─────────────────────────────────────────────────
+#
+# The daemon bounds a tool result to the inline budget. A longer skill file
+# reaches the model as its first half-budget and its last half-budget. These
+# cases measure what the agent does with a rule in each part of such a file.
+#
+# The existing Skill Discovery cases prove the hop from the index to a
+# reference (`skill_load`, then `skill_read_resource`). These cases add three
+# things: the position of a rule inside one oversized file, the choice of one
+# reference among many, and the recorded context cost of each run.
+#
+# Each prompt names the skill, so the skill load is a precondition and the
+# position of the rule is the variable. No prompt names `tool_output_read`, a
+# section, or the answer. A case passes on tool calls and on an exact fact in
+# the response. A run that calls no tool cannot pass, because each case
+# requires the skill load.
+#
+# `evals/skill_visible_windows.py` computes the windows.
+# `evals/fixtures/skill-position/facts.json` names the zone of each fact, and
+# `evals/test_skill_position_evals.py` fails when a fact moves to another zone.
+
+EVAL_POSITION_EVIDENCE=""
+EVAL_POSITION_EVIDENCE_FILE=""
+EVAL_POSITION_FACTS_OK=0
+
+# Builds the evidence object for the current run: tool calls from the JSON
+# envelopes, and returned text from the headless log of each session.
+position_evidence_load() {
+    local -a session_logs=()
+    local session_id
+    EVAL_POSITION_EVIDENCE=""
+    while IFS= read -r session_id; do
+        [[ -n "$session_id" ]] || continue
+        session_logs+=("$EVAL_HOME/logs/${session_id//\//-}.log")
+    done < <(jq -s -r '[.[].sessionId // empty] | unique | .[]' "$STDOUT_FILE" 2>/dev/null)
+    EVAL_POSITION_EVIDENCE=$(python3 "$REPO_ROOT/evals/skill_position_evals.py" evidence \
+        "$STDOUT_FILE" "${session_logs[@]}" 2>/dev/null) || EVAL_POSITION_EVIDENCE=""
+    [[ -n "$EVAL_POSITION_EVIDENCE" ]]
+}
+
+# Args: a jq filter that tests the evidence object.
+position_evidence_is() {
+    jq -e "$1" <<<"$EVAL_POSITION_EVIDENCE" >/dev/null 2>&1
+}
+
+# Args: an extended regex that the response text must match. The match
+# ignores case.
+position_response_has() {
+    jq -r '.response' <<<"$EVAL_POSITION_EVIDENCE" | grep -qaiE -- "$1"
+}
+
+# The common precondition: a valid envelope and the named skill loaded through
+# `skill_load`.
+# Args: the skill name.
+position_skill_loaded() {
+    EVAL_POSITION_FACTS_OK=0
+    if ! position_evidence_load; then
+        EVAL_ASSERTION_DETAILS="no-evidence"
+        return 1
+    fi
+    if ! position_evidence_is '.turns >= 1'; then
+        EVAL_ASSERTION_DETAILS="no-envelope"
+        return 1
+    fi
+    if ! jq -e --arg skill "$1" '.skillsLoaded | index($skill) != null' \
+            <<<"$EVAL_POSITION_EVIDENCE" >/dev/null 2>&1; then
+        EVAL_ASSERTION_DETAILS="skill-not-loaded"
+        return 1
+    fi
+}
+
+# The last check of each case. The facts are correct at this point, and the
+# runner records that. A read of a physical skill file still fails the case: it
+# goes around the logical skill tools, as in the Skill Discovery cases. The
+# recorded evidence keeps the two results apart, so a report can show a correct
+# answer that came from the file system.
+position_logical_route_only() {
+    EVAL_POSITION_FACTS_OK=1
+    if ! position_evidence_is '.physicalSkillReads == 0'; then
+        EVAL_ASSERTION_DETAILS="physical-skill-read"
+        return 1
+    fi
+}
+
+# Args: the skill name, then one regex for each fact that the response must hold.
+position_fact_case() {
+    local skill="$1" fact
+    shift
+    position_skill_loaded "$skill" || return 1
+    for fact in "$@"; do
+        if ! position_response_has "$fact"; then
+            EVAL_ASSERTION_DETAILS="fact-missing: $fact"
+            return 1
+        fi
+    done
+    position_logical_route_only
+}
+
+# Args: "skill:resource" that the run must read, and the skill whose other
+# resources count as unrelated.
+position_only_resource_read() {
+    if ! jq -e --arg wanted "$1" '.resourcesRead | index($wanted) != null' \
+            <<<"$EVAL_POSITION_EVIDENCE" >/dev/null 2>&1; then
+        EVAL_ASSERTION_DETAILS="reference-not-read: $1"
+        return 1
+    fi
+    if ! jq -e --arg wanted "$1" '[.resourcesRead[] | select(. != $wanted)] | length == 0' \
+            <<<"$EVAL_POSITION_EVIDENCE" >/dev/null 2>&1; then
+        EVAL_ASSERTION_DETAILS="unrelated-reference-read"
+        return 1
+    fi
+}
+
+# Stores the evidence of one run. The runner calls this for a pass and for a
+# failure, so the context cost and the spill follow-up are measured, not asserted.
+# Args: case name, run number, passed (1 or 0).
+record_position_evidence() {
+    [[ -n "$EVAL_POSITION_EVIDENCE" ]] || position_evidence_load || return 0
+    EVAL_POSITION_EVIDENCE_FILE="$TMPDIR_EVAL/stdout_skill-position-evidence.txt"
+    jq -c --arg case "$1" --argjson run "$2" --argjson passed "$3" \
+        --arg details "${EVAL_ASSERTION_DETAILS:-}" --argjson facts "${EVAL_POSITION_FACTS_OK:-0}" '
+        del(.response, .lastResponse, .shellCommands)
+        + {case: $case, run: $run, passed: ($passed == 1), factsCorrect: ($facts == 1), details: $details}
+    ' <<<"$EVAL_POSITION_EVIDENCE" >> "$EVAL_POSITION_EVIDENCE_FILE" 2>/dev/null || true
+    EVAL_POSITION_EVIDENCE=""
+    EVAL_POSITION_FACTS_OK=0
+    local teardown_fn="teardown_$1"
+    if declare -f "$teardown_fn" >/dev/null 2>&1; then
+        "$teardown_fn"
+    fi
+}
+
+print_position_evidence_summary() {
+    [[ -n "$EVAL_POSITION_EVIDENCE_FILE" && -f "$EVAL_POSITION_EVIDENCE_FILE" ]] || return 0
+    echo "  Recorded context cost and spill follow-up (not asserted):"
+    python3 "$REPO_ROOT/evals/skill_position_evals.py" summary "$EVAL_POSITION_EVIDENCE_FILE" || true
+}
+
+# HEAD: the rule is in the first half-budget of netclaw-operations, in the
+# table of built-in tools and in the list of operations that need the CLI.
+assert_skill_position_head() {
+    position_fact_case 'netclaw-operations' \
+        'get_reminder_history' \
+        'reminder[[:space:]]+(show\|status\|)?enable' \
+        'delete_webhook'
+}
+
+# TAIL: the rule is in the last half-budget of netclaw-operations, in "Tool
+# Lists in Config": an edited older `AllowedTools` list is applied as written,
+# and the operator must add two tools by hand.
+assert_skill_position_tail() {
+    position_fact_case 'netclaw-operations' 'file_search' 'tool_output_read'
+}
+
+# MIDDLE: the redirect URI is only in the "MCP OAuth" section, which the
+# window removes.
+assert_skill_position_middle_oauth_redirect() {
+    position_fact_case 'netclaw-operations' '/api/mcp/oauth/callback'
+}
+
+# MIDDLE: the quarantine file name is only in "Last-resort recovery", which
+# the window removes.
+assert_skill_position_middle_approvals_quarantine() {
+    position_fact_case 'netclaw-operations' 'tool-approvals\.json\.invalid'
+}
+
+# A commit message of more than 900 characters. The marker proves that the
+# commit holds this text and that no shell command holds it.
+EVAL_POSITION_MARKER="position-eval-marker-7f3a"
+position_long_commit_message() {
+    local line message="Record the storage review notes ($EVAL_POSITION_MARKER)."
+    for line in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        message+=" Note $line: the review of shelf $line found the inventory count correct, the labels in good condition, and no item out of its assigned place."
+    done
+    printf '%s' "$message"
+}
+
+# The eval grant file has no grant for `git add` or `git commit`, and an
+# unattended run denies a call that needs approval. The setup adds the two
+# grants for this case, and the teardown restores the file. With the grants,
+# an inline message of any length runs, so only the skill rule keeps the long
+# text out of the command. The repository gets the owner of the daemon user,
+# because Git refuses a repository of another owner.
+setup_skill_position_middle_long_commit() {
+    local repo_name="position-commit-$1-$$"
+    local repo="$EVAL_HOME/data/workspaces/$repo_name"
+    local approvals="$EVAL_HOME/data/config/tool-approvals.json"
+    mkdir -p "$repo"
+    printf 'first line\n' > "$repo/notes.txt"
+    git -C "$repo" init -q -b main
+    git -C "$repo" config user.name "Netclaw Eval"
+    git -C "$repo" config user.email "eval@netclaw.dev"
+    git -C "$repo" add notes.txt
+    git -C "$repo" commit -q -m seed
+    printf 'second line\n' >> "$repo/notes.txt"
+    chmod -R ugo+rwX "$repo"
+    EVAL_POSITION_REPO_HOST="$repo"
+    EVAL_POSITION_REPO="/home/netclaw/.netclaw/workspaces/$repo_name"
+    EVAL_POSITION_MESSAGE=$(position_long_commit_message)
+    docker exec -u 0 "$EVAL_CONTAINER_NAME" \
+        chown -R --reference=/home/netclaw/.netclaw/logs "$EVAL_POSITION_REPO" >/dev/null 2>&1 || true
+
+    EVAL_POSITION_APPROVALS_BACKUP="$TMPDIR_EVAL/position-approvals-backup.json"
+    cp "$approvals" "$EVAL_POSITION_APPROVALS_BACKUP"
+    jq '.audiences.personal.shell_execute += [
+            {"verb": "git add", "directory": null},
+            {"verb": "git commit", "directory": null}]' \
+        "$EVAL_POSITION_APPROVALS_BACKUP" > "$TMPDIR_EVAL/position-approvals.json"
+    docker exec -i -u 0 "$EVAL_CONTAINER_NAME" \
+        sh -c 'cat > /home/netclaw/.netclaw/config/tool-approvals.json' \
+        < "$TMPDIR_EVAL/position-approvals.json"
+}
+
+teardown_skill_position_middle_long_commit() {
+    [[ -n "${EVAL_POSITION_APPROVALS_BACKUP:-}" && -f "$EVAL_POSITION_APPROVALS_BACKUP" ]] || return 0
+    docker exec -i -u 0 "$EVAL_CONTAINER_NAME" \
+        sh -c 'cat > /home/netclaw/.netclaw/config/tool-approvals.json' \
+        < "$EVAL_POSITION_APPROVALS_BACKUP" || true
+    rm -f "$EVAL_POSITION_APPROVALS_BACKUP" "$TMPDIR_EVAL/position-approvals.json"
+    EVAL_POSITION_APPROVALS_BACKUP=""
+}
+
+# Prints the message of the newest commit of the case repository. The daemon
+# user owns the repository, so the read runs in the container.
+position_commit_message() {
+    docker exec -u 0 "$EVAL_CONTAINER_NAME" \
+        git -c safe.directory='*' -C "$EVAL_POSITION_REPO" log -1 --format=%B 2>/dev/null
+}
+
+# MIDDLE, behavior: rule 14 of "File and Shell Selection" is past the first
+# half-budget. It tells the agent to write long text to a file and to give the
+# file to the command. The prompt does not name the rule, so this case measures
+# a rule that the agent does not know to look for. Evidence: the new commit
+# holds the message, and no shell command holds the message text.
+# `git commit -F <file>` and `git commit -m "$(cat <file>)"` both pass. An
+# inline `-m` and a heredoc fail.
+assert_skill_position_middle_long_commit() {
+    position_skill_loaded 'netclaw-operations' || return 1
+    if ! position_commit_message | grep -qaF "$EVAL_POSITION_MARKER"; then
+        EVAL_ASSERTION_DETAILS="commit-missing"
+        return 1
+    fi
+    if jq -r '.shellCommands[]' <<<"$EVAL_POSITION_EVIDENCE" | grep -qaF "$EVAL_POSITION_MARKER"; then
+        EVAL_ASSERTION_DETAILS="long-text-inline-in-shell"
+        return 1
+    fi
+    position_logical_route_only
+}
+
+# REFERENCE-MIDDLE: the prune rule is in the part of `references/scheduling.md`
+# that the window removes. The existing `skill_progressive_disclosure` case
+# reads the same file for a fact in its first half-budget.
+assert_skill_position_reference_middle() {
+    position_skill_loaded 'netclaw-operations' || return 1
+    if ! position_evidence_is '.resourcesRead | index("netclaw-operations:references/scheduling.md") != null'; then
+        EVAL_ASSERTION_DETAILS="reference-not-read"
+        return 1
+    fi
+    if ! position_response_has '(12|twelve)[ -]days?'; then
+        EVAL_ASSERTION_DETAILS="fact-missing: 12 days"
+        return 1
+    fi
+    position_logical_route_only
+}
+
+# The two "steer" cases repeat a MIDDLE case and the REFERENCE-MIDDLE case in
+# a session that has a workspace folder. The daemon writes a spilled result
+# below that folder. A session that has run no shell command has no such
+# folder, so its oversized skill result has no `tool_output_read` line and no
+# retained text. Turn 1 runs one shell command, which creates the folder.
+# Turn 2 is the question. The recorded evidence shows whether the line was
+# present and whether the agent followed it.
+assert_skill_position_middle_oauth_redirect_steer() {
+    assert_skill_position_middle_oauth_redirect
+}
+
+assert_skill_position_reference_middle_steer() {
+    assert_skill_position_reference_middle
+}
+
+# MEMORY: a turn with no `[memory-recall]` block is normal. The prompt asks for
+# one of two words, so the assertion reads a fact and not the style of the text.
+assert_skill_position_memory_no_recall_block() {
+    position_skill_loaded 'netclaw-memory' || return 1
+    if jq -r '.lastResponse' <<<"$EVAL_POSITION_EVIDENCE" | grep -qawE 'BROKEN'; then
+        EVAL_ASSERTION_DETAILS="said-broken"
+        return 1
+    fi
+    if ! jq -r '.lastResponse' <<<"$EVAL_POSITION_EVIDENCE" | grep -qawE 'NORMAL'; then
+        EVAL_ASSERTION_DETAILS="fact-missing: NORMAL"
+        return 1
+    fi
+    position_logical_route_only
+}
+
+setup_skill_position_memory_tool_choice() {
+    EVAL_POSITION_TOKEN="R$1-$$"
+}
+
+# MEMORY: the tool for each operation. Turn 1 is a save request
+# (`store_memory`). Turn 2 asks what is saved (`find_memories` or
+# `get_memories`). Turn 3 corrects the saved memory (`update_memory`, and no
+# second `store_memory`).
+assert_skill_position_memory_tool_choice() {
+    position_skill_loaded 'netclaw-memory' || return 1
+    if ! position_evidence_is '.turns == 3'; then
+        EVAL_ASSERTION_DETAILS="turn-missing"
+        return 1
+    fi
+    if ! position_evidence_is '.toolsByTurn[0] | index("store_memory") != null'; then
+        EVAL_ASSERTION_DETAILS="turn1-no-store_memory"
+        return 1
+    fi
+    if ! position_evidence_is '.toolsByTurn[1] | (index("find_memories") != null or index("get_memories") != null)'; then
+        EVAL_ASSERTION_DETAILS="turn2-no-find_memories"
+        return 1
+    fi
+    if ! position_evidence_is '.toolsByTurn[2] | index("update_memory") != null'; then
+        EVAL_ASSERTION_DETAILS="turn3-no-update_memory"
+        return 1
+    fi
+    if ! position_evidence_is '.toolsByTurn[2] | index("store_memory") == null'; then
+        EVAL_ASSERTION_DETAILS="turn3-second-store_memory"
+        return 1
+    fi
+    position_logical_route_only
+}
+
+# RIGHT-REFERENCE: the index of netclaw-operations lists ten references. The
+# header name is only in `references/webhooks.md`. The run must read that
+# reference and no other reference.
+assert_skill_position_right_reference_operations() {
+    position_skill_loaded 'netclaw-operations' || return 1
+    if ! position_response_has 'X-TextForge-Signature'; then
+        EVAL_ASSERTION_DETAILS="fact-missing: X-TextForge-Signature"
+        return 1
+    fi
+    position_logical_route_only || return 1
+    position_only_resource_read 'netclaw-operations:references/webhooks.md'
+}
+
+# The daemon restores the system skills of its image into the mounted skills
+# folder at startup.
+# Args: skill name, resource path.
+position_image_has_resource() {
+    [[ -f "$EVAL_HOME/skills/.system/$1/$2" ]]
+}
+
+applicable_skill_position_right_reference_memory() {
+    EVAL_NOT_APPLICABLE_REASON="netclaw-memory has no references/recall-internals.md in this image"
+    position_image_has_resource 'netclaw-memory' 'references/recall-internals.md'
+}
+
+# RIGHT-REFERENCE after the netclaw-memory split: the cosine floor of the
+# default model is operator material. The run must read the recall reference
+# and no other reference.
+assert_skill_position_right_reference_memory() {
+    position_skill_loaded 'netclaw-memory' || return 1
+    if ! position_response_has '0\.24'; then
+        EVAL_ASSERTION_DETAILS="fact-missing: 0.24"
+        return 1
+    fi
+    position_logical_route_only || return 1
+    position_only_resource_read 'netclaw-memory:references/recall-internals.md'
+}
+
 # ─── Case & Category Runner ──────────────────────────────────────────────────
 
 print_category() {
@@ -2976,6 +3354,14 @@ run_case() {
         return
     fi
 
+    # A case can state that it does not apply to the image under test. Such a
+    # case does not run and does not count as a pass or as a failure.
+    local applicable_fn="applicable_${case_name}"
+    if declare -f "$applicable_fn" >/dev/null 2>&1 && ! "$applicable_fn"; then
+        printf "  [N/A ] %-30s — %s\n" "$case_name" "${EVAL_NOT_APPLICABLE_REASON:-not applicable to this image}"
+        return
+    fi
+
     local passes=0
     local run
     for ((run = 1; run <= RUNS; run++)); do
@@ -2991,18 +3377,26 @@ run_case() {
         rendered_prompt="${rendered_prompt//\{\{MANAGED_WORKTREE_BRANCH\}\}/${MANAGED_WORKTREE_BRANCH:-}}"
         rendered_prompt="${rendered_prompt//\{\{CYCLE_PROMPT\}\}/${CYCLE_PROMPT:-}}"
         rendered_prompt="${rendered_prompt//\{\{EVAL_REMINDER_TARGET\}\}/${EVAL_REMINDER_TARGET:-}}"
+        rendered_prompt="${rendered_prompt//\{\{EVAL_POSITION_REPO\}\}/${EVAL_POSITION_REPO:-}}"
+        rendered_prompt="${rendered_prompt//\{\{EVAL_POSITION_MESSAGE\}\}/${EVAL_POSITION_MESSAGE:-}}"
         run_prompt "$rendered_prompt" "$output_format"
 
         local passed=0
         local details="fail"
+        EVAL_ASSERTION_DETAILS=""
         if $assert_fn 2>/dev/null; then
             passed=1
             passes=$((passes + 1))
             details="pass"
+        elif [[ -n "${EVAL_ASSERTION_DETAILS:-}" ]]; then
+            details="$EVAL_ASSERTION_DETAILS"
         fi
 
         store_result "$case_name" "$run" "$prompt" "$passed" "$details"
         store_metrics "$case_name" "$run"
+        if [[ -n "${CASE_EVIDENCE_FN:-}" ]]; then
+            "$CASE_EVIDENCE_FN" "$case_name" "$run" "$passed"
+        fi
     done
 
     local score
@@ -3172,6 +3566,74 @@ run_all() {
         "Write a Python hello world script" \
         "How do I reverse a string in JavaScript?" \
         "Explain what a linked list is"
+
+    end_category
+
+    # ── Skill Guidance Position ──
+    # Where a rule sits in an oversized skill file, and what that costs.
+    # See the assertion comments. Each case needs several model calls.
+    print_category "Skill Guidance Position"
+
+    local position_previous_timeout="$PROMPT_TIMEOUT"
+    if [[ "$PROMPT_TIMEOUT" -lt 240 ]]; then
+        PROMPT_TIMEOUT=240
+    fi
+    CASE_EVIDENCE_FN=record_position_evidence
+    EVAL_POSITION_EVIDENCE_FILE=""
+
+    run_case --json skill_position_head "head: built-in tools and a CLI-only operation from the first half-budget" \
+        "Use your netclaw-operations skill. For each operation, tell me the built-in tool that does it, or the exact netclaw command when no built-in tool does it: (1) read the run history of a reminder, (2) enable a reminder that was stopped, (3) delete an inbound webhook." \
+        "Load your netclaw-operations skill. Which built-in tool reads the run history of a reminder, and which one deletes an inbound webhook? No built-in tool enables a stopped reminder: which exact netclaw command does that?"
+
+    run_case --json skill_position_tail "tail: tools that an edited older AllowedTools list lacks (last half-budget)" \
+        "Use your netclaw-operations skill. My Team AllowedTools list in netclaw.json is an older default list that I edited by hand, so Netclaw applies it as written. Which two tools do such older lists lack, so that I must add them by hand?" \
+        "Load your netclaw-operations skill. Netclaw applies my edited older Team AllowedTools list exactly as written. Name the two tools that I must add to it by hand."
+
+    run_case --json skill_position_middle_oauth_redirect "middle: the MCP OAuth redirect URI (hidden today)" \
+        "Use your netclaw-operations skill. My OAuth provider needs a pre-registered redirect URI before I can authorize an HTTP MCP server. What exact redirect URI does Netclaw use?" \
+        "Load your netclaw-operations skill. I must register a redirect URI with an OAuth provider for an HTTP MCP server. Give me the exact URI format that Netclaw listens on."
+
+    run_case --json skill_position_middle_approvals_quarantine "middle: the quarantine name of a corrupt grant store (hidden today)" \
+        "Use your netclaw-operations skill. The daemon warned that my saved shell approvals file was corrupt and that it moved the file. Under what exact file name does the daemon keep the corrupt file?" \
+        "Load your netclaw-operations skill. When the saved approvals file is corrupt, the daemon quarantines it. What is the exact name of the quarantined file?"
+
+    run_case --json skill_position_middle_long_commit "middle, behavior: long text goes to a file, not into the shell command (hidden today)" \
+        "Use your netclaw-operations skill and follow its shell rules. In the Git repository at {{EVAL_POSITION_REPO}}, commit the pending change to notes.txt. Use exactly this commit message: {{EVAL_POSITION_MESSAGE}}"
+
+    run_case --json skill_position_reference_middle "reference middle: the one-shot prune rule in scheduling.md (hidden today)" \
+        "Use your netclaw-operations skill and its scheduling reference. How many days after it ran does Netclaw prune a completed one-shot reminder and its history?" \
+        "Load your netclaw-operations skill, then read its scheduling reference. A one-shot reminder completed. After how many days does Netclaw remove it and its history?"
+
+    run_multi_turn_case --json skill_position_middle_oauth_redirect_steer "middle, after a shell call: the MCP OAuth redirect URI" \
+        "Run pwd in the shell and tell me the directory." \
+        "Use your netclaw-operations skill. My OAuth provider needs a pre-registered redirect URI before I can authorize an HTTP MCP server. What exact redirect URI does Netclaw use?"
+
+    run_multi_turn_case --json skill_position_reference_middle_steer "reference middle, after a shell call: the one-shot prune rule" \
+        "Run pwd in the shell and tell me the directory." \
+        "Use your netclaw-operations skill and its scheduling reference. How many days after it ran does Netclaw prune a completed one-shot reminder and its history?"
+
+    run_case --json skill_position_right_reference_operations "right reference: reads webhooks.md and no other reference" \
+        "Use your netclaw-operations skill. I need an inbound webhook for TextForge. Which exact signature header name must the route use?" \
+        "Load your netclaw-operations skill. TextForge will send signed events to an inbound webhook. What is the exact name of the signature header for that route?"
+
+    run_case --json skill_position_memory_no_recall_block "memory: no recall block is normal" \
+        "Use your netclaw-memory skill. This turn has no [memory-recall] block. Does that mean that your memory is broken? Start your answer with one word in capitals, BROKEN or NORMAL, then give one sentence." \
+        "Load your netclaw-memory skill. Your last turns had no [memory-recall] block at all. Is the memory system broken or is that normal? Answer first with exactly one word in capitals: BROKEN or NORMAL."
+
+    run_multi_turn_case --json skill_position_memory_tool_choice "memory: store, then find, then update without a second store" \
+        "Use your netclaw-memory skill for this conversation. Save this for later sessions: my preferred conference room is Room {{EVAL_POSITION_TOKEN}}. Tell me when it is saved." \
+        "What do you have saved about my preferred conference room? Check your saved memories for it." \
+        "The room changed. My preferred conference room is now Room {{EVAL_POSITION_TOKEN}}-B. Correct the saved memory. Do not create a second memory for it."
+
+    run_case --json skill_position_right_reference_memory "right reference: reads the recall reference of netclaw-memory and no other" \
+        "Use your netclaw-memory skill. What raw cosine similarity floor does automatic recall use for the default embedding model?" \
+        "Load your netclaw-memory skill. Below which cosine similarity does recall drop a candidate when the default embedding model is active? Give the number."
+
+    CASE_EVIDENCE_FN=""
+    PROMPT_TIMEOUT="$position_previous_timeout"
+    if [[ "$CATEGORY_SKIPPED" != "true" ]]; then
+        print_position_evidence_summary
+    fi
 
     end_category
 

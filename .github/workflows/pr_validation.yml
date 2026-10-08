@@ -317,6 +317,7 @@ jobs:
           python3 -m unittest discover -s evals -p test_background_evals.py -v
           python3 -m unittest discover -s evals -p test_cycle_evals.py -v
           python3 -m unittest discover -s evals -p test_cli_detector_evals.py -v
+          python3 -m unittest discover -s evals -p test_skill_position_evals.py -v
 
   approval-outcome-direction:
     name: Approval Outcome Direction
