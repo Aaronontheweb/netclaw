@@ -388,6 +388,7 @@ public sealed class ChatClientDoctorCheckTests : IDisposable
 
         Assert.Equal(DoctorSeverity.Error, result.Severity);
         Assert.Contains("Models:Definitions:fast:ContextWindow (100) is below minimum", result.Message);
+        Assert.StartsWith("Invalid model configuration: Models:", result.Message);
     }
 
     [Fact]

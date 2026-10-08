@@ -19,6 +19,7 @@ namespace Netclaw.Cli.Doctor;
 public sealed class ChatClientDoctorCheck : IDoctorCheck
 {
     private const string CheckName = "Chat Client";
+    private const string InvalidPrefix = "Invalid model configuration:";
     private readonly NetclawPaths _paths;
     private readonly IConfiguration _configuration;
     private readonly ProviderDescriptorRegistry _registry;
@@ -80,7 +81,7 @@ public sealed class ChatClientDoctorCheck : IDoctorCheck
         {
             return Task.FromResult(DoctorCheckResult.Error(
                 CheckName,
-                $"Invalid model configuration: {ex.Message} " +
+                $"{(ex.Message.StartsWith(InvalidPrefix, StringComparison.Ordinal) ? ex.Message : $"{InvalidPrefix} {ex.Message}")} " +
                 "The daemon will not start with this configuration. A running daemon keeps using its previous configuration, and applies no change from netclaw.json, until the Models section is fixed.",
                 "Edit the Models section of `netclaw.json` as described, then rerun `netclaw doctor`."));
         }
