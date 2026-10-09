@@ -415,9 +415,10 @@ pwsh ./scripts/Add-FileHeaders.ps1 -Verify
 
 <section id="evidence">
 <h2>Evidence status and independent review</h2>
-<p>The verified source is commit <code>edb476bc4892b4396aa908993b088d5756929cad</code>, based on the pinned revision.</p>
+<p>This section retains the original local proof for commit <code>edb476bc4892b4396aa908993b088d5756929cad</code>.</p>
+<p>The <a href="#revision-result">revision report</a> records the three simplifications, the CI fixes, and their separate proof.</p>
 <p><a href="https://github.com/netclaw-dev/netclaw/pull/2426">PR #2426</a> targets dev from Aaronontheweb:plan/chat-client-local-fsm. Hosted CI is active. Merge and deployment remain separate.</p>
-<p>The source manifest covers 34 changed production, test, smoke, and skill files. The later review update changes only this document.</p>
+<p>The original source manifest covers 34 changed production, test, smoke, and skill files. Its receipts retain their original source identity.</p>
 <table><thead><tr><th>Claim</th><th>Status</th><th>Limit</th></tr></thead><tbody>
 <tr><td data-label="Claim">Pinned client baseline</td><td data-label="Status" id="baseline-status">34 passed; zero failed or skipped.</td><td data-label="Limit">The baseline lacks durable admission and native quit proof.</td></tr>
 <tr><td data-label="Claim">Admission sensitivity</td><td data-label="Status">Both baseline admission cases fail the held-journal observation with an early hub response.</td><td data-label="Limit">This is a product regression receipt, not a fixture compile failure.</td></tr>
@@ -454,7 +455,7 @@ pwsh ./scripts/Add-FileHeaders.ps1 -Verify
 <p>The candidate retains those methods as an explicit complexity exception. Each method holds an ordered transition path under one lifecycle owner.</p>
 <p>Coverlet emits no CRAP score. The retained estimate uses the <a href="https://www.artima.com/weblogs/viewpost.jsp?thread=215899">original CRAP formula</a> and sequence coverage, not basis-path proof.</p>
 <p>Focused mutation scope remains unchanged. This change does not move an authority decision or policy check.</p>
-<p>The user authorized publication after local verification. Commit edb476bc4 and PR #2426 retain the implementation. Hosted CI has no final result yet.</p>
+<p>The user authorized publication after local verification. PR #2426 retains the implementation. The revision report records later source and CI status.</p>
 <p>Merge and deployment have no receipt. The Spark2 test and tailnet plan service retain their separate local receipts.</p>
 <h3>OpenSpec verification report</h3>
 <table><thead><tr><th>Dimension</th><th>Assessment</th></tr></thead><tbody>
@@ -496,7 +497,7 @@ pwsh ./scripts/Add-FileHeaders.ps1 -Verify
 <p>The actor remains the correct owner for client order, retry, cancellation, and close. The review found three optional changes, with no demonstrated merge blocker.</p>
 <p>The source under review is <code>edb476bc4892b4396aa908993b088d5756929cad</code>. The review inspected callers, tests, contracts, and the retained evidence.</p>
 <p>The review reused the source inventory and coverage report. A new whole-repository analyzer run was unnecessary for these bounded ownership questions.</p>
-<p>The review did not implement these proposals or execute new runtime checks. The existing pass counts describe the current implementation.</p>
+<p>The review proposed the following changes. The user then authorized all three. The revision report records their implementation and checks.</p>
 
 <h3>1. Share the queue-write failure policy inside SignalRSessionActor</h3>
 <p><a href="https://github.com/Aaronontheweb/netclaw/blob/edb476bc4892b4396aa908993b088d5756929cad/src/Netclaw.Daemon/Gateway/SignalRSessionActor.cs#L139-L163">Text input</a> and <a href="https://github.com/Aaronontheweb/netclaw/blob/edb476bc4892b4396aa908993b088d5756929cad/src/Netclaw.Daemon/Gateway/SignalRSessionActor.cs#L207-L264">trusted delivery</a> duplicate the ten-second queue write, timeout Nack, and closed-writer restart.</p>
@@ -536,6 +537,43 @@ pwsh ./scripts/Add-FileHeaders.ps1 -Verify
 <p>A minor additional option removes Completed.Operation. The accepted operation ID already identifies the actor's current operation.</p>
 <p>That option removes a duplicate message field. It does not justify a broader rewrite or a claim of a large reduction.</p>
 <p>The expected payoff is bounded. These proposals remove duplicate mechanisms; their actual code savings require implementation and the same boundary proof.</p>
+</section>
+
+<section id="revision-result">
+<h2>Applied simplifications and CI corrections</h2>
+<p>The source revision is <code>e25d482a89adbac341ebf79265f6e25d8424b912</code>. PR #2426 contains all three authorized simplifications.</p>
+<ul>
+<li>SignalRSessionActor uses one private queue-write method for text and trusted delivery. Each caller retains its null guard and source duties.</li>
+<li>ChatClientActor retains one close reply. The facade retains its shared close task, including dormant close without an ActorSystem.</li>
+<li>PrepareDaemonAsync returns the existing HealthCheckItem. Identity redo consumes its status and label directly.</li>
+</ul>
+<p>The shared queue method uses the text-path diagnostic messages for timeout and closure. No exact-string consumer requires the earlier trusted-path variants.</p>
+<p>The successful reminder diagnostic remains unchanged. Queue acceptance still does not acknowledge durable admission.</p>
+<p>The revision adds no service, interface, configuration option, or decision owner. The minor Completed.Operation proposal remains deferred.</p>
+<p>Production C# contains 185 fewer lines than the pinned base, versus 183 before this revision. Test C# adds 765 lines, versus 673 before.</p>
+<h3>CI failures and corrections</h3>
+<p>Windows failed when ChatAdmissionTests deleted a temporary log that its route-created view model still held open.</p>
+<p>The test now owns and disposes that view model. Its admission and repeated-quit assertions remain intact.</p>
+<p>Linux exposed a product race: the identity page showed its retry screen before OperationCompletion released Enter.</p>
+<p>The final UI actions now release Enter before they publish the final screen. The transient wait screen still blocks repeated input.</p>
+<p>A controlled UI dispatch theory holds the acknowledgment. Both cases fail the prior gate and pass after the correction.</p>
+<h3>Current verification</h3>
+<ul>
+<li>The complete CLI suite passes 2,132 cases. The gateway scope passes 100 cases. Both receipts have zero failures and skips.</li>
+<li>The gateway theory covers text and trusted delivery for missing queues and actual queue-write timeouts.</li>
+<li>The facade theory proves one task and receipt for active and dormant close. The actor theory retains the single total deadline.</li>
+<li>The focused coverage run passes 185 cases. Its six-class report gives ChatClientActor 96.5% line coverage and DaemonClient 100%.</li>
+<li>Continue and CompleteOperation retain their complexity exceptions. The refactors do not remove those hotspots.</li>
+<li>Slopwatch, copyright headers, strict OpenSpec validation, and the diff whitespace check pass.</li>
+<li id="revision-native-status">Fresh binaries pass all three affected native tapes. The quit check confirms two durable inputs and completed turns across initial chat and resume.</li>
+<li id="revision-ci-status">Hosted CI tests the pushed source revision. Windows confirmation remains separate from the local Linux receipts.</li>
+</ul>
+<p>Revised manifest SHA256: <code>3d9d071c30c7e3a56783ebf5202c03a00d0d5779d7adfd6dff2c2dffeee85513</code>. The independent verifier reproduced all 34 file hashes.</p>
+<p>The revised receipts use the simplification prefix under the existing validation directory. The original receipts remain unchanged.</p>
+<p>The affected native checks pass init-wizard, init-redo-chat, and chat-admission-quit. The earlier full native and Spark2 receipts remain historical.</p>
+<p>The independent verifier accepts the current local scope. Hosted platform checks remain separate. The native test homes are removed.</p>
+<p>The revised source does not change model steering. The approved focused E2E scope remains unchanged.</p>
+<p>The closed-writer branch retains source proof only. Merge, deployment, final retention, and OpenSpec archive remain separate actions.</p>
 </section>
 
 <section id="handoff">
