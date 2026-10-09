@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
+using Netclaw.Configuration.Json;
 using System.Text.Json.Serialization;
 
 namespace Netclaw.Configuration;
@@ -175,8 +176,8 @@ public sealed record ApprovalEntry([property: JsonPropertyName("verb")] string V
     public string FormatScope()
     {
         var phrase = Shell is { } shell && Match is { } match
-            ? $"{shell} {FormatMatch(match)} {JsonSerializer.Serialize(Verb)}"
-            : $"NonShell exact {JsonSerializer.Serialize(Verb)}";
+            ? $"{shell} {FormatMatch(match)} {JsonSerializer.Serialize(Verb, ConfigurationJsonContext.Default.String)}"
+            : $"NonShell exact {JsonSerializer.Serialize(Verb, ConfigurationJsonContext.Default.String)}";
         if (AssignmentDigest is { } assignmentDigest)
             phrase += $" with assignment {assignmentDigest.Value}";
         if (Repository is not null)

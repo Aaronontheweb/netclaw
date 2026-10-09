@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
+using Netclaw.Providers.Json;
 
 namespace Netclaw.Providers.SelfHosted;
 
@@ -39,7 +40,9 @@ public sealed class OllamaCapabilityResolver : IModelCapabilityResolver
     {
         try
         {
-            var requestBody = JsonSerializer.Serialize(new { name = modelId });
+            var requestBody = JsonSerializer.Serialize(
+                new Dictionary<string, string> { ["name"] = modelId },
+                ProvidersJsonContext.Default.DictionaryStringString);
             using var content = new StringContent(requestBody, Encoding.UTF8, "application/json");
             using var response = await _httpClient.PostAsync($"{_endpoint}/api/show", content, ct);
 

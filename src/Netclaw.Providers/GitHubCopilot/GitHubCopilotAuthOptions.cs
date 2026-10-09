@@ -46,7 +46,7 @@ public static class GitHubCopilotAuthResolver
 
     public static GitHubCopilotResolvedAuthOptions Resolve(ProviderEntry entry)
     {
-        var options = entry.GetVendorOptions<GitHubCopilotAuthOptions>() ?? new GitHubCopilotAuthOptions();
+        var options = entry.GetVendorOptions(Json.ProvidersJsonContext.VendorOptions.GitHubCopilotAuthOptions) ?? new GitHubCopilotAuthOptions();
         return Resolve(options);
     }
 

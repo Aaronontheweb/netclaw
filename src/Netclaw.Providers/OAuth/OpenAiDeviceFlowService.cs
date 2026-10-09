@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
+using Netclaw.Providers.Json;
 
 namespace Netclaw.Providers.OAuth;
 
@@ -65,7 +66,7 @@ public sealed class OpenAiDeviceFlowService : IDeviceFlowService
         try
         {
             response = await _httpClient.PostAsJsonAsync(
-                config.DeviceAuthorizationEndpoint, payload, ct);
+                config.DeviceAuthorizationEndpoint, payload, ProvidersJsonContext.Default.DictionaryStringString, ct);
         }
         catch (HttpRequestException ex)
         {
@@ -120,17 +121,17 @@ public sealed class OpenAiDeviceFlowService : IDeviceFlowService
             onStateChanged?.Invoke(DeviceFlowState.Polling);
 
             // Step 3: Poll for authorization code
-            var pollPayload = new
+            var pollPayload = new Dictionary<string, string>
             {
-                device_auth_id = deviceAuth.DeviceCode,
-                user_code = deviceAuth.UserCode
+                ["device_auth_id"] = deviceAuth.DeviceCode,
+                ["user_code"] = deviceAuth.UserCode
             };
 
             HttpResponseMessage response;
             try
             {
                 response = await _httpClient.PostAsJsonAsync(
-                    config.TokenEndpoint, pollPayload, ct);
+                    config.TokenEndpoint, pollPayload, ProvidersJsonContext.Default.DictionaryStringString, ct);
             }
             catch (HttpRequestException ex)
             {
@@ -156,7 +157,7 @@ public sealed class OpenAiDeviceFlowService : IDeviceFlowService
 
             // Success: parse the authorization code + PKCE material
             var authCodeResponse = await response.Content
-                .ReadFromJsonAsync<OpenAiAuthCodeResponse>(ct);
+                .ReadFromJsonAsync(ProvidersJsonContext.Default.OpenAiAuthCodeResponse, ct);
 
             if (authCodeResponse is null)
             {
@@ -309,7 +310,7 @@ public sealed class OpenAiDeviceFlowService : IDeviceFlowService
         [property: JsonPropertyName("interval")] int Interval,
         [property: JsonPropertyName("expires_in")] int? ExpiresIn);
 
-    private sealed record OpenAiAuthCodeResponse(
+    internal sealed record OpenAiAuthCodeResponse(
         [property: JsonPropertyName("authorization_code")] string AuthorizationCode,
         [property: JsonPropertyName("code_verifier")] string CodeVerifier);
 }

@@ -121,6 +121,7 @@ public static class SectionEditorExemptions
 }
 
 public sealed record SectionEditorRegistration(
+    [param: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
     [property: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type ImplementationType);
 
 /// <summary>

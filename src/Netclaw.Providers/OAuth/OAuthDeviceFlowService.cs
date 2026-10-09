@@ -7,6 +7,7 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Netclaw.Providers.Json;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
 
@@ -113,7 +114,7 @@ public sealed class OAuthDeviceFlowService : IDeviceFlowService
             ct);
         response.EnsureSuccessStatusCode();
 
-        var result = await response.Content.ReadFromJsonAsync<DeviceAuthorizationResponse>(ct);
+        var result = await response.Content.ReadFromJsonAsync(ProvidersJsonContext.Default.DeviceAuthorizationResponse, ct);
         return result ?? throw new InvalidOperationException("Empty device authorization response.");
     }
 
