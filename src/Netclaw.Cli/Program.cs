@@ -172,6 +172,7 @@ static async Task RunAsync(string[] args)
             builder.Services.AddSingleton(initPaths);
             builder.Services.AddSingleton(TimeProvider.System);
             builder.Services.AddSingleton<DaemonManager>();
+            builder.Services.AddTransient<HealthCheckStepViewModel>();
             builder.Services.AddSingleton<IBrowserAutomationBootstrapper, BrowserAutomationBootstrapper>();
             builder.Services
                 .AddSectionEditor<ProviderStepViewModel>()
@@ -1351,7 +1352,10 @@ static async Task RunTerminaHostAsync(IHost host)
             return;
         }
 
+        var navigation = host.Services.GetService<ChatNavigationState>();
         await host.RunAsync();
+        if (navigation?.CloseReceipt is { Inputs.Length: > 0 } receipt)
+            Console.Error.WriteLine($"netclaw: {receipt.Notice}");
     }
     catch (DaemonUnavailableException ex)
     {
@@ -1500,6 +1504,8 @@ static void WriteChatHelp()
     Console.WriteLine("  netclaw chat -p --resume my-session --json \"hello\" JSON output, named session");
     Console.WriteLine();
     Console.WriteLine("Use `netclaw sessions` to browse available sessions.");
+    Console.WriteLine("Normal Ctrl+Q allows two seconds for daemon admission. It does not wait for the model.");
+    Console.WriteLine("Check the session before you resend text with unconfirmed delivery.");
 }
 
 static void WriteStatusHelp()

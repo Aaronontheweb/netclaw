@@ -24,6 +24,7 @@ public sealed class IdentityTimezoneValidationPageTests : IDisposable
 {
     private readonly DisposableTempDir _dir = new();
     private readonly NetclawPaths _paths;
+    private readonly HealthCheckStepViewModel _readiness = new();
 
     public IdentityTimezoneValidationPageTests()
     {
@@ -34,14 +35,14 @@ public sealed class IdentityTimezoneValidationPageTests : IDisposable
             """{ "configVersion": 1, "Identity": { "UserTimezone": "Not/AZone" } }""");
     }
 
-    public void Dispose() => _dir.Dispose();
+    public void Dispose() { _readiness.Dispose(); _dir.Dispose(); }
 
     private (VirtualTerminal Terminal, TerminaApplication App, IdentityRedoViewModel Vm)
         CreateHeadlessApp(out VirtualInputSource input)
         => HeadlessTerminaFixture.Create<IdentityRedoPage, IdentityRedoViewModel>(
             "/identity-redo",
             _ => new IdentityRedoPage(),
-            () => new IdentityRedoViewModel(_paths, new ChatNavigationState()),
+            () => new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness),
             out input);
 
     [Fact]
@@ -101,10 +102,11 @@ public sealed class IdentityTimezoneValidationPageTests : IDisposable
         for (var i = 0; i < "Not/AZone".Length; i++)
             input.EnqueueKey(ConsoleKey.Backspace);
         input.EnqueueKey(ConsoleKey.Enter); // blank timezone -> default
-        input.EnqueueKey(ConsoleKey.Q, false, false, true);
-
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await app.RunAsync(cts.Token);
+        var run = app.RunAsync(cts.Token);
+        await IdentityRedoPageTests.WaitForTextAsync(terminal, "Identity updated", cts.Token);
+        input.EnqueueKey(ConsoleKey.Q, control: true);
+        await run;
 
         Assert.True(vm.IsSaved.Value, $"A blank timezone must fall back to a usable default. Screen:\n{terminal}");
         Assert.True(SchedulerTimeZones.TryResolve(vm.Step.UserTimezone, out _, out _),

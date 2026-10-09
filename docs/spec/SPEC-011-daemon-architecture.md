@@ -63,15 +63,17 @@ error status while other server catalogs remain available.
 
 ### `Netclaw.Cli`
 
-Lightweight CLI and TUI client. No actor system, no persistence, no tool
-execution.
+The CLI owns one local client actor for daemon sessions.
+The daemon retains persistence, model calls, and tool execution.
+Offline bootstrap creates no client ActorSystem.
+The client creates its ActorSystem lazily on its first daemon command.
 
 ```
 Netclaw.Cli Process
 ├── Command Router (args[0] dispatch)
 │
 ├── TUI Commands (Termina)
-│   ├── ChatPage → SignalR client → daemon
+│   ├── ChatPage → local client actor → SignalR → daemon
 │   └── InitWizardPage → local file I/O
 │
 ├── Daemon Management
@@ -96,7 +98,7 @@ Both binaries reference these class libraries:
 
 - **`Netclaw.Actors`** — protocol types (`SessionOutput`, `ChannelInput`,
   `SessionId`), actor interfaces. The CLI only uses the protocol types for
-  SignalR serialization — it does not host actors.
+  SignalR serialization. It also hosts the local client control actor.
 - **`Netclaw.Configuration`** — `SessionConfig`, `ProviderEntry`,
   `ModelSelection`, `NetclawPaths`. Used by the CLI for config file operations
   and by the daemon for runtime configuration.
@@ -133,6 +135,19 @@ ListSchedules() → ScheduleSummary[]
 // Additional methods per CLI command requirements
 ```
 
+`EnsureSession` returns `SessionEnsureResultDto` with `TextAdmissionVersion = 1`.
+The client checks that version before text dispatch and after each reattachment.
+A missing field means unsupported version 0. Unknown versions fail explicitly.
+The positional DTO constructor and existing hub signatures remain compatible.
+
+`SendMessage` succeeds after the session journal stores the text admission record.
+The registry retains the connection, target attachment, identity, and ingress checks.
+The canonical pipeline carries `AckTarget` to the session actor.
+A queue write alone does not confirm admission.
+A journal rejection returns an error with the `Text rejected: ` prefix.
+A lost or invalid acknowledgement leaves admission unconfirmed.
+Other `CommandAck` paths retain their existing meanings.
+
 ### Server → Client (Callbacks)
 
 ```
@@ -145,11 +160,13 @@ union. The mapper handles union → flat DTO conversion for SignalR serializatio
 ### Connection Lifecycle
 
 1. Client connects to `http://127.0.0.1:5199/hub/session`
-2. For chat: client calls `CreateSession("tui")` → receives session ID
+2. A fresh chat calls `EnsureSession` on its first input. A resume chat attaches when its page opens.
 3. Client subscribes to output via `ReceiveOutput` callback
 4. Client sends messages via `SendMessage(sessionId, text)`
 5. Daemon streams `SessionOutput` events back to client
-6. Client disconnects on exit — daemon keeps session alive for reconnection
+6. Normal quit permits two seconds total for prior admission. It does not wait for a model response.
+7. The client prints unresolved delivery status after the terminal UI closes.
+8. Client disconnect removes its subscriber. The daemon retains admitted work.
 
 ## Command Routing
 
@@ -363,18 +380,22 @@ ChatPage (Termina rendering)
     ↕ binds to
 ChatViewModel (reactive state)
     ↕ uses
+DaemonClient → ChatClientActor
+    ↕ owns the transport
 SignalR Client Adapter
     ↕ connects to
 Daemon SignalR Hub (/hub/session)
 ```
 
-The `ChatViewModel` interface remains the same as the current in-process
-implementation — it exposes `IObservable<SessionOutput>` and accepts
-`SubmitAsync(text)`. The only change is the backend: SignalR client instead of
-direct `SessionPipeline`.
+`ChatViewModel` posts inputs and uses `InvokeAsync` for display changes.
+It owns no connection loop, attachment flag, or text queue.
+`ChatClientActor` uses behavior switches and `IWithTimers` for elapsed deadlines.
+Tests use `TestScheduler`. The injected `TimeProvider` supplies UTC timestamps.
+The event pump delivers status and output outside the actor.
+A blocked observer cannot stop an actor command.
 
-`ChatPage` does not change at all. Same rendering, same paste debounce, same
-status bar, same tool call spinners.
+See [the current chat architecture](../architecture/chat-client.md) and
+[the glossary](GLOSSARY.md#text-admission) for the admission boundary.
 
 ## Tool Execution Model
 
