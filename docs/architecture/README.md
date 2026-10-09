@@ -8,6 +8,7 @@ change the area safely.
 
 | Document | Area |
 | --- | --- |
+| [chat-client.md](chat-client.md) | Local client control, text admission, and normal quit. |
 | [tool-authorization.md](tool-authorization.md) | Every tool call from the model to process launch: admission, shell facts, filesystem authority, prohibition, consent, and consent delivery. |
 
 ## What a document here contains

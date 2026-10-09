@@ -131,9 +131,9 @@ internal sealed class FakeDaemonHubTransport : IDaemonHubTransport
         return args =>
         {
             if (args[0] is string requested)
-                return new SessionEnsureResultDto(requested, false);
+                return new SessionEnsureResultDto(requested, false) { TextAdmissionVersion = 1 };
 
-            var result = new SessionEnsureResultDto(createdId, !created);
+            var result = new SessionEnsureResultDto(createdId, !created) { TextAdmissionVersion = 1 };
             created = true;
             return result;
         };

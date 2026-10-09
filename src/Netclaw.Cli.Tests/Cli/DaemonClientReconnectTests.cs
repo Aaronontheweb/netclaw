@@ -162,10 +162,10 @@ public sealed class DaemonClientReconnectTests
                     throw new InvalidOperationException("session not ready");
                 }
 
-                return new SessionEnsureResultDto(requested, false);
+                return new SessionEnsureResultDto(requested, false) { TextAdmissionVersion = 1 };
             }
 
-            return new SessionEnsureResultDto("fake/session", true);
+            return new SessionEnsureResultDto("fake/session", true) { TextAdmissionVersion = 1 };
         };
 
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -199,7 +199,7 @@ public sealed class DaemonClientReconnectTests
         // The daemon restarted and forgot the session: EnsureSession now returns
         // a brand-new id (Created=true) instead of echoing the requested one.
         const string newId = "fake/session-after-restart";
-        transport.EnsureSessionResponder = _ => new SessionEnsureResultDto(newId, true);
+        transport.EnsureSessionResponder = _ => new SessionEnsureResultDto(newId, true) { TextAdmissionVersion = 1 };
 
         var reconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using var sub = client.ConnectionEvents.Subscribe(evt =>

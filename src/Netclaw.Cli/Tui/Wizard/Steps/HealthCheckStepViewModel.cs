@@ -225,22 +225,7 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         //     to disk and applied; the only cost is the wizard declaring "ready" a beat
         //     early against the reloading daemon — cosmetic, and gone once the daemon is on
         //     a build that emits the generation header.
-        var wasRunning = _daemonManager?.GetStatus().IsRunning ?? false;
-        int? generationBefore = null;
-        if (wasRunning && _daemonApi is not null)
-        {
-            try
-            {
-                generationBefore = (await _daemonApi.ProbeReadinessAsync(ct)).Generation;
-            }
-            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException && !ct.IsCancellationRequested)
-            {
-                // Running per GetStatus but not answering the probe right now. Fall back to
-                // "any live instance counts" (null) — at worst the readiness-race guard is
-                // relaxed for this run; it never produces a false "not ready".
-                generationBefore = null;
-            }
-        }
+        var daemonBeforeWrite = await CaptureDaemonStateAsync(ct);
 
         // Write config
         runner.Add(new HealthCheckItem("Writing configuration", null));
@@ -265,16 +250,7 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         var allPassed = runner.AllPassed;
         if (allPassed)
         {
-            runner.Add(new HealthCheckItem(ProgressLabel(wasRunning), null));
-            var daemonOk = await StartIfNeededAndPollAsync(wasRunning, generationBefore, ct);
-            if (daemonOk)
-            {
-                runner.UpdateLast(new HealthCheckItem("Daemon ready", true));
-            }
-            else if (LastResultPending())
-            {
-                runner.UpdateLast(new HealthCheckItem(NotReadyMessage, false));
-            }
+            await PrepareDaemonAsync(daemonBeforeWrite, ct);
         }
 
         IsRunning.Value = false;
@@ -318,6 +294,39 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
     // shared by the initial health item and the per-second poll relabel.
     private static string ProgressLabel(bool wasRunning) =>
         wasRunning ? "Applying configuration" : "Starting daemon";
+
+    internal async Task<(bool WasRunning, int? GenerationBefore)> CaptureDaemonStateAsync(CancellationToken ct)
+    {
+        var wasRunning = _daemonManager?.GetStatus().IsRunning ?? false;
+        int? generationBefore = null;
+        if (wasRunning && _daemonApi is not null)
+        {
+            try
+            {
+                generationBefore = (await _daemonApi.ProbeReadinessAsync(ct)).Generation;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException && !ct.IsCancellationRequested)
+            {
+                // Running per GetStatus but not answering the probe right now. Fall back to
+                // "any live instance counts" (null) — at worst the readiness-race guard is
+                // relaxed for this run; it never produces a false "not ready".
+                generationBefore = null;
+            }
+        }
+
+        return (wasRunning, generationBefore);
+    }
+
+    internal async Task<bool> PrepareDaemonAsync((bool WasRunning, int? GenerationBefore) beforeWrite, CancellationToken ct)
+    {
+        AddResult(new HealthCheckItem(ProgressLabel(beforeWrite.WasRunning), null));
+        NotifyChanged();
+        var ready = await StartIfNeededAndPollAsync(beforeWrite.WasRunning, beforeWrite.GenerationBefore, ct);
+        if (ready) SetLastResult(new HealthCheckItem("Daemon ready", true));
+        else if (LastResultPending()) SetLastResult(new HealthCheckItem(NotReadyMessage, false));
+        NotifyChanged();
+        return ready;
+    }
 
     private async Task<bool> StartIfNeededAndPollAsync(bool wasRunning, int? generationBefore, CancellationToken ct)
     {

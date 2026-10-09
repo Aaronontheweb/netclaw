@@ -39,15 +39,17 @@ public sealed class IdentityRedoPageTests : IDisposable
 {
     private readonly DisposableTempDir _dir = new();
     private readonly NetclawPaths _paths;
+    private readonly DaemonReadinessFixture _daemon;
 
     public IdentityRedoPageTests()
     {
         _paths = new NetclawPaths(_dir.Path);
         _paths.EnsureDirectoriesExist();
+        _daemon = new DaemonReadinessFixture(_paths);
         File.WriteAllText(_paths.NetclawConfigPath, "{ \"configVersion\": 1 }");
     }
 
-    public void Dispose() => _dir.Dispose();
+    public void Dispose() { _daemon.Dispose(); _dir.Dispose(); }
 
     [Fact]
     public async Task FullFlow_EmptySubmits_AdvancesPastTimezoneToSavedScreen()
@@ -62,10 +64,11 @@ public sealed class IdentityRedoPageTests : IDisposable
         input.EnqueueKey(ConsoleKey.Enter); // communication style
         input.EnqueueKey(ConsoleKey.Enter); // user name
         input.EnqueueKey(ConsoleKey.Enter); // timezone -> finalize
-        input.EnqueueKey(ConsoleKey.Q, false, false, true);
-
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await app.RunAsync(cts.Token);
+        var run = app.RunAsync(cts.Token);
+        await WaitForTextAsync(terminal, "Identity updated", cts.Token);
+        input.EnqueueKey(ConsoleKey.Q, control: true);
+        await run;
 
         Assert.True(vm.IsSaved.Value,
             $"Timezone submit must finalize the redo flow, not loop. Screen:\n{terminal}");
@@ -77,16 +80,17 @@ public sealed class IdentityRedoPageTests : IDisposable
     [Fact]
     public async Task TimezoneSubmit_FinalizesExactlyOnce()
     {
-        var (_, app, vm) = CreateHeadlessApp(out var input);
+        var (terminal, app, vm) = CreateHeadlessApp(out var input);
 
         input.EnqueueKey(ConsoleKey.Enter); // agent name
         input.EnqueueKey(ConsoleKey.Enter); // communication style
         input.EnqueueKey(ConsoleKey.Enter); // user name
         input.EnqueueKey(ConsoleKey.Enter); // timezone -> finalize
-        input.EnqueueKey(ConsoleKey.Q, false, false, true);
-
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await app.RunAsync(cts.Token);
+        var run = app.RunAsync(cts.Token);
+        await WaitForTextAsync(terminal, "Identity updated", cts.Token);
+        input.EnqueueKey(ConsoleKey.Q, control: true);
+        await run;
 
         // A stuck/looping timezone step never reaches saved; a double-fire would have
         // skipped past the user-name field. Reaching saved with the local timezone
@@ -165,16 +169,15 @@ public sealed class IdentityRedoPageTests : IDisposable
         var (terminal, app, _) = CreateExistingInstallApp(landing, out var input);
 
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await RedoIdentityAsync(app, terminal, input, cts.Token, () => Keys(() =>
+        await RedoIdentityAsync(app, terminal, input, cts.Token, async () =>
         {
+            await WaitForTextAsync(terminal, "Couldn't write SOUL.md: permission denied. Fix it and press Enter to retry.", cts.Token);
             input.EnqueueKey(ConsoleKey.Enter); // would start chat if the save had succeeded
             input.EnqueueKey(ConsoleKey.Q, control: true);
-        }));
+        });
 
         Assert.False(landing.Entered, "A failed save must not launch chat.");
         Assert.Null(landing.NavigationState.InitialMessage);
-        Assert.True(terminal.Contains("Couldn't write SOUL.md: permission denied. Fix it and press Enter to retry."),
-            $"Screen:\n{terminal}");
         Assert.False(terminal.Contains("Start guided identity chat"), $"Screen:\n{terminal}");
     }
 
@@ -242,7 +245,7 @@ public sealed class IdentityRedoPageTests : IDisposable
         return Task.CompletedTask;
     }
 
-    private static async Task WaitForTextAsync(VirtualTerminal terminal, string text, CancellationToken ct)
+    internal static async Task WaitForTextAsync(VirtualTerminal terminal, string text, CancellationToken ct)
     {
         while (!terminal.Contains(text))
         {
@@ -287,6 +290,11 @@ public sealed class IdentityRedoPageTests : IDisposable
         input.EnqueueString("Pat");
         input.EnqueueKey(ConsoleKey.Enter);
         input.EnqueueKey(ConsoleKey.Enter); // timezone default -> save
+        while (!terminal.Contains("Start guided identity chat") && !terminal.Contains("Couldn't write"))
+        {
+            ct.ThrowIfCancellationRequested();
+            await Task.Yield();
+        }
         await completion();
 
         await run;
@@ -320,7 +328,7 @@ public sealed class IdentityRedoPageTests : IDisposable
             builder.RegisterRoute<IdentityRedoPage, IdentityRedoViewModel>(
                 InitExistingInstallViewModel.IdentityRoute,
                 _ => new IdentityRedoPage(),
-                _ => new IdentityRedoViewModel(_paths, landing.NavigationState));
+                _ => new IdentityRedoViewModel(_paths, landing.NavigationState, _daemon.Step));
             builder.RegisterRoute<StubChatPage, StubChatViewModel>(
                 ChatViewModel.Route,
                 _ => new StubChatPage(),
@@ -359,6 +367,6 @@ public sealed class IdentityRedoPageTests : IDisposable
         => HeadlessTerminaFixture.Create<IdentityRedoPage, IdentityRedoViewModel>(
             "/identity-redo",
             _ => new IdentityRedoPage(),
-            () => new IdentityRedoViewModel(_paths, new ChatNavigationState()),
+            () => new IdentityRedoViewModel(_paths, new ChatNavigationState(), _daemon.Step),
             out input);
 }

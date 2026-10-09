@@ -35,16 +35,11 @@ public partial class ChatViewModel : ReactiveViewModel
     private readonly TimeProvider _timeProvider;
     private readonly ModelCapabilities _modelCapabilities;
     private readonly NetclawPaths _paths;
-    private string? _resumeSessionId;
-    private string? _initialMessage;
+    private readonly ChatNavigationState _navigationState;
+    private readonly string? _resumeSessionId;
+    private readonly string? _initialMessage;
 
     private readonly Subject<SessionOutput> _outputSubject = new();
-    private readonly System.Collections.Concurrent.ConcurrentQueue<string> _pendingMessages = new();
-
-    // One session set-up at a time. The connect loop, the Connected connection event and a
-    // submit that finds the chat not ready all call EnsureSessionAndFlushAsync, and they can
-    // overlap. The method re-checks its state under this gate, so a later caller finds nothing left.
-    private readonly SemaphoreSlim _sessionSetup = new(1, 1);
     private readonly Queue<ToolInteractionRequest> _pendingInteractions = new();
 
     /// <summary>
@@ -63,8 +58,8 @@ public partial class ChatViewModel : ReactiveViewModel
     // cache analysis and eval tooling that anchors on the per-session log
     // silently gets no data from TUI turns (issue #1173).
     private StreamWriter? _usageLog;
-    private bool _sessionReady;
-    private int _connectAttempts;
+    private Task? _shutdownTask;
+    private Task? _activationTask;
     private readonly ObservableCollection<string> _approvalOptions = [];
 
     public ReactiveProperty<bool> IsGenerating { get; } = new(false);
@@ -112,6 +107,7 @@ public partial class ChatViewModel : ReactiveViewModel
         _timeProvider = timeProvider;
         _modelCapabilities = modelCapabilities;
         _paths = paths;
+        _navigationState = navigationState;
         _resumeSessionId = navigationState.TakeResumeSessionId();
         _initialMessage = navigationState.TakeInitialMessage();
     }
@@ -124,130 +120,82 @@ public partial class ChatViewModel : ReactiveViewModel
 
     protected virtual Task InitializeSessionAsync()
     {
-        _daemonOutputSubscription = _daemonClient.SessionOutput.Subscribe(ProcessOutput);
-
-        _daemonConnectionSubscription = _daemonClient.ConnectionEvents
-            .Subscribe(evt =>
+        _daemonOutputSubscription?.Dispose();
+        _daemonConnectionSubscription?.Dispose();
+        _daemonOutputSubscription = _daemonClient.SessionOutput.Subscribe(output =>
+            _ = InvokeAsync(() => ProcessOutput(output)));
+        _daemonConnectionSubscription = _daemonClient.ConnectionEvents.Subscribe(connection =>
+            _ = InvokeAsync(() =>
             {
-                if (evt.State is DaemonConnectionState.Disconnected
-                    or DaemonConnectionState.Reconnecting
-                    or DaemonConnectionState.TransportClosed)
+                if (connection.SessionId is { } sessionId)
                 {
-                    _sessionReady = false;
-                    IsGenerating.Value = false;
+                    SessionIdDisplay.Value = sessionId;
+                    OpenUsageLogIfNeeded(sessionId);
                 }
-
-                if (evt.State is DaemonConnectionState.Connected)
-                {
-                    _ = EnsureSessionAndFlushAsync();
-                }
-
-                if (IsGenerating.Value && evt.State is DaemonConnectionState.Connected)
-                    StatusMessage.Value = "Generating...";
-                else
-                    StatusMessage.Value = evt.Message;
-
+                StatusMessage.Value = connection.State == DaemonConnectionState.Connected
+                    ? IsGenerating.Value ? "Generating..." : "Ready"
+                    : connection.Message;
                 RequestRedraw();
-            });
+            }));
+        if (_activationTask is null)
+        {
+            IsGenerating.Value = _initialMessage is not null;
+            _activationTask = ObserveRequestAsync(() => _daemonClient.OpenChatAsync(_resumeSessionId, _initialMessage));
+        }
+        return _activationTask;
+    }
 
-        _ = ConnectUntilReadyAsync();
+    /// <summary>Posts user text before the caller can request normal quit.</summary>
+    public Task SubmitAsync(string text)
+    {
+        if (_shutdownTask is not null || string.IsNullOrWhiteSpace(text)) return Task.CompletedTask;
+        if (HasPendingInteraction)
+        {
+            var interaction = CurrentInteraction!;
+            if (ToolInteractionResponseParser.TryParseApprovalResponse(text, interaction.Options, out var key) && key is not null)
+                return SubmitInteractionSelectionAsync(key);
+            StatusMessage.Value = $"Approval required: reply with {FormatReplyLetters(interaction.Options)}.";
+            RequestRedraw();
+            return Task.CompletedTask;
+        }
+        IsGenerating.Value = true;
+        StatusMessage.Value = "Generating...";
+        _ = ObserveRequestAsync(() => _daemonClient.SendAsync(text));
         return Task.CompletedTask;
     }
 
-    /// <summary>
-    /// Submit user text to the session pipeline.
-    /// </summary>
-    public async Task SubmitAsync(string text)
+    private async Task ObserveRequestAsync(Func<Task> request)
     {
-        if (string.IsNullOrWhiteSpace(text))
-            return;
-
-        if (_pendingInteractions.Count > 0)
+        try { await request(); }
+        catch (Exception error)
         {
-            await SubmitInteractionResponseAsync(text);
-            return;
-        }
-
-        if (!_sessionReady || !_daemonClient.IsConnected)
-        {
-            _pendingMessages.Enqueue(text);
-            IsGenerating.Value = false;
-            IsInputEnabled.Value = true;
-            StatusMessage.Value = $"Queued {_pendingMessages.Count} message(s). Reconnecting...";
-            RequestRedraw();
-            _ = ConnectUntilReadyAsync();
-            return;
-        }
-
-        IsGenerating.Value = true;
-        StatusMessage.Value = "Generating...";
-
-        try
-        {
-            await _daemonClient.EnsureSessionAsync(DaemonClient.TuiChannelType);
-
-            await _daemonClient.SendAsync(text);
-        }
-        catch (Exception ex)
-        {
-            IsGenerating.Value = false;
-            _sessionReady = false;
-            IsInputEnabled.Value = true;
-            _pendingMessages.Enqueue(text);
-            StatusMessage.Value = $"Send failed ({ex.Message}). Reconnecting...";
-            RequestRedraw();
-            _ = ConnectUntilReadyAsync();
+            await InvokeAsync(() =>
+            {
+                IsGenerating.Value = false;
+                StatusMessage.Value = error.Message;
+                RequestRedraw();
+            });
         }
     }
 
     public virtual void RequestAppShutdown()
     {
-        Shutdown();
+        if (_shutdownTask is not null) return;
+        IsInputEnabled.Value = false;
+        StatusMessage.Value = "Confirming daemon admission...";
+        _shutdownTask = CloseAndShutdownAsync();
     }
 
-    private async Task SubmitInteractionResponseAsync(string text)
+    private async Task CloseAndShutdownAsync()
     {
-        if (!_sessionReady || !_daemonClient.IsConnected)
-        {
-            StatusMessage.Value = "Approval required. Reconnecting...";
-            RequestRedraw();
-            _ = ConnectUntilReadyAsync();
-            return;
-        }
-
-        var interaction = CurrentInteraction;
-        if (interaction is null)
-            return;
-
-        if (!ToolInteractionResponseParser.TryParseApprovalResponse(text, interaction.Options, out var selectedKey) || selectedKey is null)
-        {
-            StatusMessage.Value = $"Approval required: reply with {FormatReplyLetters(interaction.Options)}.";
-            RequestRedraw();
-            return;
-        }
-
-        var pending = _pendingInteractions.Peek();
-
         try
         {
-            await _daemonClient.EnsureSessionAsync(DaemonClient.TuiChannelType);
-            await _daemonClient.RespondToInteractionAsync(pending.CallId.Value, selectedKey);
-
-            _pendingInteractions.Dequeue();
-            RefreshApprovalOptions();
-            IsGenerating.Value = _pendingInteractions.Count == 0;
-            StatusMessage.Value = _pendingInteractions.Count == 0
-                ? "Generating..."
-                : "Approval required";
-            RequestRedraw();
+            var receipt = await _daemonClient.CloseAsync();
+            await InvokeAsync(() => { _navigationState.CloseReceipt = receipt; StatusMessage.Value = receipt.Notice; Shutdown(); });
         }
-        catch (Exception ex)
+        catch (Exception error)
         {
-            _sessionReady = false;
-            IsGenerating.Value = false;
-            StatusMessage.Value = $"Approval response failed ({ex.Message}). Reconnecting...";
-            RequestRedraw();
-            _ = ConnectUntilReadyAsync();
+            await InvokeAsync(() => { StatusMessage.Value = error.Message; Shutdown(); });
         }
     }
 
@@ -439,7 +387,6 @@ public partial class ChatViewModel : ReactiveViewModel
         _daemonOutputSubscription?.Dispose();
         _daemonConnectionSubscription?.Dispose();
         _outputSubject.Dispose();
-        _sessionSetup.Dispose();
         _usageLog?.Dispose();
         _usageLog = null;
 
@@ -451,35 +398,6 @@ public partial class ChatViewModel : ReactiveViewModel
         UiVersion.Dispose();
         IsApprovalDetailVisible.Dispose();
         base.Dispose();
-    }
-
-    private async Task ConnectUntilReadyAsync()
-    {
-        var delays = new[]
-        {
-            TimeSpan.FromSeconds(1),
-            TimeSpan.FromSeconds(2),
-            TimeSpan.FromSeconds(5),
-            TimeSpan.FromSeconds(10)
-        };
-
-        while (!_sessionReady)
-        {
-            try
-            {
-                await _daemonClient.ConnectAsync();
-                await EnsureSessionAndFlushAsync();
-                return;
-            }
-            catch
-            {
-                _connectAttempts++;
-                var idx = Math.Min(_connectAttempts - 1, delays.Length - 1);
-                StatusMessage.Value = $"Connecting... retry {_connectAttempts} in {delays[idx].TotalSeconds:0}s";
-                RequestRedraw();
-                await Task.Delay(delays[idx]);
-            }
-        }
     }
 
     private void ProcessOutput(SessionOutput output)
@@ -501,12 +419,13 @@ public partial class ChatViewModel : ReactiveViewModel
                 _pendingInteractions.Clear();
                 RefreshApprovalOptions();
                 IsGenerating.Value = false;
+                StatusMessage.Value = "Ready";
                 break;
             case ErrorOutput:
                 _pendingInteractions.Clear();
                 RefreshApprovalOptions();
                 IsGenerating.Value = false;
-                IsInputEnabled.Value = true;
+                IsInputEnabled.Value = _shutdownTask is null;
                 StatusMessage.Value = "Last request failed. Ready to retry.";
                 break;
         }
@@ -514,143 +433,35 @@ public partial class ChatViewModel : ReactiveViewModel
         RequestRedraw();
     }
 
-    internal async Task EnsureSessionAndFlushAsync()
-    {
-        await _sessionSetup.WaitAsync();
-        try
-        {
-            // Another caller already finished the set-up and nothing is waiting to be sent.
-            if (_sessionReady && _resumeSessionId is null && _initialMessage is null && _pendingMessages.IsEmpty)
-                return;
-
-            // On the first call, use ResumeSessionAsync if a resume ID was provided.
-            // After that, DaemonClient has the session ID cached, so use EnsureSessionAsync
-            // to avoid redundant resume calls on reconnect.
-            var resumeId = _resumeSessionId;
-            _resumeSessionId = null;
-            var sessionId = resumeId is not null
-                ? await _daemonClient.ResumeSessionAsync(resumeId, DaemonClient.TuiChannelType)
-                : await _daemonClient.EnsureSessionAsync(DaemonClient.TuiChannelType);
-            SessionIdDisplay.Value = sessionId;
-            OpenUsageLogIfNeeded(sessionId);
-            IsInputEnabled.Value = true;
-            _connectAttempts = 0;
-
-            // Each queued message (and the initial message) is taken out first and sent once. One
-            // whose send throws is dropped, not put back: a message that can never be sent (too
-            // large for the connection, for one) would otherwise stay first in line and make every
-            // reconnect fail again. After a failure the method returns; the connection event that
-            // follows a torn-down connection flushes the messages still queued. The chat is marked
-            // ready only once the queue is empty, so a new submit queues behind the messages already
-            // waiting instead of overtaking them.
-            var triggerSent = false;
-            do
-            {
-                while (true)
-                {
-                    var isTrigger = false;
-                    var found = _pendingMessages.TryDequeue(out var next);
-                    if (!found && _initialMessage is { } trigger)
-                    {
-                        // Auto-send hidden trigger message (e.g., onboarding interview prompt).
-                        // Not rendered as a user bubble — the LLM's greeting is the first visible thing.
-                        next = trigger;
-                        _initialMessage = null;
-                        found = isTrigger = true;
-                        IsGenerating.Value = true;
-                        StatusMessage.Value = "Generating...";
-                        RequestRedraw();
-                    }
-
-                    if (!found)
-                        break;
-
-                    try
-                    {
-                        await _daemonClient.SendAsync(next!);
-                        triggerSent |= isTrigger;
-                    }
-                    catch (Exception ex)
-                    {
-                        _sessionReady = false;
-                        IsGenerating.Value = false;
-                        StatusMessage.Value = $"A message could not be sent and was dropped ({ex.Message}).";
-                        RequestRedraw();
-                        return;
-                    }
-                }
-
-                _sessionReady = true;
-            }
-            while (!_pendingMessages.IsEmpty); // a submit that queued itself just before the flag was set
-
-            if (!triggerSent && !IsGenerating.Value)
-                StatusMessage.Value = "Ready";
-
-            RequestRedraw();
-        }
-        finally
-        {
-            ReleaseSessionSetup();
-        }
-    }
-
-    private void ReleaseSessionSetup()
-    {
-        try
-        {
-            _sessionSetup.Release();
-        }
-        catch (ObjectDisposedException)
-        {
-            return; // the view model was disposed while the set-up was in flight
-        }
-    }
-
     protected virtual async Task SubmitInteractionSelectionAsync(string selectedKey)
     {
-        if (CurrentInteraction is null)
-            return;
-
-        if (_isSubmittingInteraction)
-            return;
-
-        if (!_sessionReady || !_daemonClient.IsConnected)
-        {
-            StatusMessage.Value = "Approval required. Reconnecting...";
-            RequestRedraw();
-            _ = ConnectUntilReadyAsync();
-            return;
-        }
-
-        var pending = _pendingInteractions.Peek();
-
+        if (_shutdownTask is not null || CurrentInteraction is not { } pending || _isSubmittingInteraction) return;
+        _isSubmittingInteraction = true;
+        IsGenerating.Value = true;
         try
         {
-            _isSubmittingInteraction = true;
-            await _daemonClient.EnsureSessionAsync(DaemonClient.TuiChannelType);
             await _daemonClient.RespondToInteractionAsync(pending.CallId.Value, selectedKey);
-
-            _pendingInteractions.Dequeue();
-            RefreshApprovalOptions();
-            IsGenerating.Value = _pendingInteractions.Count == 0;
-            StatusMessage.Value = _pendingInteractions.Count == 0
-                ? "Generating..."
-                : "Approval required";
-            RequestRedraw();
+            await InvokeAsync(() =>
+            {
+                // Turn completion can clear the prompt before the RPC response arrives.
+                if (CurrentInteraction != pending) return;
+                _pendingInteractions.Dequeue();
+                RefreshApprovalOptions();
+                if (HasPendingInteraction) IsGenerating.Value = false;
+                StatusMessage.Value = HasPendingInteraction ? "Approval required" : IsGenerating.Value ? "Generating..." : "Ready";
+                RequestRedraw();
+            });
         }
-        catch (Exception ex)
+        catch (Exception error)
         {
-            _sessionReady = false;
-            IsGenerating.Value = false;
-            StatusMessage.Value = $"Approval response failed ({ex.Message}). Reconnecting...";
-            RequestRedraw();
-            _ = ConnectUntilReadyAsync();
+            await InvokeAsync(() =>
+            {
+                IsGenerating.Value = false;
+                StatusMessage.Value = $"Approval response failed: {error.Message}";
+                RequestRedraw();
+            });
         }
-        finally
-        {
-            _isSubmittingInteraction = false;
-        }
+        finally { await InvokeAsync(() => _isSubmittingInteraction = false); }
     }
 
     private void RefreshApprovalOptions()
