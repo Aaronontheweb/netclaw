@@ -415,7 +415,9 @@ pwsh ./scripts/Add-FileHeaders.ps1 -Verify
 
 <section id="evidence">
 <h2>Evidence status and independent review</h2>
-<p>The candidate uses the pinned base and an uncommitted local patch. The source manifest covers 34 changed production, test, smoke, and skill files.</p>
+<p>The verified source is commit <code>edb476bc4892b4396aa908993b088d5756929cad</code>, based on the pinned revision.</p>
+<p><a href="https://github.com/netclaw-dev/netclaw/pull/2426">PR #2426</a> targets dev from Aaronontheweb:plan/chat-client-local-fsm. Hosted CI is active. Merge and deployment remain separate.</p>
+<p>The source manifest covers 34 changed production, test, smoke, and skill files. The later review update changes only this document.</p>
 <table><thead><tr><th>Claim</th><th>Status</th><th>Limit</th></tr></thead><tbody>
 <tr><td data-label="Claim">Pinned client baseline</td><td data-label="Status" id="baseline-status">34 passed; zero failed or skipped.</td><td data-label="Limit">The baseline lacks durable admission and native quit proof.</td></tr>
 <tr><td data-label="Claim">Admission sensitivity</td><td data-label="Status">Both baseline admission cases fail the held-journal observation with an early hub response.</td><td data-label="Limit">This is a product regression receipt, not a fixture compile failure.</td></tr>
@@ -452,7 +454,8 @@ pwsh ./scripts/Add-FileHeaders.ps1 -Verify
 <p>The candidate retains those methods as an explicit complexity exception. Each method holds an ordered transition path under one lifecycle owner.</p>
 <p>Coverlet emits no CRAP score. The retained estimate uses the <a href="https://www.artima.com/weblogs/viewpost.jsp?thread=215899">original CRAP formula</a> and sequence coverage, not basis-path proof.</p>
 <p>Focused mutation scope remains unchanged. This change does not move an authority decision or policy check.</p>
-<p>Hosted CI, commit, publication, merge, and deployment have no receipt. No remote repository action occurred. The user-authorized Spark2 test and tailnet plan service have local receipts.</p>
+<p>The user authorized publication after local verification. Commit edb476bc4 and PR #2426 retain the implementation. Hosted CI has no final result yet.</p>
+<p>Merge and deployment have no receipt. The Spark2 test and tailnet plan service retain their separate local receipts.</p>
 <h3>OpenSpec verification report</h3>
 <table><thead><tr><th>Dimension</th><th>Assessment</th></tr></thead><tbody>
 <tr><td data-label="Dimension">Completeness</td><td data-label="Assessment" id="task-summary">14 of 15 tasks have their required proof. Final retention and archive remain open.</td></tr>
@@ -488,11 +491,58 @@ pwsh ./scripts/Add-FileHeaders.ps1 -Verify
 <p>Automatic zero-turn deletion is unsafe because durable pending inputs and approval waits can exist before a completed turn.</p>
 </section>
 
+<section id="adversarial-review">
+<h2>Adversarial review: smaller mechanisms</h2>
+<p>The actor remains the correct owner for client order, retry, cancellation, and close. The review found three optional changes, with no demonstrated merge blocker.</p>
+<p>The source under review is edb476bc4892b4396aa908993b088d5756929cad. The review inspected callers, tests, contracts, and the retained evidence.</p>
+<p>The review reused the source inventory and coverage report. A new whole-repository analyzer run was unnecessary for these bounded ownership questions.</p>
+<p>The review did not implement these proposals or execute new runtime checks. The existing pass counts describe the current implementation.</p>
+
+<h3>1. Share the queue-write failure policy inside SignalRSessionActor</h3>
+<p><a href="https://github.com/Aaronontheweb/netclaw/blob/edb476bc4892b4396aa908993b088d5756929cad/src/Netclaw.Daemon/Gateway/SignalRSessionActor.cs#L139-L163">Text input</a> and <a href="https://github.com/Aaronontheweb/netclaw/blob/edb476bc4892b4396aa908993b088d5756929cad/src/Netclaw.Daemon/Gateway/SignalRSessionActor.cs#L207-L264">trusted delivery</a> duplicate the ten-second queue write, timeout Nack, and closed-writer restart.</p>
+<p>A change to that failure policy currently requires two edits in one actor. One private method can own the shared write and failure actions.</p>
+<p>Keep the existing null checks before reminder observer registration. Keep source construction, observer ownership, and the successful reminder diagnostic at each caller.</p>
+<p>Preserve admission acknowledgment through AckTarget. A successful queue write must not become a successful admission acknowledgment.</p>
+<p>Counterevidence: the two paths have different diagnostic text. Confirm whether those messages need exact compatibility before consolidation.</p>
+<p>Verification: extend the existing queue-failure theory with text and trusted-delivery cases. Require Nack, no model call, and unchanged positive admission behavior.</p>
+<p>This is the first recommended change. It removes one policy copy without a new service, interface, or owner.</p>
+
+<h3>2. Keep one owner for the shared close request</h3>
+<p><a href="https://github.com/Aaronontheweb/netclaw/blob/edb476bc4892b4396aa908993b088d5756929cad/src/Netclaw.Cli/Daemon/DaemonClient.cs#L64-L75">DaemonClient</a> shares one Lazy close task. Production therefore sends one Close message.</p>
+<p><a href="https://github.com/Aaronontheweb/netclaw/blob/edb476bc4892b4396aa908993b088d5756929cad/src/Netclaw.Cli/Daemon/ChatClientActor.cs#L101-L110">ChatClientActor</a> also retains a list of close waiters and completes each waiter separately.</p>
+<p>Keep the facade cache for dormant close without an ActorSystem. Narrow the internal actor protocol to one close reply.</p>
+<p>Counterevidence: the actor test deliberately sends two Close messages. Its current internal contract supports several waiters.</p>
+<p>Move that repeated-close proof to the public facade before the actor contract changes. Do not merely delete the assertion.</p>
+<p>Verification: require the same task and receipt for repeated facade close, one total deadline, rejection of later input, and no runtime for dormant close.</p>
+<p>This is optional. It removes a general waiter collection that the production caller does not use.</p>
+
+<h3>3. Return the preparation result to identity redo</h3>
+<p><a href="https://github.com/Aaronontheweb/netclaw/blob/edb476bc4892b4396aa908993b088d5756929cad/src/Netclaw.Cli/Tui/IdentityRedoViewModel.cs#L160-L164">IdentityRedoViewModel</a> receives a boolean, then reads the wizard's last result row to obtain the failure reason.</p>
+<p>Return the existing HealthCheckItem from PrepareDaemonAsync. The identity page can consume its status and label without indexing another view model's result collection.</p>
+<p>Keep the shared readiness operation and its generation gate. This proposal needs no new result type or service.</p>
+<p>Counterevidence: both callers currently share the wizard component. This change reduces the collection dependency; it does not remove that component dependency.</p>
+<p>Verification: retain the identity probe, generation, cancellation, preparation-failure, and native init-redo-chat checks.</p>
+<p>This is a contract clarification with a small code effect. It is preferable to a new readiness service solely for fewer lines.</p>
+
+<h3>Changes the review rejects or defers</h3>
+<ul>
+<li>Keep the explicit request queue. Akka Stash does not expose the queued text needed for the final unsent receipt.</li>
+<li>Keep the event pump. Direct subscriber calls can block the actor and its close deadline.</li>
+<li>Keep operation IDs and the wait for a cancelled transport task. Cancellation alone does not end transport side effects.</li>
+<li>Keep the distinct retry budgets and admission-version check. They preserve explicit API behavior and the durable-admission contract.</li>
+<li>Do not add a generic test framework. Shared theories already cover 29 actor cases in 12 methods.</li>
+<li>Defer a separate readiness service. It adds a construct without a demonstrated line reduction in this scope.</li>
+</ul>
+<p>A minor additional option removes Completed.Operation. The accepted operation ID already identifies the actor's current operation.</p>
+<p>That option removes a duplicate message field. It does not justify a broader rewrite or a claim of a large reduction.</p>
+<p>The expected payoff is bounded. These proposals remove duplicate mechanisms; their actual code savings require implementation and the same boundary proof.</p>
+</section>
+
 <section id="handoff">
 <h2>Implementation handoff and retention</h2>
 <p>The direction and close policy are settled. No further product choice blocks the first slice.</p>
 <p>The local implementation and required local proof are complete. The full eval suite has a user-approved replacement with focused Spark2 E2E.</p>
-<p>The worktree remains on plan/chat-client-local-fsm at the pinned base plus the retained patch. Its source manifest identifies the verified candidate.</p>
+<p>The worktree uses plan/chat-client-local-fsm. Its published implementation commit and source manifest identify the verified candidate.</p>
 <p>Product implementation is authorized. Complete tasks only after their required proof passes.</p>
 <p>Use <a href="../../../openspec/changes/chat-client-local-fsm/tasks.md">the OpenSpec task index</a> to enter the plan. It links tasks without duplicating recipes.</p>
 <p>Use openspec-apply-change for implementation and the repository's sync, verify, and archive skills at completion.</p>
