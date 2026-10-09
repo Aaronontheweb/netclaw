@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Reflection;
 using System.Security;
 using System.Text.Json;
@@ -149,7 +150,7 @@ internal static class EmbeddedSystemSkillRestorer
     {
         using var stream = assembly.GetManifestResourceStream(ExecutablePathsResourceName)
             ?? throw new InvalidOperationException("The daemon assembly does not contain the system skill executable path manifest.");
-        var manifest = JsonSerializer.Deserialize<string[]>(stream)
+        var manifest = DaemonJson.Deserialize<string[]>(stream)
             ?? throw new InvalidOperationException("The system skill executable path manifest is invalid.");
         var expectedPaths = resources
             .Select(GetResourceRelativePath)

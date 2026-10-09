@@ -8,16 +8,24 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Json;
 using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Mcp;
 
 /// <summary>Query string for the MCP OAuth browser callback.</summary>
-public sealed record McpOAuthCallbackQuery(
-    [FromQuery(Name = "code")] string? Code,
-    [FromQuery(Name = "state")] string? State,
+public sealed record McpOAuthCallbackQuery
+{
+    [FromQuery(Name = "code")]
+    public string? Code { get; init; }
+
+    [FromQuery(Name = "state")]
+    public string? State { get; init; }
+
     // RFC 9207 issuer identifier. The MCP SDK validates it; the daemon only relays it.
-    [FromQuery(Name = "iss")] string? Iss);
+    [FromQuery(Name = "iss")]
+    public string? Iss { get; init; }
+}
 
 /// <summary>
 /// Authorization URL and state returned when an MCP OAuth flow starts, with the deadline the
@@ -88,13 +96,17 @@ public static class McpEndpointRouteBuilderExtensions
             catch (McpOAuthOperationException ex)
             {
                 logger.LogError(ex, "MCP OAuth start failed for server '{Name}'", name);
-                return Results.Json(ex.Error, statusCode: StatusCodes.Status502BadGateway);
+                return Results.Json(ex.Error,
+                    DaemonJsonContext.TypeInfo<McpErrorResponse>(DaemonJsonContext.WebOptions),
+                    statusCode: StatusCodes.Status502BadGateway);
             }
             catch (Exception ex)
             {
                 logger.LogError(ex, "MCP OAuth start failed for server '{Name}'", name);
                 var error = McpClientManager.CreateSafeOAuthError(ex, "authorization start");
-                return Results.Json(error, statusCode: StatusCodes.Status502BadGateway);
+                return Results.Json(error,
+                    DaemonJsonContext.TypeInfo<McpErrorResponse>(DaemonJsonContext.WebOptions),
+                    statusCode: StatusCodes.Status502BadGateway);
             }
         })
         .WithName("StartMcpOAuth")

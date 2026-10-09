@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Text.Json;
 using System.Threading.RateLimiting;
 using Akka.Actor;
@@ -94,7 +95,7 @@ public static class MattermostActionEndpointExtensions
                 return TypedResults.Json(new ActionCallbackResponse
                 {
                     EphemeralText = "That approval button is no longer valid. Please re-issue the request and try again."
-                }, JsonOptions);
+                }, DaemonJsonContext.TypeInfo<ActionCallbackResponse>(JsonOptions));
             }
 
             if (!MattermostAclPolicy.IsAllowedUser(new MattermostUserId(payload.UserId), options))
@@ -103,7 +104,7 @@ public static class MattermostActionEndpointExtensions
                 return TypedResults.Json(new ActionCallbackResponse
                 {
                     EphemeralText = "You are not authorized to respond to tool approval prompts."
-                }, JsonOptions);
+                }, DaemonJsonContext.TypeInfo<ActionCallbackResponse>(JsonOptions));
             }
 
             if (!string.Equals(payload.ChannelId, storedAction.ChannelId, StringComparison.Ordinal))
@@ -146,7 +147,7 @@ public static class MattermostActionEndpointExtensions
                 return TypedResults.Json(new ActionCallbackResponse
                 {
                     EphemeralText = "That approval button is no longer valid. Please re-issue the request and try again."
-                }, JsonOptions);
+                }, DaemonJsonContext.TypeInfo<ActionCallbackResponse>(JsonOptions));
             }
 
             // Bound the actor-resolution wait so a daemon still mid-startup
@@ -203,11 +204,11 @@ public static class MattermostActionEndpointExtensions
                     CommandAck => TypedResults.Json(new ActionCallbackResponse
                     {
                         EphemeralText = $"You selected: **{ApprovalOptionKeys.LabelFor(storedAction.SelectedKey)}**"
-                    }, JsonOptions),
+                    }, DaemonJsonContext.TypeInfo<ActionCallbackResponse>(JsonOptions)),
                     CommandNack nack => TypedResults.Json(new ActionCallbackResponse
                     {
                         EphemeralText = MapRejectMessage(nack.Reason)
-                    }, JsonOptions),
+                    }, DaemonJsonContext.TypeInfo<ActionCallbackResponse>(JsonOptions)),
                     _ => TypedResults.StatusCode(StatusCodes.Status500InternalServerError)
                 };
             }
@@ -224,7 +225,7 @@ public static class MattermostActionEndpointExtensions
         .RequireRateLimiting(CallbackRateLimitPolicy).AllowAnonymous();
     }
 
-    private sealed class ActionCallbackPayload
+    internal sealed class ActionCallbackPayload
     {
         public string? UserId { get; set; }
         public string? UserName { get; set; }
@@ -235,7 +236,7 @@ public static class MattermostActionEndpointExtensions
         public int RawBodyLength { get; set; }
     }
 
-    private sealed record ActionCallbackResponse
+    internal sealed record ActionCallbackResponse
     {
         public string? EphemeralText { get; init; }
     }
@@ -280,7 +281,7 @@ public static class MattermostActionEndpointExtensions
         if (ms.Length == 0)
             return null;
 
-        var payload = JsonSerializer.Deserialize<ActionCallbackPayload>(ms.ToArray(), JsonOptions);
+        var payload = DaemonJson.Deserialize<ActionCallbackPayload>(ms.ToArray(), JsonOptions);
         if (payload is not null)
             payload.RawBodyLength = checked((int)ms.Length);
         return payload;

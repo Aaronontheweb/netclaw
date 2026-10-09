@@ -43,7 +43,7 @@ public static class ChannelIntegrationRegistrationExtensions
     {
         services.AddRemoteChatChannel<SlackChannel, SlackChannelOptions>(
                 ChannelType.Slack,
-                configuration,
+                configuration.GetSection(nameof(ChannelType.Slack)).Get<SlackChannelOptions>() ?? new SlackChannelOptions(),
                 new HashSet<ChannelOutputEffectKind> { ChannelOutputEffectKind.ProcessingIndicator })
             // Token validity is NOT checked here: an exception thrown from this
             // registration path aborts host construction and crashes the daemon.
@@ -132,7 +132,7 @@ public static class ChannelIntegrationRegistrationExtensions
     {
         services.AddRemoteChatChannel<DiscordChannel, DiscordChannelOptions>(
                 ChannelType.Discord,
-                configuration,
+                configuration.GetSection(nameof(ChannelType.Discord)).Get<DiscordChannelOptions>() ?? new DiscordChannelOptions(),
                 new HashSet<ChannelOutputEffectKind> { ChannelOutputEffectKind.ProcessingIndicator })
             // Token validity is NOT checked here: an exception thrown from this
             // registration path aborts host construction and crashes the daemon.
@@ -196,7 +196,7 @@ public static class ChannelIntegrationRegistrationExtensions
     {
         services.AddRemoteChatChannel<MattermostChannel, MattermostChannelOptions>(
                 ChannelType.Mattermost,
-                configuration,
+                configuration.GetSection(nameof(ChannelType.Mattermost)).Get<MattermostChannelOptions>() ?? new MattermostChannelOptions(),
                 new HashSet<ChannelOutputEffectKind> { ChannelOutputEffectKind.ProcessingIndicator })
             // Token and server-URL validity are NOT checked here: an exception
             // thrown from this registration path aborts host construction and

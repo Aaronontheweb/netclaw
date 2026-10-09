@@ -11,12 +11,21 @@ using Netclaw.Providers.OAuth;
 namespace Netclaw.Daemon.Providers;
 
 /// <summary>Query string identifying which provider's OAuth flow to start.</summary>
-internal sealed record ProviderOAuthStartQuery([FromQuery(Name = "provider")] string? Provider);
+internal sealed record ProviderOAuthStartQuery
+{
+    [FromQuery(Name = "provider")]
+    public string? Provider { get; init; }
+}
 
 /// <summary>Query string for the provider OAuth browser callback.</summary>
-internal sealed record ProviderOAuthCallbackQuery(
-    [FromQuery(Name = "code")] string? Code,
-    [FromQuery(Name = "state")] string? State);
+internal sealed record ProviderOAuthCallbackQuery
+{
+    [FromQuery(Name = "code")]
+    public string? Code { get; init; }
+
+    [FromQuery(Name = "state")]
+    public string? State { get; init; }
+}
 
 /// <summary>Authorization URL and opaque state returned when a provider OAuth flow starts.</summary>
 internal sealed record ProviderOAuthStartResponse(string AuthorizationUrl, string State);

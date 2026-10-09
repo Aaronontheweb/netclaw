@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Buffers.Text;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -95,7 +96,7 @@ internal sealed class BootstrapDeviceSeeder
         {
             var text = File.ReadAllText(_paths.SecretsPath);
             var decrypted = SecretsFileWriter.DecryptJsonLeaves(text, _protector);
-            return JsonSerializer.Deserialize<Dictionary<string, object>>(decrypted)
+            return DaemonJson.Deserialize<Dictionary<string, object>>(decrypted)
                 ?? new Dictionary<string, object> { ["configVersion"] = 1 };
         }
         catch (JsonException)

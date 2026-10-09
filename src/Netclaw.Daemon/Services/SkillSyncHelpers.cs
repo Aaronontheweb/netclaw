@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -141,7 +142,7 @@ internal static class SkillSyncHelpers
         try
         {
             var json = File.ReadAllText(path);
-            return JsonSerializer.Deserialize<SkillSyncState>(json) ?? new SkillSyncState();
+            return DaemonJson.Deserialize<SkillSyncState>(json) ?? new SkillSyncState();
         }
         catch (Exception ex)
         {
@@ -153,7 +154,7 @@ internal static class SkillSyncHelpers
     internal static void WriteSyncState(string path, SkillSyncState state)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
-        var json = JsonSerializer.Serialize(state, IndentedJsonOptions);
+        var json = DaemonJson.Serialize(state, IndentedJsonOptions);
         File.WriteAllText(path, json);
     }
 

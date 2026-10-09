@@ -10,6 +10,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
+using Netclaw.Daemon.Json;
 using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Mcp;
@@ -264,8 +265,8 @@ internal sealed class McpCatalogNotificationLease : IAsyncDisposable
 
         try
         {
-            var acknowledgement = notification.Params?.Deserialize<SubscriptionsAcknowledgedNotificationParams>(
-                McpJsonUtilities.DefaultOptions);
+            var acknowledgement = notification.Params?.Deserialize(
+                DaemonJsonContext.TypeInfo<SubscriptionsAcknowledgedNotificationParams>(McpJsonUtilities.DefaultOptions));
             if (acknowledgement?.Notifications is not { } accepted)
             {
                 RejectAcknowledgement();

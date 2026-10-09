@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Diagnostics.CodeAnalysis;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Reminders;
 using Netclaw.Channels;
@@ -15,8 +16,7 @@ public static class RemoteChatChannelRegistrationExtensions
 {
     /// <summary>
     /// Registers a remote chat channel (Slack/Discord/Mattermost shape):
-    /// binds <typeparamref name="TOptions"/> from the configuration section
-    /// named after <paramref name="channelType"/>, registers the channel
+    /// accepts options from the channel configuration section and registers the channel
     /// descriptor (always — the registry lists disabled channels too), and,
     /// when enabled, registers <typeparamref name="TChannel"/> as the keyed
     /// <see cref="IChannel"/> plus its <see cref="IHostedService"/> forward.
@@ -24,22 +24,22 @@ public static class RemoteChatChannelRegistrationExtensions
     /// is disabled, mirroring the early-return of the per-channel
     /// registration methods this builder replaces.
     /// </summary>
-    public static RemoteChatChannelBuilder<TChannel, TOptions> AddRemoteChatChannel<TChannel, TOptions>(
+    public static RemoteChatChannelBuilder<TChannel, TOptions> AddRemoteChatChannel<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TChannel, TOptions>(
         this IServiceCollection services,
         ChannelType channelType,
-        IConfiguration configuration,
+        TOptions options,
         IReadOnlySet<ChannelOutputEffectKind>? additionalOutputEffects = null)
         where TChannel : class, IChannel
         where TOptions : class, IRemoteChatChannelOptions, new()
     {
         ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(configuration);
+        ArgumentNullException.ThrowIfNull(options);
 
         // Section name and display name are both the enum name ("Slack",
         // "Discord", "Mattermost"); the keyed-service key is the descriptor
         // wire value ("slack", "discord", "mattermost").
         var displayName = channelType.ToString();
-        var options = configuration.GetSection(displayName).Get<TOptions>() ?? new TOptions();
         services.AddSingleton(options);
         services.AddChannelRegistry();
         services.AddChannelDescriptorWithRuntimeSnapshot(ChannelDescriptor.CreateRemoteChat(
@@ -110,7 +110,8 @@ public static class RemoteChatChannelRegistrationExtensions
 /// channel descriptor itself was already registered by
 /// <see cref="RemoteChatChannelRegistrationExtensions.AddRemoteChatChannel{TChannel, TOptions}"/>.
 /// </summary>
-public sealed class RemoteChatChannelBuilder<TChannel, TOptions>
+public sealed class RemoteChatChannelBuilder<
+    [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TChannel, TOptions>
     where TChannel : class, IChannel
     where TOptions : class, IRemoteChatChannelOptions, new()
 {
@@ -126,25 +127,29 @@ public sealed class RemoteChatChannelBuilder<TChannel, TOptions>
     }
 
     /// <summary>Registers the channel's gateway transport client.</summary>
-    public RemoteChatChannelBuilder<TChannel, TOptions> WithTransport<TService, TImplementation>()
+    public RemoteChatChannelBuilder<TChannel, TOptions> WithTransport<TService,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation>()
         where TService : class
         where TImplementation : class, TService
         => AddClient<TService, TImplementation>();
 
     /// <summary>Registers the channel's reply (thread response) client.</summary>
-    public RemoteChatChannelBuilder<TChannel, TOptions> WithReplyClient<TService, TImplementation>()
+    public RemoteChatChannelBuilder<TChannel, TOptions> WithReplyClient<TService,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation>()
         where TService : class
         where TImplementation : class, TService
         => AddClient<TService, TImplementation>();
 
     /// <summary>Registers the channel's proactive outbound send client.</summary>
-    public RemoteChatChannelBuilder<TChannel, TOptions> WithOutboundClient<TService, TImplementation>()
+    public RemoteChatChannelBuilder<TChannel, TOptions> WithOutboundClient<TService,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation>()
         where TService : class
         where TImplementation : class, TService
         => AddClient<TService, TImplementation>();
 
     /// <summary>Registers the channel's user/destination lookup client.</summary>
-    public RemoteChatChannelBuilder<TChannel, TOptions> WithLookupClient<TService, TImplementation>()
+    public RemoteChatChannelBuilder<TChannel, TOptions> WithLookupClient<TService,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation>()
         where TService : class
         where TImplementation : class, TService
         => AddClient<TService, TImplementation>();
@@ -176,7 +181,8 @@ public sealed class RemoteChatChannelBuilder<TChannel, TOptions>
     }
 
     /// <summary>Registers the channel's reminder target resolver.</summary>
-    public RemoteChatChannelBuilder<TChannel, TOptions> WithReminderResolver<TResolver>()
+    public RemoteChatChannelBuilder<TChannel, TOptions> WithReminderResolver<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TResolver>()
         where TResolver : class, IReminderTargetResolver
     {
         if (_options.Enabled)
@@ -283,7 +289,8 @@ public sealed class RemoteChatChannelBuilder<TChannel, TOptions>
         return this;
     }
 
-    private RemoteChatChannelBuilder<TChannel, TOptions> AddClient<TService, TImplementation>()
+    private RemoteChatChannelBuilder<TChannel, TOptions> AddClient<TService,
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TImplementation>()
         where TService : class
         where TImplementation : class, TService
     {

@@ -61,9 +61,9 @@ public sealed class SignalRAdmissionTests(ITestOutputHelper output) : TestKit(ou
         services.AddSingleton<ISessionStorageResolver>(new TestSessionStorageResolver(paths));
         services.AddSingleton<ISessionPipeline>(provider => _failInitialization
             ? new BrokenPipeline() : _queueFault ?? (ISessionPipeline)ActivatorUtilities.CreateInstance<SessionPipeline>(provider));
-        services.AddSingleton<IHubContext<SessionHub, ISessionHubClient>>(_ =>
+        services.AddSingleton<IHubContext<SessionHub>>(_ =>
             (_app ?? throw new InvalidOperationException("The test server is not initialized."))
-            .Services.GetRequiredService<IHubContext<SessionHub, ISessionHubClient>>());
+            .Services.GetRequiredService<IHubContext<SessionHub>>());
     }
 
     protected override void ConfigureAkka(AkkaConfigurationBuilder builder, IServiceProvider provider)

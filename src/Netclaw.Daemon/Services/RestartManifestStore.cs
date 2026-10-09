@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Text.Json;
 using Netclaw.Actors.Reminders;
 using Netclaw.Configuration;
@@ -36,7 +37,7 @@ public sealed class RestartManifestStore
         ArgumentNullException.ThrowIfNull(manifest);
         _paths.EnsureDirectoriesExist();
 
-        var json = JsonSerializer.Serialize(manifest, JsonOptions);
+        var json = DaemonJson.Serialize(manifest, JsonOptions);
         await AtomicFile.WriteAllTextAsync(
             _paths.RestartManifestPath,
             json,
@@ -54,7 +55,8 @@ public sealed class RestartManifestStore
             return null;
 
         await using var stream = File.OpenRead(_paths.RestartManifestPath);
-        return await JsonSerializer.DeserializeAsync<RestartManifest>(stream, JsonOptions, cancellationToken);
+        return await JsonSerializer.DeserializeAsync(stream,
+            DaemonJsonContext.TypeInfo<RestartManifest>(JsonOptions), cancellationToken);
     }
 
     public Task DeleteAsync()

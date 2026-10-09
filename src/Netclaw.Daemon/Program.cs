@@ -4,11 +4,12 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Globalization;
+using System.Text.Json;
 using System.Threading.RateLimiting;
 using Akka.Actor;
 using Akka.Hosting;
 using Akka.Persistence.Hosting;
-using Akka.Persistence.Sql.Hosting;
+using Akka.Persistence.Embedded.Hosting;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.RateLimiting;
@@ -231,7 +232,9 @@ static async Task RunDaemonAsync(
     builder.Services.AddMattermostActionEndpointRateLimiting();
 
     // SignalR for remote clients (CLI thin client, Blazor ops console)
-    builder.Services.AddSignalR();
+    builder.Services.AddSignalR().AddJsonProtocol(options =>
+        options.PayloadSerializerOptions.TypeInfoResolverChain.Insert(0,
+            new SessionHubJsonContext(new JsonSerializerOptions(options.PayloadSerializerOptions))));
     builder.Services.AddSingleton<SessionCatalogService>();
     builder.Services.AddSingleton<ISessionLifecycleObserver>(sp => sp.GetRequiredService<SessionCatalogService>());
     builder.Services.AddSingleton<ClaimsPrincipalMapper>();
@@ -1053,9 +1056,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
         akkaBuilder = akkaBuilder.WithNetclawActorLogging(daemonLogLevel);
 
         var connectionString = $"Data Source={sqlitePath}";
-        akkaBuilder = akkaBuilder.WithSqlPersistence(
-            connectionString: connectionString,
-            providerName: "SQLite.MS");
+        akkaBuilder = akkaBuilder.WithEmbeddedPersistence(connectionString);
 
         var reminderStorage = new NetclawAkkaHostingExtensions.ReminderStorageOptions
         {

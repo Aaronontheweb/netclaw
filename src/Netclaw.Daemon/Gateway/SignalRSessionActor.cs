@@ -26,7 +26,7 @@ namespace Netclaw.Daemon.Gateway;
 internal sealed class SignalRSessionActor : ReceiveActor, IWithUnboundedStash, IWithTimers
 {
     private readonly SessionId _sessionId;
-    private readonly IHubContext<SessionHub, ISessionHubClient> _hubContext;
+    private readonly IHubContext<SessionHub> _hubContext;
     private readonly ILoggingAdapter _log;
 
     private readonly SessionPipelineHandle _handle;
@@ -49,7 +49,7 @@ internal sealed class SignalRSessionActor : ReceiveActor, IWithUnboundedStash, I
     public SignalRSessionActor(
         string entityId,
         ISessionPipeline pipeline,
-        IHubContext<SessionHub, ISessionHubClient> hubContext)
+        IHubContext<SessionHub> hubContext)
     {
         _sessionId = new SessionId(entityId);
         _hubContext = hubContext;
@@ -62,7 +62,7 @@ internal sealed class SignalRSessionActor : ReceiveActor, IWithUnboundedStash, I
     }
 
     public static Props CreateProps(string entityId, ISessionPipeline pipeline,
-        IHubContext<SessionHub, ISessionHubClient> hubContext)
+        IHubContext<SessionHub> hubContext)
         => Props.Create(() => new SignalRSessionActor(entityId, pipeline, hubContext));
 
     private SessionPipelineOptions BuildOptions() => new()
@@ -292,7 +292,7 @@ internal sealed class SignalRSessionActor : ReceiveActor, IWithUnboundedStash, I
             }
 
             var dto = SessionOutputDtoMapper.ToDto(msg.Output);
-            await _hubContext.Clients.Client(_currentConnectionId.Value).ReceiveOutput(dto);
+            await _hubContext.Clients.Client(_currentConnectionId.Value).SendAsync("ReceiveOutput", dto);
 
             if (msg.Output is TextOutput or ErrorOutput or FileOutput)
             {

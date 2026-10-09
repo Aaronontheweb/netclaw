@@ -31,7 +31,7 @@ namespace Netclaw.Daemon.Gateway;
 /// </code>
 /// </summary>
 [Authorize]
-public sealed class SessionHub : Hub<ISessionHubClient>
+public sealed class SessionHub : Hub
 {
     private readonly SessionRegistry _registry;
 

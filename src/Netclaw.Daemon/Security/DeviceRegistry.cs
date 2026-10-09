@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
@@ -235,7 +236,7 @@ internal sealed class DeviceRegistry
         try
         {
             var json = await File.ReadAllTextAsync(_devicesPath, ct);
-            _cachedDevices = JsonSerializer.Deserialize<List<PairedDevice>>(json, JsonOptions) ?? [];
+            _cachedDevices = DaemonJson.Deserialize<List<PairedDevice>>(json, JsonOptions) ?? [];
         }
         catch (FileNotFoundException)
         {
@@ -247,7 +248,7 @@ internal sealed class DeviceRegistry
 
     private async Task WriteDevicesAsync(List<PairedDevice> devices, CancellationToken ct)
     {
-        var json = JsonSerializer.Serialize(devices, JsonOptions);
+        var json = DaemonJson.Serialize(devices, JsonOptions);
         await AtomicFile.WriteAllTextAsync(_devicesPath, json, _hardenTempPermissions, ct);
         _cachedDevices = devices;
     }

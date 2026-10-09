@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Text;
 using System.Text.Json;
 
@@ -42,7 +43,7 @@ public static class WebhookPayloadFormatter
         try
         {
             using var doc = JsonDocument.Parse(rawJson);
-            return JsonSerializer.Serialize(doc.RootElement, IndentedJson);
+            return DaemonJson.Serialize(doc.RootElement, IndentedJson);
         }
         catch (JsonException)
         {

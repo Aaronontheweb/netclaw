@@ -4,12 +4,13 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Netclaw.Configuration;
+using System.Text.Json.Nodes;
 
 namespace Netclaw.Channels.Slack.Webhooks;
 
 /// <summary>
 /// Builds Slack Block Kit payloads for incoming webhook delivery.
-/// No SlackNet dependency — uses plain anonymous objects serialized by System.Text.Json.
+/// No SlackNet dependency. The JSON document has a stable shape for Native AOT.
 /// </summary>
 public static class SlackWebhookPayloadBuilder
 {
@@ -23,61 +24,61 @@ public static class SlackWebhookPayloadBuilder
     public static object Build(OperationalAlert alert, ServiceIdentity identity)
     {
         var emoji = SeverityEmoji(alert.Severity);
-        var blocks = new List<object>
+        var blocks = new JsonArray
         {
-            // Header: emoji + alert type
-            new
+            (JsonNode)new JsonObject
             {
-                type = "header",
-                text = new { type = "plain_text", text = $"{emoji} {alert.Type}", emoji = true }
+                ["type"] = "header",
+                ["text"] = new JsonObject
+                {
+                    ["type"] = "plain_text", ["text"] = $"{emoji} {alert.Type}", ["emoji"] = true
+                }
             },
-            // Summary section
-            new
+            (JsonNode)new JsonObject
             {
-                type = "section",
-                text = new { type = "mrkdwn", text = alert.Summary }
+                ["type"] = "section",
+                ["text"] = new JsonObject { ["type"] = "mrkdwn", ["text"] = alert.Summary }
             },
-            new
+            (JsonNode)new JsonObject
             {
-                type = "section",
-                fields = BuildFields(alert, identity)
+                ["type"] = "section",
+                ["fields"] = BuildFields(alert, identity)
             },
         };
 
-        // Context block: service identity footer plus alert-specific context.
-        var elements = new List<object>();
+        var elements = new JsonArray();
         if (identity.Namespace is not null)
-            elements.Add(new { type = "mrkdwn", text = $"*namespace:* {identity.Namespace}" });
+            elements.Add((JsonNode)new JsonObject { ["type"] = "mrkdwn", ["text"] = $"*namespace:* {identity.Namespace}" });
         if (identity.InstanceId is not null)
-            elements.Add(new { type = "mrkdwn", text = $"*instance:* {identity.InstanceId}" });
-        elements.Add(new { type = "mrkdwn", text = $"*version:* {identity.Version}" });
+            elements.Add((JsonNode)new JsonObject { ["type"] = "mrkdwn", ["text"] = $"*instance:* {identity.InstanceId}" });
+        elements.Add((JsonNode)new JsonObject { ["type"] = "mrkdwn", ["text"] = $"*version:* {identity.Version}" });
         if (alert.Context is { Count: > 0 })
         {
-            elements.AddRange(alert.Context
-                .Select(kv => (object)new { type = "mrkdwn", text = $"*{kv.Key}:* {kv.Value}" }));
+            foreach (var (key, value) in alert.Context)
+                elements.Add((JsonNode)new JsonObject { ["type"] = "mrkdwn", ["text"] = $"*{key}:* {value}" });
         }
-        blocks.Add(new { type = "context", elements });
+        blocks.Add((JsonNode)new JsonObject { ["type"] = "context", ["elements"] = elements });
 
-        return new
+        return new JsonObject
         {
-            text = $"{emoji} [{alert.Severity}] {alert.Type}: {alert.Summary}",
-            blocks,
+            ["text"] = $"{emoji} [{alert.Severity}] {alert.Type}: {alert.Summary}",
+            ["blocks"] = blocks,
         };
     }
 
-    private static List<object> BuildFields(OperationalAlert alert, ServiceIdentity identity)
+    private static JsonArray BuildFields(OperationalAlert alert, ServiceIdentity identity)
     {
-        var fields = new List<object>
+        var fields = new JsonArray
         {
-            new { type = "mrkdwn", text = $"*Severity:*\n{alert.Severity}" },
-            new { type = "mrkdwn", text = $"*Type:*\n{alert.Type}" },
-            new { type = "mrkdwn", text = $"*Timestamp:*\n{alert.Timestamp:u}" },
-            new { type = "mrkdwn", text = $"*Service:*\n{identity.Name}" },
-            new { type = "mrkdwn", text = $"*Hostname:*\n{Hostname}" },
+            (JsonNode)new JsonObject { ["type"] = "mrkdwn", ["text"] = $"*Severity:*\n{alert.Severity}" },
+            (JsonNode)new JsonObject { ["type"] = "mrkdwn", ["text"] = $"*Type:*\n{alert.Type}" },
+            (JsonNode)new JsonObject { ["type"] = "mrkdwn", ["text"] = $"*Timestamp:*\n{alert.Timestamp:u}" },
+            (JsonNode)new JsonObject { ["type"] = "mrkdwn", ["text"] = $"*Service:*\n{identity.Name}" },
+            (JsonNode)new JsonObject { ["type"] = "mrkdwn", ["text"] = $"*Hostname:*\n{Hostname}" },
         };
 
         if (alert.Source is not null)
-            fields.Add(new { type = "mrkdwn", text = $"*Source:*\n{alert.Source}" });
+            fields.Add((JsonNode)new JsonObject { ["type"] = "mrkdwn", ["text"] = $"*Source:*\n{alert.Source}" });
 
         return fields;
     }

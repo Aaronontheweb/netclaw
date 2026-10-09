@@ -7,6 +7,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Json;
 using Netclaw.Tools;
 
 namespace Netclaw.Daemon.Mcp;
@@ -99,7 +100,8 @@ internal sealed class McpOAuthClientRegistrar(
             ["token_endpoint_auth_method"] = authMethod,
         };
 
-        using var response = await httpClient.PostAsJsonAsync(registrationEndpoint, request, cancellationToken);
+        using var response = await httpClient.PostAsJsonAsync(registrationEndpoint, request,
+            DaemonJsonContext.TypeInfo<Dictionary<string, object>>(), cancellationToken);
         var body = await response.Content.ReadAsStringAsync(cancellationToken);
 
         if (!response.IsSuccessStatusCode)
@@ -175,7 +177,8 @@ internal sealed class McpOAuthClientRegistrar(
             JsonElement metadata;
             try
             {
-                metadata = await httpClient.GetFromJsonAsync<JsonElement>(metadataUrl, cancellationToken);
+                metadata = await httpClient.GetFromJsonAsync(metadataUrl,
+                    DaemonJsonContext.TypeInfo<JsonElement>(), cancellationToken);
             }
             catch (Exception ex) when (ex is HttpRequestException or JsonException or NotSupportedException)
             {
@@ -201,7 +204,8 @@ internal sealed class McpOAuthClientRegistrar(
     {
         try
         {
-            var document = await httpClient.GetFromJsonAsync<JsonElement>(url, cancellationToken);
+            var document = await httpClient.GetFromJsonAsync(url,
+                DaemonJsonContext.TypeInfo<JsonElement>(), cancellationToken);
             if (!document.TryGetProperty("authorization_servers", out var servers)
                 || servers.ValueKind != JsonValueKind.Array)
                 return null;

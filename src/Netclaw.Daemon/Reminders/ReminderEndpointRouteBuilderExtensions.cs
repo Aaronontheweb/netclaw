@@ -13,6 +13,7 @@ using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
 using Netclaw.Actors.Reminders;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Json;
 using Netclaw.Daemon.Security;
 using Netclaw.Tools;
 using static Netclaw.Actors.Reminders.ReminderProtocol;
@@ -186,6 +187,7 @@ public static class ReminderEndpointRouteBuilderExtensions
                         Error: response.ErrorMessage ?? "Import failed.",
                         Code: response.Error.ToString(),
                         Id: response.Id.Value),
+                    DaemonJsonContext.TypeInfo<ReminderImportErrorResponse>(DaemonJsonContext.WebOptions),
                     statusCode: status);
             }
 

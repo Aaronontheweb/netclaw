@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
@@ -124,8 +125,8 @@ internal sealed class SendChannelMessageTool(IChannelRegistry registry) : IChann
     private JsonElement BuildParameterSchema()
     {
         var channelKeys = GetEnabledSendChannelKeys();
-        var channelEnum = JsonSerializer.Serialize(channelKeys);
-        var destinationKindEnum = JsonSerializer.Serialize(new[]
+        var channelEnum = DaemonJson.Serialize(channelKeys);
+        var destinationKindEnum = DaemonJson.Serialize(new[]
         {
             ChannelAddressKindWire.ToWireValue(ChannelAddressKind.Destination),
             ChannelAddressKindWire.ToWireValue(ChannelAddressKind.DirectMessage)

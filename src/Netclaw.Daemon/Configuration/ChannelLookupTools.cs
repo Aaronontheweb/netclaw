@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.AI;
@@ -145,7 +146,7 @@ internal abstract class ChannelLookupTool : IChannelTool
     private JsonElement BuildParameterSchema()
     {
         var channelKeys = GetEnabledChannelKeys();
-        var channelEnum = JsonSerializer.Serialize(channelKeys);
+        var channelEnum = DaemonJson.Serialize(channelKeys);
         var schemaJson = $$"""
         {
             "type": "object",
@@ -157,7 +158,7 @@ internal abstract class ChannelLookupTool : IChannelTool
                 },
                 "query": {
                     "type": "string",
-                    "description": {{JsonSerializer.Serialize(QueryDescription)}}
+                    "description": {{DaemonJson.Serialize(QueryDescription)}}
                 },
                 "_rationale": {
                     "type": "string",

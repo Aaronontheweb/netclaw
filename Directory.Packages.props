@@ -3,9 +3,8 @@
     <ManagePackageVersionsCentrally>true</ManagePackageVersionsCentrally>
     <CentralPackageTransitivePinningEnabled>true</CentralPackageTransitivePinningEnabled>
     <!-- Nuget package versions -->
-    <AkkaHostingVersion>1.5.73</AkkaHostingVersion>
-    <AkkaPersistenceSqlHostingVersion>1.5.70</AkkaPersistenceSqlHostingVersion>
-    <AkkaRemindersVersion>1.5.73.1</AkkaRemindersVersion>
+    <AkkaHostingVersion>1.6.0-beta3</AkkaHostingVersion>
+    <AkkaRemindersVersion>1.6.0-beta3</AkkaRemindersVersion>
     <OpenTelemetryVersion>1.19.1</OpenTelemetryVersion>
     <SlackNetVersion>0.18.0</SlackNetVersion>
     <DiscordNetVersion>3.20.1</DiscordNetVersion>
@@ -32,7 +31,7 @@
     <PackageVersion Include="Akka.Cluster.Sharding" Version="$(AkkaHostingVersion)" />
     <PackageVersion Include="Akka.Persistence" Version="$(AkkaHostingVersion)" />
     <PackageVersion Include="Akka.Persistence.Hosting" Version="$(AkkaHostingVersion)" />
-    <PackageVersion Include="Akka.Persistence.Sql.Hosting" Version="$(AkkaPersistenceSqlHostingVersion)" />
+    <PackageVersion Include="Akka.Persistence.Embedded.Hosting" Version="$(AkkaHostingVersion)" />
     <PackageVersion Include="Aaron.Akka.Reminders" Version="$(AkkaRemindersVersion)" />
     <PackageVersion Include="Aaron.Akka.Reminders.Sqlite" Version="$(AkkaRemindersVersion)" />
     <PackageVersion Include="Anthropic" Version="12.50.0" />

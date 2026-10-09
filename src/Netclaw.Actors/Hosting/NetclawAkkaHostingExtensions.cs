@@ -87,6 +87,7 @@ public static class NetclawAkkaHostingExtensions
         return builder
             .WithLocalReminders(reminders =>
             {
+                reminders.WithReminderMessage<ReminderPayload>();
                 reminders.WithSettings(new ReminderSettings
                 {
                     AckTimeout = ReminderAckTimeout,

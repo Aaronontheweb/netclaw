@@ -10,7 +10,11 @@ using Netclaw.Daemon.Services;
 namespace Netclaw.Daemon.Lifecycle;
 
 /// <summary>Request to shut down the daemon, sourced from query string.</summary>
-public sealed record ShutdownDaemonRequest([FromQuery(Name = "reason")] string? Reason);
+public sealed record ShutdownDaemonRequest
+{
+    [FromQuery(Name = "reason")]
+    public string? Reason { get; init; }
+}
 
 /// <summary>Successful shutdown acknowledgement: echoes the reason and reports the daemon PID.</summary>
 public sealed record ShutdownDaemonResponse(string Reason, int Pid);

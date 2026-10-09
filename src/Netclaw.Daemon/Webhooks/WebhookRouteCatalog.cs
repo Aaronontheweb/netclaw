@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -15,8 +16,7 @@ public sealed class WebhookRouteCatalog
 {
     private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
     {
-        PropertyNameCaseInsensitive = true,
-        Converters = { new JsonStringEnumConverter() }
+        PropertyNameCaseInsensitive = true
     };
 
     private readonly NetclawPaths _paths;
@@ -187,7 +187,7 @@ public sealed class WebhookRouteCatalog
             throw new InvalidOperationException("Webhook route filenames must not be empty.");
 
         var text = File.ReadAllText(filePath);
-        var route = JsonSerializer.Deserialize<WebhookRouteConfig>(text, JsonOptions)
+        var route = DaemonJson.Deserialize<WebhookRouteConfig>(text, JsonOptions)
             ?? throw new InvalidOperationException($"Webhook route '{routeName}' could not be parsed.");
 
         ValidateRoute(routeName, route);

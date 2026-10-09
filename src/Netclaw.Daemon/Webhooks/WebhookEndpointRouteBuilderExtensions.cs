@@ -13,6 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Json;
 
 namespace Netclaw.Daemon.Webhooks;
 
@@ -92,6 +93,7 @@ public static class WebhookEndpointRouteBuilderExtensions
                     registeredRoute.Name, "event_filtered", remoteIp, verification.DeliveryId, verification.EventType);
                 return TypedResults.Json(
                     new WebhookIgnoredResponse("ignored", "event_filtered"),
+                    DaemonJsonContext.TypeInfo<WebhookIgnoredResponse>(DaemonJsonContext.WebOptions),
                     statusCode: StatusCodes.Status202Accepted);
             }
 
@@ -108,6 +110,7 @@ public static class WebhookEndpointRouteBuilderExtensions
                     registeredRoute.Name, "duplicate_delivery", remoteIp, verification.DeliveryId, verification.EventType);
                 return TypedResults.Json(
                     new WebhookIgnoredResponse("ignored", "duplicate_delivery"),
+                    DaemonJsonContext.TypeInfo<WebhookIgnoredResponse>(DaemonJsonContext.WebOptions),
                     statusCode: StatusCodes.Status202Accepted);
             }
 
@@ -166,6 +169,7 @@ public static class WebhookEndpointRouteBuilderExtensions
                     EventType: verification.EventType,
                     DeliveryId: verification.DeliveryId,
                     SessionId: sessionId.Value),
+                DaemonJsonContext.TypeInfo<WebhookAcceptedResponse>(DaemonJsonContext.WebOptions),
                 statusCode: StatusCodes.Status202Accepted);
         })
         .WithName("ReceiveWebhook")

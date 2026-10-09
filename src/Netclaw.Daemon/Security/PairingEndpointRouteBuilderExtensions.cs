@@ -13,6 +13,7 @@ using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Routing;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Json;
 
 namespace Netclaw.Daemon.Security;
 
@@ -62,6 +63,7 @@ public static class PairingEndpointRouteBuilderExtensions
                 httpContext.Response.Headers.RetryAfter = retryAfter?.ToString() ?? "900";
                 return TypedResults.Json(
                     new PairingErrorResponse("Too many failed attempts. Try again later."),
+                    DaemonJsonContext.TypeInfo<PairingErrorResponse>(DaemonJsonContext.WebOptions),
                     statusCode: StatusCodes.Status429TooManyRequests);
             }
 
@@ -85,6 +87,7 @@ public static class PairingEndpointRouteBuilderExtensions
                     exchangeGuard.RecordFailure(remoteIp);
                     return TypedResults.Json(
                         new PairingErrorResponse("Invalid, expired, or already-used pairing code."),
+                        DaemonJsonContext.TypeInfo<PairingErrorResponse>(DaemonJsonContext.WebOptions),
                         statusCode: StatusCodes.Status401Unauthorized);
 
                 case PairingExchangeStatus.DuplicateName when result.Error is { } error:
@@ -182,11 +185,13 @@ public static class PairingEndpointRouteBuilderExtensions
             case LocalControlPairingProofValidation.CapacityExhausted:
                 return TypedResults.Json(
                     new PairingErrorResponse("Local control is temporarily unavailable."),
+                    DaemonJsonContext.TypeInfo<PairingErrorResponse>(DaemonJsonContext.WebOptions),
                     statusCode: StatusCodes.Status503ServiceUnavailable);
 
             default:
                 return TypedResults.Json(
                     new PairingErrorResponse("Invalid local-control proof."),
+                    DaemonJsonContext.TypeInfo<PairingErrorResponse>(DaemonJsonContext.WebOptions),
                     statusCode: StatusCodes.Status401Unauthorized);
         }
     }

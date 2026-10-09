@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Daemon.Json;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -665,7 +666,7 @@ internal sealed class McpOAuthCredentialStore
             {
                 var section = root[SectionKey]?.AsObject() ?? [];
                 root[SectionKey] = section;
-                section[serverName.Value] = JsonSerializer.SerializeToNode(credentials, JsonOptions);
+                section[serverName.Value] = DaemonJson.SerializeToNode(credentials, JsonOptions);
                 return (root, null);
             },
             _protector,
@@ -690,7 +691,7 @@ internal sealed class McpOAuthCredentialStore
                         return (null, result);
                     foreach (var (name, node) in section)
                     {
-                        var credentials = node?.Deserialize<McpOAuthTokenSet>(JsonOptions);
+                        var credentials = node?.Deserialize(DaemonJsonContext.TypeInfo<McpOAuthTokenSet>(JsonOptions));
                         if (credentials is not null)
                             result[new McpServerName(name)] = credentials;
                     }
@@ -840,8 +841,8 @@ internal sealed class McpOAuthCredentialStore
     private static McpOAuthTokenSet? Clone(McpOAuthTokenSet? credentials)
         => credentials is null
             ? null
-            : JsonSerializer.Deserialize<McpOAuthTokenSet>(
-                JsonSerializer.Serialize(credentials, JsonOptions), JsonOptions)!;
+            : DaemonJson.Deserialize<McpOAuthTokenSet>(
+                DaemonJson.Serialize(credentials, JsonOptions), JsonOptions)!;
 
     private sealed class ServerCredentialState(McpOAuthTokenSet? active)
     {

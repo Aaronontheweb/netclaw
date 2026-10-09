@@ -6,12 +6,14 @@
 using System.Collections.Concurrent;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 using System.Threading.Channels;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Netclaw.Channels.Slack.Webhooks;
 using Netclaw.Configuration;
+using Netclaw.Daemon.Json;
 using Netclaw.Security;
 
 namespace Netclaw.Daemon.Services;
@@ -305,8 +307,10 @@ public sealed class WebhookNotificationService : BackgroundService, IOperational
         return target.Format switch
         {
             WebhookFormat.Slack => JsonContent.Create(
-                SlackWebhookPayloadBuilder.Build(alert, _identity), options: JsonOptions),
-            _ => JsonContent.Create(BuildGenericPayload(alert), options: JsonOptions),
+                (JsonNode)SlackWebhookPayloadBuilder.Build(alert, _identity),
+                DaemonJsonContext.TypeInfo<JsonNode>(JsonOptions)),
+            _ => JsonContent.Create(BuildGenericPayload(alert),
+                DaemonJsonContext.TypeInfo<WebhookPayload>(JsonOptions)),
         };
     }
 
@@ -342,7 +346,7 @@ public sealed class WebhookNotificationService : BackgroundService, IOperational
     /// <summary>
     /// Wire-format payload for webhook POST body.
     /// </summary>
-    private sealed class WebhookPayload
+    internal sealed class WebhookPayload
     {
         public string AlertId { get; init; } = "";
         public string Type { get; init; } = "";
@@ -360,7 +364,7 @@ public sealed class WebhookNotificationService : BackgroundService, IOperational
     /// <c>service</c> in the generic payload. Field names follow the
     /// OpenTelemetry <c>service.*</c> resource-attribute convention.
     /// </summary>
-    private sealed class ServicePayload
+    internal sealed class ServicePayload
     {
         public string Name { get; init; } = "";
         public string? Namespace { get; init; }
