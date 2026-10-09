@@ -31,15 +31,13 @@ internal static class ApprovalsCommand
     public const string DefaultTrustVerbTool = "shell_execute";
 
     public static Task<int> RunAsync(
-        string[] args,
-        NetclawPaths paths,
-        TextWriter? output = null,
-        TimeProvider? timeProvider = null,
-        TextWriter? diagnostics = null)
+        CliContext cli,
+        string[] args)
     {
-        var writer = output ?? Console.Out;
-        var diagnosticWriter = diagnostics ?? Console.Error;
-        var clock = timeProvider ?? TimeProvider.System;
+        var paths = cli.Paths;
+        var writer = cli.Output;
+        var diagnosticWriter = cli.Error;
+        var clock = cli.Time;
         var subcommand = args.Length > 1 ? args[1] : "help";
 
         // A help flag after list or revoke is otherwise rejected as an unknown flag. The

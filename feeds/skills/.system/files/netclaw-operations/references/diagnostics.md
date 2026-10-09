@@ -184,7 +184,9 @@ active. Personal posture skips this step (all features enabled by default).
 | List past sessions | `netclaw sessions --once` |
 | Permanently delete a reminder | `netclaw reminder delete <id>` |
 
-`netclaw update` preserves daemon ownership. When `netclaw.service` is active or
+`netclaw update` checks daemon ownership against the current `NETCLAW_HOME`.
+A unit that serves another home does not own this daemon.
+When `netclaw.service` owns this daemon and is active or
 enabled as a systemd user service, update restarts it with `systemctl --user`
 instead of launching a detached daemon. If restart fails, inspect
 `systemctl --user status netclaw.service`, then start it manually with

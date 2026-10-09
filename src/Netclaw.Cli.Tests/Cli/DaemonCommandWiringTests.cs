@@ -208,6 +208,22 @@ public sealed class DaemonCommandWiringTests : IDisposable
         return listener;
     }
 
+    [Fact]
+    public async Task Update_help_resolves_the_host_context_for_the_supplied_home_without_a_daemon()
+    {
+        WriteDaemonConfig(ScratchHome, FreePort());
+        var configPath = Path.Combine(ScratchHome, "config", "netclaw.json");
+        var before = File.ReadAllText(configPath);
+
+        var (exitCode, output) = await RunAsync(ScratchHome, ["update", "--help"]);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Usage: netclaw update", output);
+        Assert.Equal(before, File.ReadAllText(configPath));
+        Assert.False(Directory.Exists(DefaultNetclawHome));
+        Assert.Equal(string.Empty, SystemctlCalls);
+    }
+
     // ── daemon stop / start ownership ───────────────────────────────────────
 
     /// <summary>The unit is active and its MainPID is the daemon this home's pid file records.</summary>
