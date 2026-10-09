@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Netclaw.Configuration.Json;
 
 namespace Netclaw.Configuration;
 
@@ -14,12 +15,6 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class BootstrapStateStore
 {
-    private static readonly JsonSerializerOptions JsonOptions = new()
-    {
-        WriteIndented = true,
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
-
     private readonly string _path;
 
     public BootstrapStateStore(NetclawPaths paths)
@@ -35,7 +30,7 @@ public sealed class BootstrapStateStore
         try
         {
             var json = File.ReadAllText(_path);
-            var state = JsonSerializer.Deserialize<BootstrapStateRecord>(json, JsonOptions);
+            var state = JsonSerializer.Deserialize(json, ConfigurationJsonContext.BootstrapState.BootstrapStateRecord);
             return state?.HasCompletedFirstSuccessfulNonLocalStart == true;
         }
         catch (JsonException)
@@ -56,13 +51,14 @@ public sealed class BootstrapStateStore
             CompletedAt = timeProvider.GetUtcNow()
         };
 
-        File.WriteAllText(_path, JsonSerializer.Serialize(state, JsonOptions));
+        File.WriteAllText(_path, JsonSerializer.Serialize(state, ConfigurationJsonContext.BootstrapState.BootstrapStateRecord));
     }
 
-    private sealed class BootstrapStateRecord
-    {
-        public bool HasCompletedFirstSuccessfulNonLocalStart { get; init; }
+}
 
-        public DateTimeOffset? CompletedAt { get; init; }
-    }
+internal sealed class BootstrapStateRecord
+{
+    public bool HasCompletedFirstSuccessfulNonLocalStart { get; init; }
+
+    public DateTimeOffset? CompletedAt { get; init; }
 }

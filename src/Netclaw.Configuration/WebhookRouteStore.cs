@@ -4,7 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
-using System.Text.Json.Serialization;
+using Netclaw.Configuration.Json;
 
 namespace Netclaw.Configuration;
 
@@ -19,13 +19,6 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class WebhookRouteStore
 {
-    private static readonly JsonSerializerOptions JsonOptions = new(JsonSerializerDefaults.Web)
-    {
-        PropertyNameCaseInsensitive = true,
-        WriteIndented = true,
-        Converters = { new JsonStringEnumConverter() }
-    };
-
     private readonly NetclawPaths _paths;
 
     public WebhookRouteStore(NetclawPaths paths)
@@ -100,7 +93,7 @@ public sealed class WebhookRouteStore
     {
         try
         {
-            return JsonSerializer.Deserialize<WebhookRouteConfig>(File.ReadAllText(filePath), JsonOptions);
+            return JsonSerializer.Deserialize(File.ReadAllText(filePath), ConfigurationJsonContext.RouteStore.WebhookRouteConfig);
         }
         catch
         {
@@ -114,7 +107,7 @@ public sealed class WebhookRouteStore
         var tempPath = $"{filePath}.{Environment.ProcessId}.{Guid.NewGuid():N}.tmp";
         try
         {
-            File.WriteAllText(tempPath, JsonSerializer.Serialize(definition, JsonOptions));
+            File.WriteAllText(tempPath, JsonSerializer.Serialize(definition, ConfigurationJsonContext.RouteStore.WebhookRouteConfig));
             File.Move(tempPath, filePath, overwrite: true);
         }
         finally

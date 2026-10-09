@@ -29,7 +29,7 @@ public sealed class OllamaProviderPlugin : ProviderPluginBase<OllamaDescriptor>
 
     public override IVendorOptionsSource? CreateVendorOptionsSource(ProviderEntry entry)
     {
-        var vendorOptions = entry.GetVendorOptions<OllamaVendorOptions>() ?? new OllamaVendorOptions();
+        var vendorOptions = entry.GetVendorOptions(Json.ProvidersJsonContext.VendorOptions.OllamaVendorOptions) ?? new OllamaVendorOptions();
         return vendorOptions.DisableThinking ? new OllamaVendorOptionsSource() : null;
     }
 

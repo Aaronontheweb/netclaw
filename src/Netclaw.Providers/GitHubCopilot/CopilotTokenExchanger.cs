@@ -13,6 +13,7 @@ using System.Text.Json.Serialization;
 using System.Threading;
 using Netclaw.Configuration;
 using Netclaw.Providers.OAuth;
+using Netclaw.Providers.Json;
 
 namespace Netclaw.Providers.GitHubCopilot;
 
@@ -167,7 +168,7 @@ public sealed class CopilotTokenExchanger(
                 + $"HTTP {(int)response.StatusCode}: {Truncate(body)}");
         }
 
-        var parsed = JsonSerializer.Deserialize<TokenResponse>(body)
+        var parsed = JsonSerializer.Deserialize(body, ProvidersJsonContext.Default.TokenResponse)
             ?? throw new InvalidOperationException(
                 $"Empty token response from {tokenEndpoint}.");
 
@@ -248,11 +249,11 @@ public sealed class CopilotTokenExchanger(
         public SemaphoreSlim Lock { get; } = new(1, 1);
     }
 
-    private sealed record TokenResponse(
+    internal sealed record TokenResponse(
         [property: JsonPropertyName("token")] string Token,
         [property: JsonPropertyName("expires_at")] long ExpiresAt,
         [property: JsonPropertyName("endpoints")] TokenEndpoints? Endpoints);
 
-    private sealed record TokenEndpoints(
+    internal sealed record TokenEndpoints(
         [property: JsonPropertyName("api")] string? Api);
 }

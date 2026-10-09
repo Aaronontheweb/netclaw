@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Reflection;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Netclaw.Configuration;
 
@@ -45,10 +46,12 @@ public sealed record ConfigValueMetadata(
 /// </summary>
 public static class ConfigValueMetadataProvider
 {
-    public static ConfigValueMetadata Get<TConfig>(string propertyName)
+    public static ConfigValueMetadata Get<[DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] TConfig>(string propertyName)
         => Get(typeof(TConfig), propertyName);
 
-    public static ConfigValueMetadata Get(Type configType, string propertyName)
+    public static ConfigValueMetadata Get(
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicProperties)] Type configType,
+        string propertyName)
     {
         var property = configType.GetProperty(propertyName, BindingFlags.Instance | BindingFlags.Public)
             ?? throw new InvalidOperationException(

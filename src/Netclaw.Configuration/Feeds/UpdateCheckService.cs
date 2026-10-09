@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Netclaw.Configuration.Json;
 using Netclaw.Configuration.Security;
 
 namespace Netclaw.Configuration.Feeds;
@@ -220,7 +221,7 @@ public static class UpdateCheckService
         }
 
         // Signature verified — safe to deserialize
-        var manifest = JsonSerializer.Deserialize<BinaryFeedManifest>(manifestBytes);
+        var manifest = JsonSerializer.Deserialize(manifestBytes, ConfigurationJsonContext.Default.BinaryFeedManifest);
         if (manifest is null || manifest.SchemaVersion != 1)
         {
             return new ManifestFetchResult

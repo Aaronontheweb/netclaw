@@ -28,7 +28,7 @@ public sealed class VeniceAiProviderPlugin : ProviderPluginBase<VeniceAiDescript
         var endpoint = string.IsNullOrWhiteSpace(entry.Endpoint)
             ? new Uri(DefaultEndpoint)
             : new Uri(entry.Endpoint);
-        var vendorOptions = entry.GetVendorOptions<VeniceAiVendorOptions>() ?? new VeniceAiVendorOptions();
+        var vendorOptions = entry.GetVendorOptions(Json.ProvidersJsonContext.VendorOptions.VeniceAiVendorOptions) ?? new VeniceAiVendorOptions();
 
         var options = new OpenAIClientOptions { Endpoint = endpoint };
         if (!vendorOptions.IncludeVeniceSystemPrompt)

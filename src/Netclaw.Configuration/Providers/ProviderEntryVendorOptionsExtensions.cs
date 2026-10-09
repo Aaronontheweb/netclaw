@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace Netclaw.Configuration.Providers;
 
@@ -26,6 +27,26 @@ public static class ProviderEntryVendorOptionsExtensions
         try
         {
             return entry.VendorOptions.Deserialize<T>(SerializerOptions)
+                ?? throw new InvalidOperationException(
+                    $"Providers:<name>:VendorOptions could not be bound as {typeof(T).Name}.");
+        }
+        catch (JsonException ex)
+        {
+            throw new InvalidOperationException(
+                $"Providers:<name>:VendorOptions is invalid for provider type '{entry.Type}' and options type '{typeof(T).Name}'.",
+                ex);
+        }
+    }
+
+    public static T? GetVendorOptions<T>(this ProviderEntry entry, JsonTypeInfo<T> jsonTypeInfo)
+        where T : class, IVendorOptions
+    {
+        if (entry.VendorOptions is null)
+            return null;
+
+        try
+        {
+            return entry.VendorOptions.Deserialize(jsonTypeInfo)
                 ?? throw new InvalidOperationException(
                     $"Providers:<name>:VendorOptions could not be bound as {typeof(T).Name}.");
         }

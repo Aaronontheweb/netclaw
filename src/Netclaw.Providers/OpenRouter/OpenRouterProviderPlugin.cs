@@ -27,7 +27,7 @@ public sealed class OpenRouterProviderPlugin : ProviderPluginBase<OpenRouterDesc
         var endpoint = string.IsNullOrWhiteSpace(entry.Endpoint)
             ? new Uri(DefaultEndpoint)
             : new Uri(entry.Endpoint);
-        var vendorOptions = entry.GetVendorOptions<OpenRouterVendorOptions>() ?? new OpenRouterVendorOptions();
+        var vendorOptions = entry.GetVendorOptions(Json.ProvidersJsonContext.VendorOptions.OpenRouterVendorOptions) ?? new OpenRouterVendorOptions();
 
         var options = new OpenAIClientOptions { Endpoint = endpoint };
         if (vendorOptions.ExcludeReasoning)
@@ -40,7 +40,7 @@ public sealed class OpenRouterProviderPlugin : ProviderPluginBase<OpenRouterDesc
 
     public override IVendorOptionsSource? CreateVendorOptionsSource(ProviderEntry entry)
     {
-        var vendorOptions = entry.GetVendorOptions<OpenRouterVendorOptions>() ?? new OpenRouterVendorOptions();
+        var vendorOptions = entry.GetVendorOptions(Json.ProvidersJsonContext.VendorOptions.OpenRouterVendorOptions) ?? new OpenRouterVendorOptions();
         return vendorOptions.ExcludeReasoning ? new OpenRouterVendorOptionsSource() : null;
     }
 }
