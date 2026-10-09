@@ -31,10 +31,15 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
     private readonly IdentityStepViewModel _step;
     private readonly NetclawPaths _paths;
     private readonly ChatNavigationState _chatNavigationState;
+    private readonly HealthCheckStepViewModel _daemonReadiness;
+    private readonly CancellationTokenSource _lifetime = new();
+    private (bool WasRunning, int? GenerationBefore) _daemonBeforeSave;
+    internal Task OperationCompletion { get; private set; } = Task.CompletedTask;
 
-    public IdentityRedoViewModel(NetclawPaths paths, ChatNavigationState chatNavigationState)
+    public IdentityRedoViewModel(NetclawPaths paths, ChatNavigationState chatNavigationState, HealthCheckStepViewModel daemonReadiness)
     {
         _paths = paths;
+        _daemonReadiness = daemonReadiness;
         _chatNavigationState = chatNavigationState;
         _step = new IdentityStepViewModel();
         _context = new WizardContext
@@ -59,9 +64,10 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
 
     public void GoNext()
     {
+        if (!OperationCompletion.IsCompleted) return;
         if (IsSaved.Value)
         {
-            StartGuidedChat();
+            OperationCompletion = StartGuidedChatAsync();
             return;
         }
 
@@ -72,33 +78,50 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
             return;
         }
 
+        OperationCompletion = SaveIdentityAsync();
+    }
+
+    private async Task SaveIdentityAsync()
+    {
+        var ct = _lifetime.Token;
         // Identity collected. Rewrite identity files only; built-in agents are left
         // untouched so a redo never clobbers customized agent definitions.
         try
         {
-            // Persist the Identity.* fields through the editor session `netclaw config` uses:
-            // it changes only those keys, so `netclaw chat --onboarding` and the daemon read the
-            // redone values instead of the ones the first wizard run saved. This goes first: a
-            // netclaw.json that cannot be read or written fails before SOUL.md changes.
-            var session = new ConfigEditorSession(_paths);
-            session.Apply(_step.BuildContribution(_step));
-            session.Save();
-
-            _step.WriteIdentityFiles(_paths);
+            // Capture before the write. The saved screen can precede the daemon reload.
+            _daemonBeforeSave = await _daemonReadiness.CaptureDaemonStateAsync(ct);
+            if (_daemonBeforeSave is { WasRunning: true, GenerationBefore: null })
+                throw new InvalidOperationException("The daemon did not report a config generation. Retry after the daemon becomes ready.");
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+        catch (Exception ex)
         {
-            // Stay on the form without offering chat: the identity files may be only
-            // partly written, so the guided interview has no complete identity to build
-            // on. Enter retries the write.
-            _context.StatusMessage.Value = DescribeWriteFailure(ex);
-            NotifyContentChanged();
+            await InvokeAsync(() => { OperationCompletion = Task.CompletedTask; _context.StatusMessage.Value = $"Daemon probe failed: {ex.Message}"; NotifyContentChanged(); }, ct);
             return;
         }
+        try
+        {
+            await InvokeAsync(() =>
+            {
+                // The editor writes only identity keys. It must succeed before the identity files change.
+                var session = new ConfigEditorSession(_paths);
+                session.Apply(_step.BuildContribution(_step));
+                session.Save();
 
-        IsSaved.Value = true;
-        _context.StatusMessage.Value = "";
-        NotifyContentChanged();
+                _step.WriteIdentityFiles(_paths);
+                // Release Enter before the page exposes the final screen; the dispatch acknowledgment can arrive later.
+                OperationCompletion = Task.CompletedTask;
+                IsSaved.Value = true;
+                _context.StatusMessage.Value = "";
+                NotifyContentChanged();
+            }, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+        catch (Exception ex)
+        {
+            // A failed write keeps the form open and blocks chat.
+            await InvokeAsync(() => { OperationCompletion = Task.CompletedTask; _context.StatusMessage.Value = DescribeWriteFailure(ex); NotifyContentChanged(); }, ct);
+        }
     }
 
     // The framework message quotes the full path and is clipped on one status line, so
@@ -131,20 +154,41 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
     /// Hands the onboarding trigger to chat, built from the identity values just saved.
     /// Only reachable after a successful save.
     /// </summary>
-    private void StartGuidedChat()
+    private async Task StartGuidedChatAsync()
     {
-        _chatNavigationState.StartOnboarding(_step.BuildOnboardingTrigger(_paths));
-        Navigate?.Invoke(ChatViewModel.Route);
+        var ct = _lifetime.Token;
+        try
+        {
+            await InvokeAsync(() => { _context.StatusMessage.Value = "Waiting for the daemon to apply the identity..."; RequestRedraw(); }, ct);
+            var preparation = await _daemonReadiness.PrepareDaemonAsync(_daemonBeforeSave, ct);
+            if (preparation.Passed != true)
+            {
+                await InvokeAsync(() => { OperationCompletion = Task.CompletedTask; _context.StatusMessage.Value = preparation.Label; RequestRedraw(); }, ct);
+                return;
+            }
+            ct.ThrowIfCancellationRequested();
+            await InvokeAsync(() =>
+            {
+                _chatNavigationState.StartOnboarding(_step.BuildOnboardingTrigger(_paths));
+                Navigate?.Invoke(ChatViewModel.Route);
+            }, ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
+        catch (Exception error)
+        {
+            await InvokeAsync(() => { OperationCompletion = Task.CompletedTask; _context.StatusMessage.Value = $"Daemon preparation failed: {error.Message}"; RequestRedraw(); }, ct);
+        }
     }
 
     public void GoBack()
     {
         if (IsSaved.Value)
         {
-            Shutdown();
+            RequestQuit();
             return;
         }
 
+        if (!OperationCompletion.IsCompleted) return;
         if (_orchestrator.GoBack())
         {
             _context.StatusMessage.Value = "";
@@ -156,7 +200,7 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         Navigate?.Invoke(InitExistingInstallViewModel.MenuRoute);
     }
 
-    public void RequestQuit() => Shutdown();
+    public void RequestQuit() { _lifetime.Cancel(); Shutdown(); }
 
     private void NotifyContentChanged()
     {
@@ -166,6 +210,8 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
 
     public override void Dispose()
     {
+        _lifetime.Cancel();
+        _lifetime.Dispose();
         IsSaved.Dispose();
         _orchestrator.Dispose();
         _context.Dispose();

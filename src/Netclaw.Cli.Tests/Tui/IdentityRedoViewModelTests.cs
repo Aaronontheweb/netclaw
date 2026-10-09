@@ -7,6 +7,7 @@ using System.Reflection;
 using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Tui;
+using Netclaw.Cli.Tui.Wizard.Steps;
 using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
 using Termina.Reactive;
@@ -24,6 +25,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
 {
     private readonly DisposableTempDir _dir = new();
     private readonly NetclawPaths _paths;
+    private readonly HealthCheckStepViewModel _readiness = new();
 
     public IdentityRedoViewModelTests()
     {
@@ -31,7 +33,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         _paths.EnsureDirectoriesExist();
     }
 
-    public void Dispose() => _dir.Dispose();
+    public void Dispose() { _readiness.Dispose(); _dir.Dispose(); }
 
     [Fact]
     public void Redo_rewrites_identity_files_without_clobbering_config()
@@ -54,7 +56,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         Assert.False(File.Exists(_paths.SoulPath));
         Assert.False(File.Exists(_paths.ToolingPath));
 
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
         DriveToSaved(vm);
 
         Assert.True(vm.IsSaved.Value);
@@ -83,7 +85,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
             }
             """);
 
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
         vm.Step.UserName = "Pat";
         vm.Step.CommunicationStyle = "Detailed & formal";
         DriveToSaved(vm);
@@ -106,7 +108,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
     public void GoBack_at_first_identity_field_routes_to_existing_install_menu()
     {
         File.WriteAllText(_paths.NetclawConfigPath, "{ \"configVersion\": 1 }");
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
 
         string? route = null;
         SetNavigate(vm, r => route = r);
@@ -127,7 +129,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         // A directory where SOUL.md belongs makes the write fail with a permission error.
         Directory.CreateDirectory(paths.SoulPath);
 
-        using var vm = new IdentityRedoViewModel(paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(paths, new ChatNavigationState(), _readiness);
         DriveToSaved(vm);
 
         Assert.False(vm.IsSaved.Value);
@@ -143,7 +145,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         File.WriteAllText(_paths.SoulPath, "existing");
         using var held = new FileStream(_paths.SoulPath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
 
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
         DriveToSaved(vm);
 
         Assert.False(vm.IsSaved.Value);
@@ -161,7 +163,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         File.WriteAllText(_paths.NetclawConfigPath, """{ "configVersion": 1, "Identity": { "AgentName": "Existing" } }""");
         File.SetUnixFileMode(_paths.NetclawConfigPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
         DriveToSaved(vm);
 
         Assert.True(vm.IsSaved.Value);
@@ -178,7 +180,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
     {
         File.WriteAllText(_paths.NetclawConfigPath, config);
 
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
         vm.Step.UserName = "Pat";
         DriveToSaved(vm);
 
@@ -208,7 +210,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         File.WriteAllText(real, """{ "configVersion": 1, "Security": { "DeploymentPosture": "Team" } }""");
         File.CreateSymbolicLink(_paths.NetclawConfigPath, real);
 
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
         vm.Step.UserName = "Pat";
         DriveToSaved(vm);
 
@@ -224,7 +226,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         const string config = "{\n  // hand-edited\n  \"configVersion\": 1,\n}";
         File.WriteAllText(_paths.NetclawConfigPath, config);
 
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
         DriveToSaved(vm);
 
         Assert.False(vm.IsSaved.Value);
@@ -240,7 +242,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
     {
         File.WriteAllText(_paths.NetclawConfigPath, "{ // note\n \"configVersion\": 1 }");
 
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
 
         Assert.Equal(
             "Couldn't read netclaw.json: it has comments or is not valid JSON. Fix it and press Enter to retry.",
@@ -253,7 +255,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         File.WriteAllText(_paths.NetclawConfigPath, """{ "configVersion": 1 }""");
         File.WriteAllText(_paths.SecretsPath, "{ \"Slack\": { \"BotToken\": ");
 
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
         Assert.StartsWith("Couldn't read secrets.json", vm.Context.StatusMessage.Value, StringComparison.Ordinal);
 
         DriveToSaved(vm);
@@ -268,7 +270,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
         File.WriteAllText(_paths.SoulPath, "original soul");
         Directory.CreateDirectory(_paths.NetclawConfigPath); // a directory where the file belongs
 
-        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState());
+        using var vm = new IdentityRedoViewModel(_paths, new ChatNavigationState(), _readiness);
         DriveToSaved(vm);
 
         Assert.False(vm.IsSaved.Value);
@@ -294,7 +296,7 @@ public sealed class IdentityRedoViewModelTests : IDisposable
     // The Navigate delegate is a protected, framework-wired member on ReactiveViewModel
     // (set via the internal WireUp during page binding, which tests cannot reach).
     // Inject it directly so we can observe the route the redo flow requests on exit.
-    private static void SetNavigate(ReactiveViewModel vm, Action<string> navigate)
+    internal static void SetNavigate(ReactiveViewModel vm, Action<string> navigate)
     {
         var property = typeof(ReactiveViewModel).GetProperty(
             "Navigate",

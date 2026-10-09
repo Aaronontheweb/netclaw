@@ -291,7 +291,10 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
             // No readiness probe → the poll loop is skipped and we fall straight through to
             // the timeout diagnostic, exercising the message path without a real wait.
             daemonApi: null,
-            navigationState: new ChatNavigationState());
+            navigationState: new ChatNavigationState())
+        {
+            SystemdService = new SystemdUserService(unitFilePath: Path.Combine(_dir.Path, "absent.service"), homePath: _dir.Path)
+        };
         var launched = false;
         step.Navigate = _ => launched = true;
         using var exposureStep = new ExposureModeStepViewModel { SelectedMode = ExposureMode.Local };

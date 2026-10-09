@@ -3,6 +3,8 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Cli.Daemon;
+
 namespace Netclaw.Cli.Tui;
 
 /// <summary>
@@ -12,6 +14,9 @@ namespace Netclaw.Cli.Tui;
 /// </summary>
 public sealed class ChatNavigationState
 {
+    /// <summary>The final result survives page disposal for the terminal notice.</summary>
+    public ChatCloseReceipt? CloseReceipt { get; internal set; }
+
     /// <summary>
     /// When set, <see cref="ChatViewModel"/> will resume this session ID
     /// instead of creating a new one. Consumed (cleared) on first read.

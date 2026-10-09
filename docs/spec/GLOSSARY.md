@@ -92,6 +92,22 @@ durable:   a stored tool-role chat message
 ephemeral: the ToolInvocationReceipt for that tool call
 ```
 
+### Text admission
+
+Text admission occurs when the daemon journal stores an `InputAdmitted` record.
+It preserves the input and its original authority before the model completes a turn.
+It does not grant tool permission or confirm model completion.
+
+**Code anchors:** `LlmSessionActor.AdmitInput`, `SessionRegistry.SendMessageAsync`
+
+### Delivery unconfirmed
+
+Delivery is unconfirmed when a dispatched request has no reliable admission response.
+The input may already exist in the daemon journal.
+The client must check the session before it resends that input.
+
+**Code anchors:** `ChatClientActor`, `ChatCloseReceipt`
+
 ### Local-control proof
 
 A local-control proof shows that a process can use the Netclaw host key ring.

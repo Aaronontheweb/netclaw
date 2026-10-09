@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.107.1"
+  version: "2.108.0"
 ---
 
 # Netclaw Operations
@@ -37,6 +37,30 @@ a reference file — load the one matching the user's intent with
 | Rotate or repair secrets | `skill_read_resource('netclaw-operations', 'references/secrets.md')` |
 | Pair remote devices, manage access | `skill_read_resource('netclaw-operations', 'references/devices.md')` |
 | Kick the tires on Netclaw end-to-end locally | `skill_read_resource('netclaw-operations', 'references/demo-apphost.md')` |
+
+## CLI Chat Delivery
+
+A fresh `netclaw chat` creates its session on the first input.
+A resume chat attaches when its page opens.
+The CLI requires a daemon that advertises text admission version 1.
+Upgrade the daemon when the CLI reports unsupported text admission.
+
+Normal Ctrl+Q permits two seconds total for prior input admission.
+It does not wait for model completion.
+The daemon retains admitted work after the client disconnects.
+The CLI prints unresolved delivery status after the terminal UI closes.
+
+Unsent text did not start its input RPC.
+Unconfirmed delivery may already exist in the daemon journal.
+Check the session before you resend unconfirmed text or an interaction response.
+The CLI does not automatically replay an uncertain request.
+Do not delete a session solely because its completed turn count is zero.
+Forced termination does not provide the normal quit guarantee.
+
+Identity redo waits for the daemon to apply the saved config before guided chat.
+A daemon that already runs must report its config generation before the identity save.
+A probe failure blocks that save. Retry after the daemon becomes ready.
+Esc on the saved screen skips chat and keeps the saved identity.
 
 ## Built-in Tools Before the `netclaw` CLI
 
