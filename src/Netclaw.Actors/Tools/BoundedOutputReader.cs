@@ -28,7 +28,7 @@ namespace Netclaw.Actors.Tools;
 internal static class BoundedOutputReader
 {
     /// <summary>
-    /// Drains <paramref name="reader"/> into a head+tail window bounded by
+    /// Drains <paramref name="reader"/> into a tail-only window bounded by
     /// <paramref name="budget"/> chars. Chars beyond the budget are discarded but
     /// the source continues to be read so a still-running child never deadlocks on
     /// a full pipe buffer. A non-positive <paramref name="budget"/> disables the
