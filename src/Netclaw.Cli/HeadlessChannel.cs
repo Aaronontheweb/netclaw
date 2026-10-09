@@ -354,7 +354,7 @@ public sealed class HeadlessChannel : IChannel
             TotalMs = totalMs.HasValue ? Math.Round(totalMs.Value, 1) : null,
         };
 
-        Console.WriteLine(JsonSerializer.Serialize(envelope, JsonDefaults.CliOutput));
+        Console.WriteLine(CliJson.Serialize(envelope, JsonDefaults.CliOutput));
     }
 
     private void Log(StreamWriter? log, string message)
@@ -379,7 +379,7 @@ public sealed class HeadlessChannel : IChannel
 
     // ── JSON output types ──
 
-    private sealed class JsonEnvelope
+    internal sealed class JsonEnvelope
     {
         public required string SessionId { get; init; }
         public required string Response { get; init; }
@@ -389,14 +389,14 @@ public sealed class HeadlessChannel : IChannel
         public double? TotalMs { get; init; }
     }
 
-    private sealed class JsonToolCall
+    internal sealed class JsonToolCall
     {
         public required string CallId { get; init; }
         public required string ToolName { get; init; }
         public string? ArgumentsJson { get; init; }
     }
 
-    private sealed class JsonUsage
+    internal sealed class JsonUsage
     {
         public long? InputTokens { get; init; }
         public long? OutputTokens { get; init; }

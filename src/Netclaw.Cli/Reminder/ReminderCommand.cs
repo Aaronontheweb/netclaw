@@ -4,8 +4,10 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Netclaw.Actors.Reminders;
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Json;
 
 namespace Netclaw.Cli.Reminder;
 
@@ -101,7 +103,7 @@ internal static class ReminderCommand
             }
 
             var json = await response.Content.ReadAsStringAsync();
-            var reminders = JsonSerializer.Deserialize<JsonElement>(json);
+            var reminders = JsonSerializer.Deserialize(json, CliJsonContext.TypeInfo<JsonElement>());
             var asJson = args.Length > 2;
 
             if (reminders.ValueKind == JsonValueKind.Array && reminders.GetArrayLength() == 0)
@@ -113,11 +115,11 @@ internal static class ReminderCommand
 
             if (asJson)
             {
-                output.WriteLine(JsonSerializer.Serialize(reminders, JsonOptions));
+                output.WriteLine(JsonSerializer.Serialize(reminders, CliJsonContext.TypeInfo<JsonElement>(JsonOptions)));
                 return 0;
             }
 
-            var rows = JsonSerializer.Deserialize<ReminderListRow[]>(json, JsonOptions) ?? [];
+            var rows = JsonSerializer.Deserialize(json, CliJsonContext.TypeInfo<ReminderListRow[]>(JsonOptions)) ?? [];
             WriteListTable(output, rows);
             return 0;
         }
@@ -130,7 +132,7 @@ internal static class ReminderCommand
     }
 
     /// <summary>CLI-side projection of one entry in the daemon's reminder list JSON.</summary>
-    private sealed record ReminderListRow(
+    internal sealed record ReminderListRow(
         string Id,
         string Title,
         bool Enabled,
@@ -240,24 +242,24 @@ internal static class ReminderCommand
 
         name ??= id;
 
-        var body = new
+        var body = new JsonObject
         {
-            id,
-            name,
-            prompt,
-            scheduleType,
-            schedule,
-            deliveryKind,
-            deliveryTransport,
-            deliveryAddress,
-            expiresIn
+            ["id"] = id,
+            ["name"] = name,
+            ["prompt"] = prompt,
+            ["scheduleType"] = scheduleType,
+            ["schedule"] = schedule,
+            ["deliveryKind"] = deliveryKind,
+            ["deliveryTransport"] = deliveryTransport,
+            ["deliveryAddress"] = deliveryAddress,
+            ["expiresIn"] = expiresIn
         };
 
         try
         {
             using var response = await api.CreateReminderAsync(body);
             var json = await response.Content.ReadAsStringAsync();
-            var result = JsonSerializer.Deserialize<JsonElement>(json);
+            var result = JsonSerializer.Deserialize(json, CliJsonContext.TypeInfo<JsonElement>());
 
             if (response.IsSuccessStatusCode)
             {
@@ -309,7 +311,7 @@ internal static class ReminderCommand
         {
             using var response = await api.DeleteReminderAsync(id, permanent);
             var json = await response.Content.ReadAsStringAsync();
-            var result = JsonSerializer.Deserialize<JsonElement>(json);
+            var result = JsonSerializer.Deserialize(json, CliJsonContext.TypeInfo<JsonElement>());
 
             if (response.IsSuccessStatusCode)
             {
@@ -363,7 +365,7 @@ internal static class ReminderCommand
                 ? await api.EnableReminderAsync(id)
                 : await api.DisableReminderAsync(id);
             var json = await response.Content.ReadAsStringAsync();
-            var result = JsonSerializer.Deserialize<JsonElement>(json);
+            var result = JsonSerializer.Deserialize(json, CliJsonContext.TypeInfo<JsonElement>());
 
             if (response.IsSuccessStatusCode)
             {
@@ -413,7 +415,7 @@ internal static class ReminderCommand
         try
         {
             var json = File.ReadAllText(filePath);
-            definition = JsonSerializer.Deserialize<ReminderDefinition>(json, JsonOptions);
+            definition = JsonSerializer.Deserialize(json, CliJsonContext.TypeInfo<ReminderDefinition>(JsonOptions));
         }
         catch (Exception ex)
         {
@@ -436,10 +438,10 @@ internal static class ReminderCommand
 
         try
         {
-            using var response = await api.ImportReminderAsync(new
+            using var response = await api.ImportReminderAsync(new JsonObject
             {
-                definition,
-                writeMode = mode
+                ["definition"] = CliJson.SerializeToNode(definition, JsonOptions),
+                ["writeMode"] = mode
             }, JsonOptions);
 
             var body = await response.Content.ReadAsStringAsync();
@@ -478,7 +480,7 @@ internal static class ReminderCommand
         try
         {
             var json = File.ReadAllText(filePath);
-            var definition = JsonSerializer.Deserialize<ReminderDefinition>(json, JsonOptions);
+            var definition = JsonSerializer.Deserialize(json, CliJsonContext.TypeInfo<ReminderDefinition>(JsonOptions));
             if (definition is null)
             {
                 error.WriteLine("[FAIL] file does not contain a reminder definition.");
@@ -546,8 +548,8 @@ internal static class ReminderCommand
 
             if (response.IsSuccessStatusCode)
             {
-                var result = JsonSerializer.Deserialize<JsonElement>(json);
-                output.WriteLine(JsonSerializer.Serialize(result, JsonOptions));
+                var result = JsonSerializer.Deserialize(json, CliJsonContext.TypeInfo<JsonElement>());
+                output.WriteLine(JsonSerializer.Serialize(result, CliJsonContext.TypeInfo<JsonElement>(JsonOptions)));
                 return 0;
             }
 
@@ -648,7 +650,7 @@ internal static class ReminderCommand
             }
 
             var json = await response.Content.ReadAsStringAsync();
-            var records = JsonSerializer.Deserialize<HistoryRecord[]>(json, JsonOptions);
+            var records = JsonSerializer.Deserialize(json, CliJsonContext.TypeInfo<HistoryRecord[]>(JsonOptions));
 
             if (records is null || records.Length == 0)
             {
@@ -701,7 +703,7 @@ internal static class ReminderCommand
             }
 
             var json = await response.Content.ReadAsStringAsync();
-            var status = JsonSerializer.Deserialize<ReminderStatusView>(json, JsonOptions);
+            var status = JsonSerializer.Deserialize(json, CliJsonContext.TypeInfo<ReminderStatusView>(JsonOptions));
             if (status is null)
             {
                 Console.Error.WriteLine("[FAIL] could not parse status response.");
@@ -754,7 +756,7 @@ internal static class ReminderCommand
     }
 
     /// <summary>CLI-side projection of the daemon's reminder status JSON.</summary>
-    private sealed record ReminderStatusView(
+    internal sealed record ReminderStatusView(
         string Id,
         bool Enabled,
         bool Executing,
@@ -765,7 +767,7 @@ internal static class ReminderCommand
         ReminderOccurrenceView? Occurrence,
         HistoryRecord[]? RecentHistory);
 
-    private sealed record ReminderOccurrenceView(
+    internal sealed record ReminderOccurrenceView(
         DateTimeOffset DueTimeUtc,
         DateTimeOffset? NextAttemptAtUtc,
         int AttemptCount,

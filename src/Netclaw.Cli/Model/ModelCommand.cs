@@ -536,7 +536,7 @@ internal static class ModelCommand
         out ModelSelection? models,
         out string? error)
     {
-        using var stream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(config, JsonDefaults.ConfigFile));
+        using var stream = new MemoryStream(CliJson.SerializeToUtf8Bytes(config, JsonDefaults.ConfigFile));
         var configuration = new ConfigurationBuilder().AddJsonStream(stream).Build();
         return TryResolveModelSelection(configuration, out models, out error);
     }

@@ -552,7 +552,7 @@ internal sealed class TelemetryAlertingConfigViewModel : ReactiveViewModel
             return [];
 
         if (raw is JsonElement element)
-            return JsonSerializer.Deserialize<Dictionary<string, object>>(element.GetRawText(), JsonDefaults.ConfigRead) ?? [];
+            return CliJson.Deserialize<Dictionary<string, object>>(element.GetRawText(), JsonDefaults.ConfigRead) ?? [];
 
         return raw as Dictionary<string, object> ?? [];
     }

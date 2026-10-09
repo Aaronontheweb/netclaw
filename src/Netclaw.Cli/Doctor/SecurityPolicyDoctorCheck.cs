@@ -35,7 +35,7 @@ public sealed class SecurityPolicyDoctorCheck(NetclawPaths paths) : IDoctorCheck
         SecurityPolicyConfig config;
         try
         {
-            config = JsonSerializer.Deserialize<SecurityPolicyConfig>(securityObject, JsonDefaults.ConfigRead)
+            config = CliJson.Deserialize<SecurityPolicyConfig>(securityObject, JsonDefaults.ConfigRead)
                      ?? new SecurityPolicyConfig();
         }
         catch (Exception ex)

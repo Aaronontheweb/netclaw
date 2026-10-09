@@ -117,7 +117,7 @@ internal static class WebhooksCommand
                     deliveryRequired = r.IsValid && r.Definition!.DeliveryRequired
                 })
                 .ToList();
-            output.WriteLine(JsonSerializer.Serialize(items, JsonDefaults.IndentedCamelCase));
+            output.WriteLine(CliJson.Serialize(items, JsonDefaults.IndentedCamelCase));
             return 0;
         }
 
@@ -212,7 +212,7 @@ internal static class WebhooksCommand
                 maxBodyBytes = route.MaxBodyBytes,
                 rateLimitPerMinute = route.RateLimitPerMinute
             };
-            output.WriteLine(JsonSerializer.Serialize(jsonOutput, JsonDefaults.IndentedCamelCase));
+            output.WriteLine(CliJson.Serialize(jsonOutput, JsonDefaults.IndentedCamelCase));
             return 0;
         }
 
@@ -728,7 +728,7 @@ internal static class WebhooksCommand
         try
         {
             var json = File.ReadAllText(filePath);
-            route = JsonSerializer.Deserialize<WebhookRouteConfig>(json, JsonDefaults.ConfigRead)
+            route = CliJson.Deserialize<WebhookRouteConfig>(json, JsonDefaults.ConfigRead)
                 ?? throw new InvalidOperationException("Deserialization returned null.");
         }
         catch (Exception ex)

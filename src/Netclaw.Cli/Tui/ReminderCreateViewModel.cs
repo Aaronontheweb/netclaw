@@ -5,7 +5,9 @@
 // -----------------------------------------------------------------------
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Json;
 using R3;
 using Termina.Reactive;
 
@@ -117,14 +119,14 @@ public sealed class ReminderCreateViewModel : ReactiveViewModel
 
         try
         {
-            var payload = new
+            var payload = new JsonObject
             {
-                name = Title,
-                prompt = Instructions,
-                scheduleType = ScheduleType,
-                schedule = Schedule,
-                deliveryKind = "none",
-                deliveryInstructions = NotifyInstructions
+                ["name"] = Title,
+                ["prompt"] = Instructions,
+                ["scheduleType"] = ScheduleType,
+                ["schedule"] = Schedule,
+                ["deliveryKind"] = "none",
+                ["deliveryInstructions"] = NotifyInstructions
             };
 
             using var validate = await _api.ValidateReminderAsync(payload, ct);
@@ -150,7 +152,8 @@ public sealed class ReminderCreateViewModel : ReactiveViewModel
                 return;
             }
 
-            var response = await create.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
+            var response = await create.Content.ReadFromJsonAsync(
+                CliJsonContext.TypeInfo<JsonElement>(), cancellationToken: ct);
             var message = response.TryGetProperty("message", out var msg)
                 ? msg.GetString() ?? "Reminder created."
                 : "Reminder created.";
@@ -218,7 +221,8 @@ public sealed class ReminderCreateViewModel : ReactiveViewModel
     {
         try
         {
-            var json = await response.Content.ReadFromJsonAsync<JsonElement>(cancellationToken: ct);
+            var json = await response.Content.ReadFromJsonAsync(
+                CliJsonContext.TypeInfo<JsonElement>(), cancellationToken: ct);
             if (json.TryGetProperty("error", out var err))
                 return err.GetString() ?? response.ReasonPhrase ?? "request failed";
             return json.ToString();

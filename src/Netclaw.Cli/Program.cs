@@ -1569,30 +1569,32 @@ static void WriteDoctorResult(DoctorRunResult result)
 
 static void WriteDoctorJsonResult(DoctorRunResult result, DoctorFixPlan? fixPlan, DoctorCommandOptions options)
 {
-    var payload = new
+    var checks = new JsonArray(result.Results.Select(r => (JsonNode?)new JsonObject
     {
-        exitCode = result.ExitCode,
-        checks = result.Results.Select(r => new
+        ["name"] = r.Name,
+        ["severity"] = r.Severity.ToString().ToLowerInvariant(),
+        ["message"] = r.Message,
+        ["remediation"] = r.Remediation
+    }).ToArray());
+    var files = new JsonArray((fixPlan?.Fixes ?? []).Select(f => (JsonNode?)new JsonObject
+    {
+        ["path"] = f.FilePath,
+        ["description"] = f.Description
+    }).ToArray());
+    var payload = new JsonObject
+    {
+        ["exitCode"] = result.ExitCode,
+        ["checks"] = checks,
+        ["fix"] = new JsonObject
         {
-            name = r.Name,
-            severity = r.Severity.ToString().ToLowerInvariant(),
-            message = r.Message,
-            remediation = r.Remediation
-        }),
-        fix = new
-        {
-            requested = options.Fix,
-            dryRun = options.DryRun,
-            changedFiles = fixPlan?.Fixes.Count ?? 0,
-            files = (fixPlan?.Fixes ?? []).Select(f => new
-            {
-                path = f.FilePath,
-                description = f.Description
-            })
+            ["requested"] = options.Fix,
+            ["dryRun"] = options.DryRun,
+            ["changedFiles"] = fixPlan?.Fixes.Count ?? 0,
+            ["files"] = files
         }
     };
 
-    Console.WriteLine(JsonSerializer.Serialize(payload, JsonDefaults.Indented));
+    Console.WriteLine(payload.ToJsonString(JsonDefaults.Indented));
 }
 
 static void WriteDoctorFixPlan(DoctorFixPlan plan, bool dryRun)
@@ -1676,7 +1678,7 @@ static async Task<int> RunStatusAsync(IServiceProvider services, bool jsonOutput
 
         if (jsonOutput)
         {
-            var node = JsonSerializer.SerializeToNode(status, JsonDefaults.Api)!;
+            var node = CliJson.SerializeToNode(status, JsonDefaults.Api)!;
             var updateNode = (node["update"] as JsonObject) ?? [];
             var updateAvailable = string.Equals(cliUpdate.State, "update-available", StringComparison.Ordinal);
             updateNode["available"] = updateAvailable;
@@ -1725,7 +1727,7 @@ static async Task<int> RunSessionsOnceAsync(IServiceProvider services, bool json
 
         if (jsonOutput)
         {
-            Console.WriteLine(JsonSerializer.Serialize(sessions, JsonDefaults.Indented));
+            Console.WriteLine(CliJson.Serialize(sessions, JsonDefaults.Indented));
         }
         else
         {
@@ -1893,7 +1895,7 @@ static async Task<int> RunStatsAsync(IServiceProvider services, bool jsonOutput,
 
         if (jsonOutput)
         {
-            Console.WriteLine(JsonSerializer.Serialize(stats, JsonDefaults.IndentedCamelCase));
+            Console.WriteLine(CliJson.Serialize(stats, JsonDefaults.IndentedCamelCase));
         }
         else
         {
@@ -1932,7 +1934,7 @@ static async Task<int> RunSkillStatsAsync(IServiceProvider services, bool jsonOu
 
         if (jsonOutput)
         {
-            Console.WriteLine(JsonSerializer.Serialize(stats, JsonDefaults.IndentedCamelCase));
+            Console.WriteLine(CliJson.Serialize(stats, JsonDefaults.IndentedCamelCase));
         }
         else
         {

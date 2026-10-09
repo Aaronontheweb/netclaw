@@ -6,6 +6,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Json;
 using Netclaw.Configuration;
 using Netclaw.Providers;
 using Netclaw.Providers.GitHubCopilot;
@@ -276,7 +277,8 @@ public sealed class OAuthFlowCoordinator : IDisposable
                 return;
             }
 
-            var startResult = await startResponse.Content.ReadFromJsonAsync<JsonElement>(ct);
+            var startResult = await startResponse.Content.ReadFromJsonAsync(
+                CliJsonContext.TypeInfo<JsonElement>(), ct);
             var authUrl = startResult.GetProperty("authorizationUrl").GetString()!;
             var flowState = startResult.GetProperty("state").GetString()!;
             // The daemon owns the flow deadline; polling past it, or stopping before it,

@@ -14,8 +14,6 @@ namespace Netclaw.Cli.Json;
 /// </summary>
 internal static class JsonDefaults
 {
-    private static readonly JsonStringEnumConverter EnumConverter = new();
-
     /// <summary>
     /// Daemon API communication: camelCase names, case-insensitive reads, numeric-string handling.
     /// Equivalent to <see cref="JsonSerializerDefaults.Web"/>.
@@ -57,7 +55,6 @@ internal static class JsonDefaults
     internal static readonly JsonSerializerOptions ConfigFile = new()
     {
         WriteIndented = true,
-        Converters = { EnumConverter },
     };
 
     /// <summary>
@@ -65,7 +62,6 @@ internal static class JsonDefaults
     /// </summary>
     internal static readonly JsonSerializerOptions ConfigRead = new(JsonSerializerDefaults.Web)
     {
-        Converters = { EnumConverter },
     };
 
     /// <summary>
@@ -83,6 +79,5 @@ internal static class JsonDefaults
     /// </summary>
     internal static readonly JsonSerializerOptions EnumAware = new()
     {
-        Converters = { EnumConverter },
     };
 }

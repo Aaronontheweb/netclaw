@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Cli.Json;
 using System.Buffers.Text;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -376,7 +377,7 @@ public sealed class ExposureModeStepViewModel : IWizardStepViewModel, ISectionEd
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(paths.DevicesPath));
             return doc.RootElement.ValueKind == JsonValueKind.Array
-                ? JsonSerializer.Deserialize<List<PairedDevice>>(doc.RootElement.GetRawText(), DevicesJsonOptions) ?? []
+                ? CliJson.Deserialize<List<PairedDevice>>(doc.RootElement.GetRawText(), DevicesJsonOptions) ?? []
                 : [];
         }
         catch (JsonException)
@@ -387,7 +388,7 @@ public sealed class ExposureModeStepViewModel : IWizardStepViewModel, ISectionEd
 
     private static void WritePairedDevices(NetclawPaths paths, IReadOnlyList<PairedDevice> devices)
     {
-        var json = JsonSerializer.Serialize(devices, DevicesJsonOptions);
+        var json = CliJson.Serialize(devices, DevicesJsonOptions);
         AtomicFile.WriteAllText(paths.DevicesPath, json, AtomicFile.HardenOwnerOnly);
     }
 
@@ -465,7 +466,7 @@ public sealed class ExposureModeStepViewModel : IWizardStepViewModel, ISectionEd
         if (File.Exists(paths.DevicesPath))
             return;
 
-        var json = JsonSerializer.Serialize(new[] { _bootstrapDevice }, DevicesJsonOptions);
+        var json = CliJson.Serialize(new[] { _bootstrapDevice }, DevicesJsonOptions);
         AtomicFile.WriteAllText(paths.DevicesPath, json, AtomicFile.HardenOwnerOnly);
     }
 

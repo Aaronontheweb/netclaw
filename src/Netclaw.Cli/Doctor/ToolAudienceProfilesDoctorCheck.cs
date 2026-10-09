@@ -53,7 +53,7 @@ public sealed class ToolAudienceProfilesDoctorCheck(NetclawPaths paths) : IDocto
         }
 
         var mcpServers = root["McpServers"] is JsonObject mcpObj
-            ? JsonSerializer.Deserialize<Dictionary<string, McpServerEntry>>(mcpObj, JsonDefaults.ConfigRead) ?? []
+            ? CliJson.Deserialize<Dictionary<string, McpServerEntry>>(mcpObj, JsonDefaults.ConfigRead) ?? []
             : [];
 
         var errors = new List<string>();

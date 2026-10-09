@@ -1540,7 +1540,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         if (vendorOptions is null || vendorOptions.Count == 0)
             return null;
 
-        return JsonNode.Parse(JsonSerializer.Serialize(vendorOptions, JsonDefaults.ConfigFile))?.AsObject();
+        return JsonNode.Parse(CliJson.Serialize(vendorOptions, JsonDefaults.ConfigFile))?.AsObject();
     }
 
     private void NotifyStateChanged()

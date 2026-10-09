@@ -312,7 +312,7 @@ internal static class McpCommand
                 if (oauthClientSecret is not null)
                     serverSecrets["OAuthClientSecret"] = oauthClientSecret;
 
-                secretMcp[serverName.Value] = JsonSerializer.SerializeToElement(serverSecrets);
+                secretMcp[serverName.Value] = CliJson.SerializeToElement(serverSecrets);
                 return true;
             });
         }
@@ -501,7 +501,7 @@ internal static class McpCommand
             return 1;
         }
 
-        var startResult = await startResponse.Content.ReadFromJsonAsync<JsonElement>();
+        var startResult = await startResponse.Content.ReadFromJsonAsync(CliJsonContext.TypeInfo<JsonElement>());
         var authUrl = startResult.GetProperty("authorizationUrl").GetString()!;
         var flowState = startResult.GetProperty("state").GetString()!;
         // Wait until the deadline the daemon reports rather than assume the flow lifetime.
@@ -1153,7 +1153,7 @@ internal static class McpCommand
         List<string> replaced,
         List<string> dropped)
     {
-        var current = JsonSerializer.SerializeToElement(entry);
+        var current = CliJson.SerializeToElement(entry);
         void Compare(string label, string property)
         {
             // The stored entry spells absent fields as null.
@@ -1212,8 +1212,8 @@ internal static class McpCommand
         }
 
         // Deserialize, toggle, re-serialize
-        var entry = JsonSerializer.Deserialize<McpServerEntry>(
-            JsonSerializer.Serialize(mcpServers[serverName.Value])) ?? new McpServerEntry();
+        var entry = CliJson.Deserialize<McpServerEntry>(
+            CliJson.Serialize(mcpServers[serverName.Value])) ?? new McpServerEntry();
         entry.Enabled = enabled;
         mcpServers[serverName.Value] = SerializeEntry(entry);
 
@@ -1350,7 +1350,7 @@ internal static class McpCommand
         {
             foreach (var prop in configServers.EnumerateObject())
             {
-                var entry = JsonSerializer.Deserialize<McpServerEntry>(prop.Value.GetRawText()) ?? new McpServerEntry();
+                var entry = CliJson.Deserialize<McpServerEntry>(prop.Value.GetRawText()) ?? new McpServerEntry();
                 result[prop.Name] = entry;
             }
         }
@@ -1399,7 +1399,7 @@ internal static class McpCommand
 
     private static JsonElement SerializeEntry(McpServerEntry entry)
     {
-        var json = JsonSerializer.Serialize(entry);
+        var json = CliJson.Serialize(entry);
         using var doc = JsonDocument.Parse(json);
         return doc.RootElement.Clone();
     }

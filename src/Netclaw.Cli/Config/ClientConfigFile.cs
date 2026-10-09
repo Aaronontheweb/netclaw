@@ -19,7 +19,7 @@ internal sealed class ClientConfigFile
             return null;
 
         var text = File.ReadAllText(paths.ClientConfigPath);
-        var config = JsonSerializer.Deserialize<ClientConfigFile>(text);
+        var config = JsonSerializer.Deserialize(text, CliJsonContext.TypeInfo<ClientConfigFile>());
         return string.IsNullOrWhiteSpace(config?.Endpoint)
             ? null
             : config.Endpoint.TrimEnd('/');
@@ -33,6 +33,7 @@ internal sealed class ClientConfigFile
 
         File.WriteAllText(
             paths.ClientConfigPath,
-            JsonSerializer.Serialize(new ClientConfigFile { Endpoint = endpoint.TrimEnd('/') }, JsonDefaults.Indented));
+            JsonSerializer.Serialize(new ClientConfigFile { Endpoint = endpoint.TrimEnd('/') },
+                CliJsonContext.TypeInfo<ClientConfigFile>(JsonDefaults.Indented)));
     }
 }

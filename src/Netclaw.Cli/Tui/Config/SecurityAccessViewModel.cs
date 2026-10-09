@@ -685,7 +685,7 @@ public sealed class SecurityAccessViewModel : ReactiveViewModel
             try
             {
                 var tools = new Dictionary<string, object> { ["Tools"] = new Dictionary<string, object> { ["AudienceProfiles"] = raw } };
-                using var stream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(tools, JsonDefaults.ConfigFile));
+                using var stream = new MemoryStream(CliJson.SerializeToUtf8Bytes(tools, JsonDefaults.ConfigFile));
                 var section = new ConfigurationBuilder().AddJsonStream(stream).Build().GetSection("Tools");
                 return ToolConfig.BindFromConfiguration(section, posture, out _).AudienceProfiles;
             }
@@ -989,7 +989,7 @@ public sealed class SecurityAccessViewModel : ReactiveViewModel
     }
 
     private static bool JsonEquivalent<T>(T left, T right)
-        => JsonSerializer.Serialize(left, JsonDefaults.ConfigFile) == JsonSerializer.Serialize(right, JsonDefaults.ConfigFile);
+        => CliJson.Serialize(left, JsonDefaults.ConfigFile) == CliJson.Serialize(right, JsonDefaults.ConfigFile);
 
     private static void Move(ReactiveProperty<int> index, int delta, int count)
     {

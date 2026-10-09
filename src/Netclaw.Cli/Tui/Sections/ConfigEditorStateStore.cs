@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Cli.Json;
 using System.Text.Json;
 using Netclaw.Cli.Config;
 using Netclaw.Configuration;
@@ -80,7 +81,7 @@ internal sealed class ConfigEditorStateStore(NetclawPaths paths)
         => value switch
         {
             JsonElement element when element.ValueKind == JsonValueKind.Array
-                => JsonSerializer.Deserialize<object[]>(element.GetRawText()),
+                => CliJson.Deserialize<object[]>(element.GetRawText()),
             JsonElement element when element.ValueKind == JsonValueKind.String
                 => element.GetString(),
             JsonElement element when element.ValueKind == JsonValueKind.True

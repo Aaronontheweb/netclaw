@@ -516,7 +516,7 @@ public sealed class WizardSecretsBuilder
             _paths.SecretsPath,
             (latestRoot, fileExisted) =>
             {
-                var latest = JsonSerializer.Deserialize<Dictionary<string, object>>(
+                var latest = CliJson.Deserialize<Dictionary<string, object>>(
                                  latestRoot.ToJsonString(JsonDefaults.ConfigFile),
                                  JsonDefaults.ConfigRead)
                              ?? [];
@@ -528,13 +528,13 @@ public sealed class WizardSecretsBuilder
                 if (!hasDirectSecrets && !contributionChanged)
                     return (null, false);
 
-                var mergedRoot = JsonSerializer.SerializeToNode(latest, JsonDefaults.ConfigFile)?.AsObject()
+                var mergedRoot = CliJson.SerializeToNode(latest, JsonDefaults.ConfigFile)?.AsObject()
                                  ?? [];
 
                 foreach (var (key, value) in _secrets)
                 {
                     var segments = SecretsJsonUpdater.ParseKeyPath(key);
-                    var node = JsonSerializer.SerializeToNode(value, JsonDefaults.ConfigFile);
+                    var node = CliJson.SerializeToNode(value, JsonDefaults.ConfigFile);
                     if (node is JsonObject obj)
                         SecretsJsonUpdater.MergeObject(mergedRoot, segments, obj);
                     else

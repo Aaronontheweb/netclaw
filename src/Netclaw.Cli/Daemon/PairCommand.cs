@@ -7,6 +7,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using Netclaw.Cli.Config;
+using Netclaw.Cli.Json;
 using Netclaw.Configuration;
 
 namespace Netclaw.Cli.Daemon;
@@ -135,10 +136,11 @@ internal static class PairCommand
 
         try
         {
-            var requestBody = new { code, deviceName };
+            var requestBody = new PairExchangeRequest(code, deviceName);
             using var request = new HttpRequestMessage(HttpMethod.Post, exchangeUrl)
             {
-                Content = JsonContent.Create(requestBody),
+                Content = JsonContent.Create(requestBody,
+                    CliJsonContext.TypeInfo<PairExchangeRequest>(CliJsonContext.Api)),
             };
             using var response = await httpClient.SendAsync(
                 request,
@@ -160,7 +162,8 @@ internal static class PairCommand
 
             using var boundedContent = new ByteArrayContent(responseBody);
             boundedContent.Headers.ContentType = response.Content.Headers.ContentType;
-            var result = await boundedContent.ReadFromJsonAsync<ExchangeResponse>(requestCts.Token);
+            var result = await boundedContent.ReadFromJsonAsync(
+                CliJsonContext.TypeInfo<ExchangeResponse>(CliJsonContext.Api), requestCts.Token);
             if (string.IsNullOrWhiteSpace(result?.Token))
             {
                 error.WriteLine("Pairing failed: the daemon returned an empty token.");
@@ -393,7 +396,9 @@ internal static class PairCommand
         output.WriteLine("is saved to ~/.netclaw/client/config.json for future CLI connections.");
     }
 
-    private sealed record ExchangeResponse(string Token);
+    internal sealed record PairExchangeRequest(string Code, string DeviceName);
+
+    internal sealed record ExchangeResponse(string Token);
 
     private sealed record PairingInput(string Code, string DeviceName);
 }

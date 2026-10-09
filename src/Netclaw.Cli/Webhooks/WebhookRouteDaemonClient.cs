@@ -6,6 +6,7 @@
 using System.Net;
 using System.Text.Json;
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Json;
 
 namespace Netclaw.Cli.Webhooks;
 
@@ -81,7 +82,9 @@ internal sealed class WebhookRouteDaemonClient
         var api = RequireDaemonApi();
         try
         {
-            using var response = await api.UpsertWebhookRouteAsync(routeName, patch, ct);
+            var request = CliJson.SerializeToNode(patch, JsonDefaults.Api)
+                ?? throw new InvalidOperationException("The webhook patch could not be serialized.");
+            using var response = await api.UpsertWebhookRouteAsync(routeName, request, ct);
             if (response.IsSuccessStatusCode)
                 return new WebhookRouteApiResult(Success: true, NotFound: false, Error: null);
 

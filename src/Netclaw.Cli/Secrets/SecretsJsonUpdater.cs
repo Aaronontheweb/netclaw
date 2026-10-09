@@ -27,7 +27,7 @@ internal static class SecretsJsonUpdater
 
     public static void UpsertValue(JsonObject root, string[] segments, object value)
     {
-        var node = JsonSerializer.SerializeToNode(value, JsonDefaults.ConfigFile);
+        var node = CliJson.SerializeToNode(value, JsonDefaults.ConfigFile);
         UpsertNode(root, segments, node);
     }
 

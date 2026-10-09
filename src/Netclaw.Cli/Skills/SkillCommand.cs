@@ -710,7 +710,7 @@ internal static class SkillCommand
         var dict = ConfigFileHelper.LoadJsonDict(paths.NetclawConfigPath);
 
         // Serialize the config to a JsonElement so it round-trips cleanly
-        var serialized = JsonSerializer.SerializeToElement(config, JsonDefaults.ConfigFile);
+        var serialized = CliJson.SerializeToElement(config, JsonDefaults.ConfigFile);
         dict["ExternalSkills"] = serialized;
 
         ConfigFileHelper.WriteConfigFile(paths.NetclawConfigPath, dict);

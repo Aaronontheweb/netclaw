@@ -2453,8 +2453,8 @@ internal sealed class SkillSourcesConfigViewModel : ReactiveViewModel
 
         var json = raw is JsonElement element
             ? element.GetRawText()
-            : JsonSerializer.Serialize(raw, JsonDefaults.ConfigFile);
-        return JsonSerializer.Deserialize<SkillFeedsConfigDocument>(json, JsonDefaults.ConfigRead) ?? new SkillFeedsConfigDocument();
+            : CliJson.Serialize(raw, JsonDefaults.ConfigFile);
+        return CliJson.Deserialize<SkillFeedsConfigDocument>(json, JsonDefaults.ConfigRead) ?? new SkillFeedsConfigDocument();
     }
 
     private static bool TryDecryptExistingApiKey(NetclawPaths paths, string apiKey, out string? plaintext, out string error)

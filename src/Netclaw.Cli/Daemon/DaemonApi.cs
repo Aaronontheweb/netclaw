@@ -8,6 +8,7 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Json;
 using Netclaw.Configuration;
@@ -95,20 +96,20 @@ public sealed class DaemonApi
         using var response = await client.PostAsJsonAsync(
             $"{LocalControlEndpoint}/api/local-control/v1/pairing-code",
             new LocalControlPairingCodeRequest(proof),
-            JsonDefaults.Api,
+            CliJsonContext.TypeInfo<LocalControlPairingCodeRequest>(CliJsonContext.Api),
             cts.Token);
 
         var stream = await response.Content.ReadAsStreamAsync(cts.Token);
         if (response.IsSuccessStatusCode)
         {
-            var result = await JsonSerializer.DeserializeAsync<PairingCodeResultDto>(stream, JsonDefaults.Api, cts.Token);
+            var result = await JsonSerializer.DeserializeAsync(stream, CliJsonContext.TypeInfo<PairingCodeResultDto>(CliJsonContext.Api), cts.Token);
             return new PairingCodeRequestResult(response.StatusCode, result, null);
         }
 
         PairingCodeErrorResponse? error = null;
         try
         {
-            error = await JsonSerializer.DeserializeAsync<PairingCodeErrorResponse>(stream, JsonDefaults.Api, cts.Token);
+            error = await JsonSerializer.DeserializeAsync(stream, CliJsonContext.TypeInfo<PairingCodeErrorResponse>(CliJsonContext.Api), cts.Token);
         }
         catch (JsonException)
         {
@@ -128,7 +129,7 @@ public sealed class DaemonApi
         using var response = await client.GetAsync($"{_endpoint}/api/health/status", cts.Token);
         response.EnsureSuccessStatusCode();
         var stream = await response.Content.ReadAsStreamAsync(cts.Token);
-        return await JsonSerializer.DeserializeAsync<DaemonRuntimeStatus.Response>(stream, JsonDefaults.Api, cts.Token);
+        return await JsonSerializer.DeserializeAsync(stream, CliJsonContext.TypeInfo<DaemonRuntimeStatus.Response>(CliJsonContext.Api), cts.Token);
     }
 
     // ── Sessions ──────────────────────────────────────────────────────
@@ -157,7 +158,7 @@ public sealed class DaemonApi
         using var response = await client.GetAsync(url, cts.Token);
         response.EnsureSuccessStatusCode();
         var stream = await response.Content.ReadAsStreamAsync(cts.Token);
-        return await JsonSerializer.DeserializeAsync<List<SessionCatalogEntryDto>>(stream, JsonDefaults.Api, cts.Token) ?? [];
+        return await JsonSerializer.DeserializeAsync(stream, CliJsonContext.TypeInfo<List<SessionCatalogEntryDto>>(CliJsonContext.Api), cts.Token) ?? [];
     }
 
     // ── Stats ─────────────────────────────────────────────────────────
@@ -172,7 +173,7 @@ public sealed class DaemonApi
         using var response = await client.GetAsync(url, cts.Token);
         response.EnsureSuccessStatusCode();
         var stream = await response.Content.ReadAsStreamAsync(cts.Token);
-        return await JsonSerializer.DeserializeAsync<DaemonStats.Response>(stream, JsonDefaults.Api, cts.Token);
+        return await JsonSerializer.DeserializeAsync(stream, CliJsonContext.TypeInfo<DaemonStats.Response>(CliJsonContext.Api), cts.Token);
     }
 
     public async Task<SkillUsageStats.Response?> GetSkillUsageStatsAsync(int? days = null, CancellationToken ct = default)
@@ -185,7 +186,7 @@ public sealed class DaemonApi
         using var response = await client.GetAsync(url, cts.Token);
         response.EnsureSuccessStatusCode();
         var stream = await response.Content.ReadAsStreamAsync(cts.Token);
-        return await JsonSerializer.DeserializeAsync<SkillUsageStats.Response>(stream, JsonDefaults.Api, cts.Token);
+        return await JsonSerializer.DeserializeAsync(stream, CliJsonContext.TypeInfo<SkillUsageStats.Response>(CliJsonContext.Api), cts.Token);
     }
 
     // ── Skills ────────────────────────────────────────────────────────
@@ -203,7 +204,7 @@ public sealed class DaemonApi
         using var response = await client.GetAsync($"{_endpoint}/api/skills", cts.Token);
         response.EnsureSuccessStatusCode();
         var stream = await response.Content.ReadAsStreamAsync(cts.Token);
-        return await JsonSerializer.DeserializeAsync<SkillInventory.Response>(stream, JsonDefaults.Api, cts.Token);
+        return await JsonSerializer.DeserializeAsync(stream, CliJsonContext.TypeInfo<SkillInventory.Response>(CliJsonContext.Api), cts.Token);
     }
 
     /// <summary>
@@ -219,7 +220,7 @@ public sealed class DaemonApi
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct);
         response.EnsureSuccessStatusCode();
         var stream = await response.Content.ReadAsStreamAsync(ct);
-        return await JsonSerializer.DeserializeAsync<SkillSyncResult.Response>(stream, JsonDefaults.Api, ct);
+        return await JsonSerializer.DeserializeAsync(stream, CliJsonContext.TypeInfo<SkillSyncResult.Response>(CliJsonContext.Api), ct);
     }
 
     // ── Reminders ─────────────────────────────────────────────────────
@@ -231,11 +232,12 @@ public sealed class DaemonApi
         return await client.GetAsync($"{_endpoint}/api/reminders", cts.Token);
     }
 
-    public async Task<HttpResponseMessage> CreateReminderAsync(object request, CancellationToken ct = default)
+    public async Task<HttpResponseMessage> CreateReminderAsync(JsonNode request, CancellationToken ct = default)
     {
         using var cts = CreateTimeoutCts(DefaultTimeout, ct);
         var client = CreateHttpClient();
-        return await client.PostAsJsonAsync($"{_endpoint}/api/reminders", request, cts.Token);
+        return await client.PostAsJsonAsync($"{_endpoint}/api/reminders", request,
+            CliJsonContext.TypeInfo<JsonNode>(CliJsonContext.Api), cts.Token);
     }
 
     public async Task<HttpResponseMessage> DeleteReminderAsync(string id, bool permanent = false, CancellationToken ct = default)
@@ -281,20 +283,20 @@ public sealed class DaemonApi
         return await client.PostAsync($"{_endpoint}/api/reminders/{id}/disable", content: null, cts.Token);
     }
 
-    public async Task<HttpResponseMessage> ValidateReminderAsync(object request, CancellationToken ct = default)
+    public async Task<HttpResponseMessage> ValidateReminderAsync(JsonNode request, CancellationToken ct = default)
     {
         using var cts = CreateTimeoutCts(DefaultTimeout, ct);
         var client = CreateHttpClient();
-        return await client.PostAsJsonAsync($"{_endpoint}/api/reminders/validate", request, cts.Token);
+        return await client.PostAsJsonAsync($"{_endpoint}/api/reminders/validate", request,
+            CliJsonContext.TypeInfo<JsonNode>(CliJsonContext.Api), cts.Token);
     }
 
-    public async Task<HttpResponseMessage> ImportReminderAsync(object request, JsonSerializerOptions? options = null, CancellationToken ct = default)
+    public async Task<HttpResponseMessage> ImportReminderAsync(JsonNode request, JsonSerializerOptions? options = null, CancellationToken ct = default)
     {
         using var cts = CreateTimeoutCts(DefaultTimeout, ct);
         var client = CreateHttpClient();
-        return options is not null
-            ? await client.PostAsJsonAsync($"{_endpoint}/api/reminders/import", request, options, cts.Token)
-            : await client.PostAsJsonAsync($"{_endpoint}/api/reminders/import", request, cts.Token);
+        return await client.PostAsJsonAsync($"{_endpoint}/api/reminders/import", request,
+            CliJsonContext.TypeInfo<JsonNode>(options ?? JsonDefaults.Api), cts.Token);
     }
 
     // ── Webhook routes ────────────────────────────────────────────────
@@ -319,12 +321,13 @@ public sealed class DaemonApi
     /// </summary>
     public async Task<HttpResponseMessage> UpsertWebhookRouteAsync(
         string name,
-        object request,
+        JsonNode request,
         CancellationToken ct = default)
     {
         using var cts = CreateTimeoutCts(DefaultTimeout, ct);
         var client = CreateHttpClient();
-        return await client.PutAsJsonAsync($"{_endpoint}/api/webhooks/{Uri.EscapeDataString(name)}", request, cts.Token);
+        return await client.PutAsJsonAsync($"{_endpoint}/api/webhooks/{Uri.EscapeDataString(name)}", request,
+            CliJsonContext.TypeInfo<JsonNode>(CliJsonContext.Api), cts.Token);
     }
 
     public async Task<HttpResponseMessage> DeleteWebhookRouteAsync(string name, CancellationToken ct = default)
@@ -348,7 +351,8 @@ public sealed class DaemonApi
         using var cts = CreateTimeoutCts(DefaultTimeout, ct);
         var client = CreateHttpClient();
         return await client.GetFromJsonAsync<JsonElement>(
-            $"{_endpoint}/api/mcp/oauth/status/{Uri.EscapeDataString(name)}", cts.Token);
+            $"{_endpoint}/api/mcp/oauth/status/{Uri.EscapeDataString(name)}",
+            CliJsonContext.TypeInfo<JsonElement>(CliJsonContext.Api), cts.Token);
     }
 
     public async Task<JsonElement> GetMcpOAuthStatusByStateAsync(string state, CancellationToken ct = default)
@@ -356,7 +360,8 @@ public sealed class DaemonApi
         using var cts = CreateTimeoutCts(DefaultTimeout, ct);
         var client = CreateHttpClient();
         return await client.GetFromJsonAsync<JsonElement>(
-            $"{_endpoint}/api/mcp/oauth/status-by-state/{Uri.EscapeDataString(state)}", cts.Token);
+            $"{_endpoint}/api/mcp/oauth/status-by-state/{Uri.EscapeDataString(state)}",
+            CliJsonContext.TypeInfo<JsonElement>(CliJsonContext.Api), cts.Token);
     }
 
     public async Task<HttpResponseMessage> McpOAuthCallbackAsync(
@@ -382,7 +387,7 @@ public sealed class DaemonApi
         using var response = await client.GetAsync($"{_endpoint}/api/mcp/statuses", cts.Token);
         response.EnsureSuccessStatusCode();
         var stream = await response.Content.ReadAsStreamAsync(cts.Token);
-        return await JsonSerializer.DeserializeAsync<JsonElement>(stream, JsonDefaults.Api, cts.Token);
+        return await JsonSerializer.DeserializeAsync(stream, CliJsonContext.TypeInfo<JsonElement>(CliJsonContext.Api), cts.Token);
     }
 
     public async Task<List<string>> GetMcpToolNamesAsync(string serverName, CancellationToken ct = default)
@@ -390,7 +395,8 @@ public sealed class DaemonApi
         using var cts = CreateTimeoutCts(DefaultTimeout, ct);
         var client = CreateHttpClient();
         return await client.GetFromJsonAsync<List<string>>(
-            $"{_endpoint}/api/mcp/tools/{Uri.EscapeDataString(serverName)}", cts.Token) ?? [];
+            $"{_endpoint}/api/mcp/tools/{Uri.EscapeDataString(serverName)}",
+            CliJsonContext.TypeInfo<List<string>>(CliJsonContext.Api), cts.Token) ?? [];
     }
 
     // ── Provider OAuth ─────────────────────────────────────────────────
@@ -408,7 +414,8 @@ public sealed class DaemonApi
         using var cts = CreateTimeoutCts(DefaultTimeout, ct);
         var client = CreateHttpClient();
         return await client.GetFromJsonAsync<JsonElement>(
-            $"{_endpoint}/api/provider/oauth/status/{Uri.EscapeDataString(state)}", cts.Token);
+            $"{_endpoint}/api/provider/oauth/status/{Uri.EscapeDataString(state)}",
+            CliJsonContext.TypeInfo<JsonElement>(CliJsonContext.Api), cts.Token);
     }
 
     public async Task<HttpResponseMessage> ProviderOAuthCallbackAsync(string code, string state, CancellationToken ct = default)
@@ -428,7 +435,7 @@ public sealed class DaemonApi
         using var response = await client.GetAsync($"{_endpoint}/api/pair/devices", cts.Token);
         response.EnsureSuccessStatusCode();
         var stream = await response.Content.ReadAsStreamAsync(cts.Token);
-        return await JsonSerializer.DeserializeAsync<List<PairedDeviceInfoDto>>(stream, JsonDefaults.Api, cts.Token) ?? [];
+        return await JsonSerializer.DeserializeAsync(stream, CliJsonContext.TypeInfo<List<PairedDeviceInfoDto>>(CliJsonContext.Api), cts.Token) ?? [];
     }
 
     /// <summary>

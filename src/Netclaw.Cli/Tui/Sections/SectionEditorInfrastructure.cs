@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Diagnostics.CodeAnalysis;
 using Microsoft.Extensions.DependencyInjection;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Tui.Wizard;
@@ -119,7 +120,8 @@ public static class SectionEditorExemptions
         };
 }
 
-public sealed record SectionEditorRegistration(Type ImplementationType);
+public sealed record SectionEditorRegistration(
+    [property: DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] Type ImplementationType);
 
 /// <summary>
 /// Registry of reusable leaf editors. It validates duplicate IDs eagerly and does not imply any future menu hierarchy.
@@ -161,7 +163,8 @@ public sealed class SectionEditorRegistry : IDisposable
 
 public static class SectionEditorServiceCollectionExtensions
 {
-    public static IServiceCollection AddSectionEditor<TEditor>(this IServiceCollection services)
+    public static IServiceCollection AddSectionEditor<
+        [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)] TEditor>(this IServiceCollection services)
         where TEditor : class, ISectionEditor
     {
         services.AddTransient<TEditor>();

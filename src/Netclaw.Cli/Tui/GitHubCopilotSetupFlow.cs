@@ -89,6 +89,6 @@ internal static class GitHubCopilotSetupFlow
         if (vendorOptions is null || vendorOptions.Count == 0)
             return null;
 
-        return JsonNode.Parse(JsonSerializer.Serialize(vendorOptions, JsonDefaults.ConfigFile))?.AsObject();
+        return JsonNode.Parse(CliJson.Serialize(vendorOptions, JsonDefaults.ConfigFile))?.AsObject();
     }
 }

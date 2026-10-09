@@ -716,8 +716,8 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
 
         var json = raw is JsonElement element
             ? element.GetRawText()
-            : JsonSerializer.Serialize(raw, JsonDefaults.ConfigFile);
-        vendorOptions = JsonSerializer.Deserialize<Dictionary<string, object?>>(json, JsonDefaults.ConfigRead);
+            : CliJson.Serialize(raw, JsonDefaults.ConfigFile);
+        vendorOptions = CliJson.Deserialize<Dictionary<string, object?>>(json, JsonDefaults.ConfigRead);
         return vendorOptions is not null;
     }
 
@@ -726,7 +726,7 @@ public sealed class ProviderStepViewModel : IWizardStepViewModel, ISectionEditor
         if (vendorOptions is null || vendorOptions.Count == 0)
             return null;
 
-        return JsonNode.Parse(JsonSerializer.Serialize(vendorOptions, JsonDefaults.ConfigFile))?.AsObject();
+        return JsonNode.Parse(CliJson.Serialize(vendorOptions, JsonDefaults.ConfigFile))?.AsObject();
     }
 
     public void Dispose()

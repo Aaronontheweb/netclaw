@@ -46,7 +46,7 @@ public sealed class InboundWebhookRoutesDoctorCheck(NetclawPaths paths) : IDocto
             var routeName = Path.GetFileNameWithoutExtension(filePath);
             try
             {
-                var route = JsonSerializer.Deserialize<WebhookRouteConfig>(File.ReadAllText(filePath), JsonDefaults.ConfigRead)
+                var route = CliJson.Deserialize<WebhookRouteConfig>(File.ReadAllText(filePath), JsonDefaults.ConfigRead)
                     ?? throw new InvalidOperationException($"Webhook route '{routeName}' could not be parsed.");
 
                 WebhookRouteValidator.ValidateOrThrow(routeName, route);

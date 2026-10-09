@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Cli.Json;
 using System.Text.Json;
 using System.Net;
 using Netclaw.Cli.Daemon;
@@ -53,7 +54,7 @@ public sealed class McpServersDoctorCheck : IDoctorCheck
                 return DoctorCheckResult.Pass("mcp-servers",
                     "No MCP servers configured (use `netclaw mcp add` to add one)");
 
-            servers = JsonSerializer.Deserialize<Dictionary<string, McpServerEntry>>(mcpSection.GetRawText())
+            servers = CliJson.Deserialize<Dictionary<string, McpServerEntry>>(mcpSection.GetRawText())
                 ?? [];
         }
         catch (Exception ex)

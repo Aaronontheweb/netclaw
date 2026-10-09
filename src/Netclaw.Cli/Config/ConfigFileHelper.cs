@@ -95,7 +95,7 @@ internal static class ConfigFileHelper
             return new Dictionary<string, object> { ["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion };
 
         var text = File.ReadAllText(path);
-        return JsonSerializer.Deserialize<Dictionary<string, object>>(text)
+        return CliJson.Deserialize<Dictionary<string, object>>(text)
             ?? new Dictionary<string, object> { ["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion };
     }
 
@@ -152,7 +152,7 @@ internal static class ConfigFileHelper
                     return fresh;
                 }
 
-                var parsed = JsonSerializer.Deserialize<Dictionary<string, object>>(je.GetRawText())
+                var parsed = CliJson.Deserialize<Dictionary<string, object>>(je.GetRawText())
                     ?? [];
                 dict[key] = parsed;
                 return parsed;
@@ -177,7 +177,7 @@ internal static class ConfigFileHelper
 
         if (existing is JsonElement je)
         {
-            var parsed = JsonSerializer.Deserialize<Dictionary<string, object>>(je.GetRawText())
+            var parsed = CliJson.Deserialize<Dictionary<string, object>>(je.GetRawText())
                 ?? [];
             dict[key] = parsed;
             return parsed;
@@ -196,8 +196,8 @@ internal static class ConfigFileHelper
     {
         var json = raw is JsonElement element
             ? element.GetRawText()
-            : JsonSerializer.Serialize(raw, JsonDefaults.ConfigFile);
-        return JsonSerializer.Deserialize<T>(json, JsonDefaults.ConfigRead);
+            : CliJson.Serialize(raw, JsonDefaults.ConfigFile);
+        return CliJson.Deserialize<T>(json, JsonDefaults.ConfigRead);
     }
 
     /// <summary>
@@ -229,7 +229,7 @@ internal static class ConfigFileHelper
     {
         var info = new FileInfo(path);
         var target = info.LinkTarget is null ? path : info.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? path;
-        var json = JsonSerializer.Serialize(data, JsonDefaults.ConfigFile);
+        var json = CliJson.Serialize(data, JsonDefaults.ConfigFile);
 
         try
         {
@@ -318,7 +318,7 @@ internal static class ConfigFileHelper
             paths.SecretsPath,
             (root, fileExisted) =>
             {
-                var secrets = JsonSerializer.Deserialize<Dictionary<string, object>>(
+                var secrets = CliJson.Deserialize<Dictionary<string, object>>(
                                   root.ToJsonString(JsonDefaults.ConfigFile),
                                   JsonDefaults.ConfigRead)
                               ?? [];
@@ -326,7 +326,7 @@ internal static class ConfigFileHelper
                 if (!outcome.Write)
                     return (null, outcome.Result);
 
-                var updatedRoot = JsonSerializer.SerializeToNode(secrets, JsonDefaults.ConfigFile)?.AsObject()
+                var updatedRoot = CliJson.SerializeToNode(secrets, JsonDefaults.ConfigFile)?.AsObject()
                                   ?? [];
                 return (updatedRoot, outcome.Result);
             },
@@ -454,9 +454,9 @@ internal static class ConfigFileHelper
         => value switch
         {
             JsonElement element when element.ValueKind == JsonValueKind.Object
-                => JsonSerializer.Deserialize<Dictionary<string, object>>(element.GetRawText()),
+                => CliJson.Deserialize<Dictionary<string, object>>(element.GetRawText()),
             JsonElement element when element.ValueKind == JsonValueKind.Array
-                => JsonSerializer.Deserialize<object[]>(element.GetRawText()),
+                => CliJson.Deserialize<object[]>(element.GetRawText()),
             JsonElement element when element.ValueKind == JsonValueKind.String
                 => element.GetString(),
             JsonElement element when element.ValueKind == JsonValueKind.True
@@ -467,7 +467,7 @@ internal static class ConfigFileHelper
                 => longValue,
             JsonElement element when element.ValueKind == JsonValueKind.Number
                 => element.GetDouble(),
-            JsonNode node => node.Deserialize<object>(),
+            JsonNode node => node.Deserialize(CliJsonContext.TypeInfo<object>()),
             _ => value
         };
 

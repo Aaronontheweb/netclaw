@@ -188,7 +188,7 @@ internal static class ModelEntryWriter
     {
         var json = raw is JsonElement element
             ? element.GetRawText()
-            : JsonSerializer.Serialize(raw, JsonDefaults.ConfigFile);
+            : CliJson.Serialize(raw, JsonDefaults.ConfigFile);
         using var document = JsonDocument.Parse(json);
         var root = document.RootElement;
         if (root.ValueKind != JsonValueKind.Object
@@ -209,7 +209,7 @@ internal static class ModelEntryWriter
             return dictionary;
         if (raw is JsonElement { ValueKind: JsonValueKind.Object } element)
         {
-            dictionary = JsonSerializer.Deserialize<Dictionary<string, object>>(element.GetRawText()) ?? [];
+            dictionary = CliJson.Deserialize<Dictionary<string, object>>(element.GetRawText()) ?? [];
             parent[key] = dictionary;
             return dictionary;
         }
@@ -324,7 +324,7 @@ internal static class ModelEntryWriter
     {
         var json = raw is JsonElement element
             ? element.GetRawText()
-            : JsonSerializer.Serialize(raw, JsonDefaults.ConfigFile);
+            : CliJson.Serialize(raw, JsonDefaults.ConfigFile);
 
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;

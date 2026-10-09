@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using Netclaw.Cli.Json;
 using System.Text.Json;
 using Netclaw.Cli.Config;
 using Netclaw.Configuration;
@@ -35,7 +36,7 @@ internal static class DeviceRegistryInspector
         {
             using var doc = JsonDocument.Parse(File.ReadAllText(paths.DevicesPath));
             return doc.RootElement.ValueKind == JsonValueKind.Array
-                ? JsonSerializer.Deserialize<List<PairedDevice>>(doc.RootElement.GetRawText()) ?? []
+                ? CliJson.Deserialize<List<PairedDevice>>(doc.RootElement.GetRawText()) ?? []
                 : [];
         }
         catch (JsonException)

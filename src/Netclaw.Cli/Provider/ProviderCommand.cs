@@ -508,7 +508,7 @@ internal static class ProviderCommand
         {
             foreach (var prop in configProviders.EnumerateObject())
             {
-                var entry = JsonSerializer.Deserialize<ProviderEntry>(prop.Value.GetRawText(), JsonDefaults.EnumAware)
+                var entry = CliJson.Deserialize<ProviderEntry>(prop.Value.GetRawText(), JsonDefaults.EnumAware)
                     ?? new ProviderEntry();
                 if (prop.Value.TryGetProperty(nameof(ProviderEntry.VendorOptions), out var vendorOptions)
                     && vendorOptions.ValueKind == JsonValueKind.Object)

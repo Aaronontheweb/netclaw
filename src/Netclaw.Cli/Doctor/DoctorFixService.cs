@@ -68,10 +68,10 @@ public sealed class DoctorFixService
 
         if (obj["Models"] is JsonObject modelsNode)
         {
-            var models = JsonSerializer.Deserialize<Dictionary<string, object>>(modelsNode.ToJsonString())!;
+            var models = CliJson.Deserialize<Dictionary<string, object>>(modelsNode.ToJsonString())!;
             if (ModelEntryWriter.MigrateLegacy(models))
             {
-                obj["Models"] = JsonNode.Parse(JsonSerializer.Serialize(models, JsonDefaults.ConfigFile));
+                obj["Models"] = JsonNode.Parse(CliJson.Serialize(models, JsonDefaults.ConfigFile));
                 appliedFixes.Add("named model definitions");
             }
         }
