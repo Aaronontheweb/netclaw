@@ -59,7 +59,7 @@ internal sealed class ChatClientActor : ReceiveActor, IWithTimers
     private readonly TaskCompletionSource _stopped;
     private readonly Queue<Request> _queue = new();
     private readonly List<UndeliveredInput> _unresolved = [];
-    private readonly List<TaskCompletionSource<ChatCloseReceipt>> _closers = [];
+    private TaskCompletionSource<ChatCloseReceipt>? _closeReply;
     private Request? _current;
     private CancellationTokenSource? _operationCancellation;
     private CancellationTokenRegistration _callerCancellation;
@@ -94,19 +94,21 @@ internal sealed class ChatClientActor : ReceiveActor, IWithTimers
     {
         Receive<Request>(request =>
         {
-            if (_closers.Count > 0 || _receipt is not null)
+            if (_closeReply is not null || _receipt is not null)
                 request.Reply.TrySetException(new InvalidOperationException("The chat client is closed."));
             else { _queue.Enqueue(request); if (_current is null) Next(); }
         });
         Receive<Close>(close =>
         {
             if (_receipt is not null) { close.Reply.TrySetResult(_receipt); return; }
-            _closers.Add(close.Reply);
-            if (_closers.Count == 1)
+            if (_closeReply is not null)
             {
-                Timers.StartSingleTimer(CloseKey, new CloseDeadline(), TimeSpan.FromSeconds(2));
-                Publish(DaemonConnectionState.Closing, "Confirming daemon admission...");
+                close.Reply.TrySetException(new InvalidOperationException("The facade must share its close task."));
+                return;
             }
+            _closeReply = close.Reply;
+            Timers.StartSingleTimer(CloseKey, new CloseDeadline(), TimeSpan.FromSeconds(2));
+            Publish(DaemonConnectionState.Closing, "Confirming daemon admission...");
             if (_current is null) Next();
         });
         Receive<CloseDeadline>(_ => FinishClose());
@@ -144,7 +146,7 @@ internal sealed class ChatClientActor : ReceiveActor, IWithTimers
     private void Next()
     {
         if (_receipt is not null) return;
-        if (_recover && _closers.Count == 0)
+        if (_recover && _closeReply is null)
         {
             _recover = false;
             Begin(new Request(RequestKind.Recover, _channelType, _sessionId, null, null, CancellationToken.None));
@@ -163,7 +165,7 @@ internal sealed class ChatClientActor : ReceiveActor, IWithTimers
             return;
         }
         Become(Idle);
-        if (_closers.Count > 0) FinishClose();
+        if (_closeReply is not null) FinishClose();
     }
     private void Begin(Request request)
     {
@@ -375,7 +377,7 @@ internal sealed class ChatClientActor : ReceiveActor, IWithTimers
         _current = null;
         _operationCancellation?.Cancel();
         _receipt = new ChatCloseReceipt(_sessionId, _unresolved.ToImmutableArray());
-        foreach (var closer in _closers) closer.TrySetResult(_receipt);
+        _closeReply?.TrySetResult(_receipt);
         Become(Closed);
     }
     private void Publish(DaemonConnectionState state, string message, int? attempt = null, int? limit = null)

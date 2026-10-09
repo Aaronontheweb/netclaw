@@ -317,7 +317,7 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         return (wasRunning, generationBefore);
     }
 
-    internal async Task<bool> PrepareDaemonAsync((bool WasRunning, int? GenerationBefore) beforeWrite, CancellationToken ct)
+    internal async Task<HealthCheckItem> PrepareDaemonAsync((bool WasRunning, int? GenerationBefore) beforeWrite, CancellationToken ct)
     {
         AddResult(new HealthCheckItem(ProgressLabel(beforeWrite.WasRunning), null));
         NotifyChanged();
@@ -325,7 +325,8 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
         if (ready) SetLastResult(new HealthCheckItem("Daemon ready", true));
         else if (LastResultPending()) SetLastResult(new HealthCheckItem(NotReadyMessage, false));
         NotifyChanged();
-        return ready;
+        lock (Results)
+            return Results[^1];
     }
 
     private async Task<bool> StartIfNeededAndPollAsync(bool wasRunning, int? generationBefore, CancellationToken ct)

@@ -117,13 +117,11 @@ public sealed class ChatSessionSetupTests(ITestOutputHelper output) : TestKit(ou
         var queued = Post(RequestKind.Send, "queued");
         var close = Close();
         await Event(DaemonConnectionState.Closing);
-        var repeatedClose = Close();
         // Drop notifications do not extend the fixed deadline.
         _transport.RaiseClosed();
         Owner.Tell(new TransportDropped(null));
         Scheduler.Advance(TimeSpan.FromSeconds(2));
         var receipt = await close;
-        Assert.Same(receipt, await repeatedClose);
         Assert.Equal([InputDeliveryStatus.Unconfirmed, InputDeliveryStatus.Unsent], receipt.Inputs.Select(input => input.Status));
         await Assert.ThrowsAnyAsync<Exception>(() => active);
         await Assert.ThrowsAnyAsync<Exception>(() => queued);

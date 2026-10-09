@@ -96,7 +96,7 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
         catch (Exception ex)
         {
-            await InvokeAsync(() => { _context.StatusMessage.Value = $"Daemon probe failed: {ex.Message}"; NotifyContentChanged(); }, ct);
+            await InvokeAsync(() => { OperationCompletion = Task.CompletedTask; _context.StatusMessage.Value = $"Daemon probe failed: {ex.Message}"; NotifyContentChanged(); }, ct);
             return;
         }
         try
@@ -109,6 +109,8 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
                 session.Save();
 
                 _step.WriteIdentityFiles(_paths);
+                // Release Enter before the page exposes the final screen; the dispatch acknowledgment can arrive later.
+                OperationCompletion = Task.CompletedTask;
                 IsSaved.Value = true;
                 _context.StatusMessage.Value = "";
                 NotifyContentChanged();
@@ -118,7 +120,7 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         catch (Exception ex)
         {
             // A failed write keeps the form open and blocks chat.
-            await InvokeAsync(() => { _context.StatusMessage.Value = DescribeWriteFailure(ex); NotifyContentChanged(); }, ct);
+            await InvokeAsync(() => { OperationCompletion = Task.CompletedTask; _context.StatusMessage.Value = DescribeWriteFailure(ex); NotifyContentChanged(); }, ct);
         }
     }
 
@@ -158,9 +160,10 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         try
         {
             await InvokeAsync(() => { _context.StatusMessage.Value = "Waiting for the daemon to apply the identity..."; RequestRedraw(); }, ct);
-            if (!await _daemonReadiness.PrepareDaemonAsync(_daemonBeforeSave, ct))
+            var preparation = await _daemonReadiness.PrepareDaemonAsync(_daemonBeforeSave, ct);
+            if (preparation.Passed != true)
             {
-                await InvokeAsync(() => { _context.StatusMessage.Value = _daemonReadiness.ResultsSnapshot()[^1].Label; RequestRedraw(); }, ct);
+                await InvokeAsync(() => { OperationCompletion = Task.CompletedTask; _context.StatusMessage.Value = preparation.Label; RequestRedraw(); }, ct);
                 return;
             }
             ct.ThrowIfCancellationRequested();
@@ -173,7 +176,7 @@ public sealed class IdentityRedoViewModel : ReactiveViewModel
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { return; }
         catch (Exception error)
         {
-            await InvokeAsync(() => { _context.StatusMessage.Value = $"Daemon preparation failed: {error.Message}"; RequestRedraw(); }, ct);
+            await InvokeAsync(() => { OperationCompletion = Task.CompletedTask; _context.StatusMessage.Value = $"Daemon preparation failed: {error.Message}"; RequestRedraw(); }, ct);
         }
     }
 

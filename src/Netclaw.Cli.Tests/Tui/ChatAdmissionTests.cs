@@ -44,12 +44,13 @@ public sealed class ChatAdmissionTests : IDisposable
         await using var client = new DaemonClient("http://localhost", transport, reconnectDelays: [TimeSpan.Zero]);
         var navigation = new ChatNavigationState();
         var input = new VirtualInputSource();
+        using var chat = new ChatViewModel(client, TimeProvider.System, new ModelCapabilities { ModelId = "test" }, navigation, Paths);
         var services = new ServiceCollection();
         services.AddSingleton<IAnsiTerminal>(new VirtualTerminal(100, 30));
         services.AddTerminaVirtualInput(input);
         services.AddTermina(ChatViewModel.Route, routes => routes.RegisterRoute<ChatPage, ChatViewModel>(
             ChatViewModel.Route, provider => new ChatPage(provider.GetRequiredService<IAnsiTerminal>()),
-            _ => new ChatViewModel(client, TimeProvider.System, new ModelCapabilities { ModelId = "test" }, navigation, Paths)));
+            _ => chat));
         await using var provider = services.BuildServiceProvider();
         input.EnqueueString("typed-before-quit");
         input.EnqueueKey(ConsoleKey.Enter);
@@ -83,6 +84,40 @@ public sealed class ChatAdmissionTests : IDisposable
         Assert.False(client.HasLocalRuntime);
         Assert.Equal(0, transport.StartAttempts);
         Assert.Empty(transport.Invocations);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Repeated_facade_close_calls_share_one_task_and_receipt(bool active)
+    {
+        var entered = Gate();
+        var release = Gate();
+        var transport = new FakeDaemonHubTransport
+        {
+            VoidInvokeHook = (_, _, token) => { entered.TrySetResult(); return release.Task.WaitAsync(token); }
+        };
+        await using var client = new DaemonClient("http://localhost", transport, reconnectDelays: [TimeSpan.Zero]);
+        Task? send = null;
+        try
+        {
+            if (active)
+            {
+                await client.CreateSessionAsync(DaemonClient.TuiChannelType, TestContext.Current.CancellationToken);
+                send = client.SendAsync("before-close", TestContext.Current.CancellationToken);
+                await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            }
+            var close = client.CloseAsync();
+            Assert.Same(close, client.CloseAsync());
+            if (active) Assert.False(close.IsCompleted);
+            release.TrySetResult();
+            var receipt = await close.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            if (send is not null) await send;
+            Assert.Same(receipt, await client.CloseAsync());
+            Assert.Empty(receipt.Inputs);
+            Assert.Equal(active, client.HasLocalRuntime);
+        }
+        finally { release.TrySetResult(); }
     }
 
     [Fact]

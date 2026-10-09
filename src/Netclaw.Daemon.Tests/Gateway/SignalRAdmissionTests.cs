@@ -176,9 +176,11 @@ public sealed class SignalRAdmissionTests(ITestOutputHelper output) : TestKit(ou
     }
 
     [Theory]
-    [InlineData("missing", "not initialized")]
-    [InlineData("timeout", "write timed out")]
-    public async Task A_queue_failure_returns_a_negative_admission_result(string fault, string reason)
+    [InlineData("missing", "not initialized", false)]
+    [InlineData("missing", "not initialized", true)]
+    [InlineData("timeout", "write timed out", false)]
+    [InlineData("timeout", "write timed out", true)]
+    public async Task A_queue_failure_returns_a_negative_admission_result(string fault, string reason, bool trusted)
     {
         _queueFault = new QueueFaultPipeline();
         var ct = TestContext.Current.CancellationToken;
@@ -190,19 +192,31 @@ public sealed class SignalRAdmissionTests(ITestOutputHelper output) : TestKit(ou
             _queueFault.Output!.Complete();
             await _queueFault.ReinitFailed.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
         }
-        if (fault == "timeout")
+        if (trusted || fault == "timeout")
         {
             var rejected = CreateTestProbe();
             var gateway = ActorRegistry.Get<SignalRGatewayActorKey>();
-            for (var index = 0; index < 600; index++)
-                gateway.Tell(new EnqueueSignalRInput(new SessionId(ensured.SessionId), new ChannelInput
+            for (var index = 0; index < (fault == "timeout" ? 600 : 1); index++)
+            {
+                var source = new MessageSource
                 {
+                    ChannelType = ChannelType.SignalR,
                     Audience = TrustAudience.Personal, Boundary = TrustBoundary.TrustedInstance,
                     Principal = PrincipalClassification.Operator,
                     Provenance = new SourceProvenance(TransportAuthenticity.LocalProcess, PayloadTaint.Trusted),
-                    SenderId = new SenderId("test"), Contents = [new TextContent("queue-pressure")],
-                    ReceivedAt = TimeProvider.System.GetUtcNow(), AckTarget = rejected
-                }));
+                    SenderId = new SenderId("test"), ReceivedAt = TimeProvider.System.GetUtcNow()
+                };
+                object message = trusted
+                    ? new DeliverTrustedSessionTurn(new SessionId(ensured.SessionId), "queue-pressure", source)
+                    : new EnqueueSignalRInput(new SessionId(ensured.SessionId), new ChannelInput
+                    {
+                        Audience = source.Audience, Boundary = source.Boundary, Principal = source.Principal,
+                        Provenance = source.Provenance, SenderId = source.SenderId,
+                        Contents = [new TextContent("queue-pressure")], ReceivedAt = source.ReceivedAt,
+                        AckTarget = rejected
+                    });
+                gateway.Tell(message, rejected);
+            }
             var nack = await rejected.ExpectMsgAsync<CommandNack>(TimeSpan.FromSeconds(20), cancellationToken: ct);
             Assert.Contains(reason, nack.Reason);
         }

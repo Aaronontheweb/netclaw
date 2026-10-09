@@ -5,6 +5,8 @@
 // -----------------------------------------------------------------------
 using System.Globalization;
 using System.Net;
+using System.Reflection;
+using System.Threading.Channels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Cli.Daemon;
@@ -12,12 +14,55 @@ using Netclaw.Cli.Tui;
 using Netclaw.Cli.Tui.Wizard.Steps;
 using Netclaw.Configuration;
 using Netclaw.Tests.Utilities;
+using Termina.Reactive;
 using Xunit;
 
 namespace Netclaw.Cli.Tests.Tui;
 
 public sealed class IdentityRedoReadinessTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task The_final_save_screen_releases_Enter_before_the_UI_dispatch_ack(bool writeFails)
+    {
+        using var directory = new DisposableTempDir();
+        var paths = new NetclawPaths(directory.Path);
+        paths.EnsureDirectoriesExist();
+        if (writeFails) Directory.CreateDirectory(paths.ToolingPath);
+        using var daemon = new DaemonReadinessFixture(paths);
+        using var vm = new IdentityRedoViewModel(paths, new ChatNavigationState(), daemon.Step);
+        var dispatches = Channel.CreateUnbounded<(Action Action, TaskCompletionSource Ack)>();
+        Func<Action, CancellationToken, Task> dispatch = (action, _) =>
+        {
+            var ack = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            dispatches.Writer.TryWrite((action, ack));
+            return ack.Task;
+        };
+        typeof(ReactiveViewModel).GetField("_invokeAsync", BindingFlags.Instance | BindingFlags.NonPublic)!.SetValue(vm, dispatch);
+        for (var index = 0; index < 4; index++) vm.GoNext();
+        var operation = vm.OperationCompletion;
+        Assert.False(operation.IsCompleted);
+        var final = await dispatches.Reader.ReadAsync(TestContext.Current.CancellationToken);
+        if (writeFails)
+        {
+            var error = Record.Exception(final.Action);
+            Assert.NotNull(error);
+            final.Ack.SetException(error);
+            final = await dispatches.Reader.ReadAsync(TestContext.Current.CancellationToken);
+        }
+        try
+        {
+            final.Action();
+            Assert.Equal(!writeFails, vm.IsSaved.Value);
+            if (writeFails) Assert.Contains("Couldn't write TOOLING.md", vm.Context.StatusMessage.Value);
+            Assert.True(vm.OperationCompletion.IsCompleted);
+            Assert.False(operation.IsCompleted);
+        }
+        finally { final.Ack.TrySetResult(); }
+        await operation;
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
