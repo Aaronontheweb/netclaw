@@ -38,6 +38,30 @@ a reference file — load the one matching the user's intent with
 | Pair remote devices, manage access | `skill_read_resource('netclaw-operations', 'references/devices.md')` |
 | Kick the tires on Netclaw end-to-end locally | `skill_read_resource('netclaw-operations', 'references/demo-apphost.md')` |
 
+## CLI Chat Delivery
+
+A fresh `netclaw chat` creates its session on the first input.
+A resume chat attaches when its page opens.
+The CLI requires a daemon that advertises text admission version 1.
+Upgrade the daemon when the CLI reports unsupported text admission.
+
+Normal Ctrl+Q permits two seconds total for prior input admission.
+It does not wait for model completion.
+The daemon retains admitted work after the client disconnects.
+The CLI prints unresolved delivery status after the terminal UI closes.
+
+Unsent text did not start its input RPC.
+Unconfirmed delivery may already exist in the daemon journal.
+Check the session before you resend unconfirmed text or an interaction response.
+The CLI does not automatically replay an uncertain request.
+Do not delete a session solely because its completed turn count is zero.
+Forced termination does not provide the normal quit guarantee.
+
+Identity redo waits for the daemon to apply the saved config before guided chat.
+A daemon that already runs must report its config generation before the identity save.
+A probe failure blocks that save. Retry after the daemon becomes ready.
+Esc on the saved screen skips chat and keeps the saved identity.
+
 ## Built-in Tools Before the `netclaw` CLI
 
 A built-in tool needs no shell approval. A `netclaw` command through `shell_execute`
@@ -230,14 +254,21 @@ This failure does not prove that the turn exhausted its tool budget.
 
 ## Large tool output
 
-Tool output is bounded to a small inline budget
-(`Session.Tuning.MaxInlineToolResultChars`, default 2000 chars) so it never floods
-the context window. When a tool's output exceeds that budget you get a head+tail
-view inline plus a pointer to the full output — not the whole thing:
+Netclaw limits each inline tool result to a character budget.
+`Session.Tuning.MaxInlineToolResultChars` defaults to 12,000 characters.
+`shell_execute` uses 2,000 characters.
+A longer result contains only its tail, with a separator before the retained text.
+The shell tail retains the process exit status.
 
-- **`shell_execute`** retains the full redacted output inside the current session.
-  Use `tool_output_read` with the returned `CallId`, `Start`, and `Limit` values.
+- **Each tool, also `skill_load`, `skill_read_resource`, and MCP tools**: Netclaw
+  keeps the full redacted result inside the current session. The last line of the
+  result names `tool_output_read` and a `CallId`. Use `tool_output_read` with that
+  `CallId` and a `Start`/`Limit` window to read the omitted prefix or middle.
+  Set `Start=0` to read from the start of the retained result.
   Do not request a path or rerun the source tool to read more.
+  If the last line says that Netclaw did not keep the full output, the omitted text is
+  not available: narrow the call if the tool has a bound, or read one specific
+  resource with `skill_read_resource`.
 - **`file_read`** on a large file returns the head and steers you to read a
   specific range with `StartLine`/`Limit` or `grep` (`StartLine` is a 1-based line
   number — line 1 is the first line). Don't `cat` a huge file through

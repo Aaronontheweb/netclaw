@@ -881,7 +881,8 @@ public sealed class ChatPageTests
         public override void RequestAppShutdown()
         {
             LifecycleEvents.Add("shutdown");
-            base.RequestAppShutdown();
+            // This fixture covers presentation. ChatAdmissionTests covers the real close protocol.
+            Shutdown();
         }
 
         internal override Task DenyPendingInteractionAsync()
