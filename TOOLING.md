@@ -895,6 +895,8 @@ Set `DOTNET_BUNDLE_EXTRACT_BASE_DIR` to an absolute directory that the smoke run
 Remove that directory after all smoke processes exit.
 For an active run, remove only completed tapes' `.net` directories after confirmation that no process uses those homes.
 Retain the tape logs and session data for review.
+After a tape completes, confirm that its daemon exits before you remove that tape's downloaded model cache.
+Retain its config, logs, and session data.
 
 Config-writing flow tapes (`init-wizard`, `provider-add`, `provider-rename`,
 and `config-*`) must have executable semantic assertion scripts under
