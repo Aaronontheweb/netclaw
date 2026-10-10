@@ -1029,6 +1029,11 @@ Done when:
 - [x] Any async UI save/test action has a direct awaitable test path plus
   fire-and-forget exception surfacing.
 
+PR #2417 follow-up:
+
+- [ ] Run `./evals/run-evals.sh` after the operator sets the provider type, endpoint, and model ID through `NETCLAW_EVAL_*`.
+  The local runner rejects the current environment because these values are unset.
+
 #### Task 0.5: Add audit tests for plan-critical config editors
 
 **PRD:** `docs/prd/PRD-004-cli-onboarding-and-config.md`

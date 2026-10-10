@@ -882,6 +882,7 @@ TUI code SHOULD run the harness before declaring a change done.
 | `./scripts/smoke/run-smoke.sh full` | Full suite (placeholder: identical to light until backfilled) |
 | `./scripts/smoke/run-smoke.sh <name>` | Single tape or scenario, e.g. `init-wizard` (fastest inner loop) |
 | `./scripts/smoke/run-smoke.sh skill-sync` | Live daemon and RFC feed proof for immediate skill updates |
+| `./scripts/smoke/run-smoke.sh config-retention` | Native retention editor: first key, Backspace, paste, save, and re-entry |
 | `./scripts/smoke/run-smoke.sh screenshots` | Screenshot regression: capture + byte-compare against baselines |
 | `./scripts/smoke/install-vhs.sh` | Idempotent VHS install (Linux/x86_64 + macOS via Homebrew) |
 
@@ -894,6 +895,8 @@ Set `DOTNET_BUNDLE_EXTRACT_BASE_DIR` to an absolute directory that the smoke run
 Remove that directory after all smoke processes exit.
 For an active run, remove only completed tapes' `.net` directories after confirmation that no process uses those homes.
 Retain the tape logs and session data for review.
+After a tape completes, confirm that its daemon exits before you remove that tape's downloaded model cache.
+Retain its config, logs, and session data.
 
 Config-writing flow tapes (`init-wizard`, `provider-add`, `provider-rename`,
 and `config-*`) must have executable semantic assertion scripts under
