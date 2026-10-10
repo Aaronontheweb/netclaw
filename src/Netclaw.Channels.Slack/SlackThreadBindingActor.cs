@@ -48,6 +48,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
     private readonly ChannelOutputEngine<PendingApprovalRequest, SlackEventTs> _outputEngine;
 
     private readonly SessionPipelineHandle _handle;
+    private bool _sessionDeactivationStarted;
     private readonly ThreadGapHydrationEngine _hydrationEngine;
     private SlackEventTs? _cursorTs;
 
@@ -175,7 +176,6 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
         Initializing();
 
-        Context.SetReceiveTimeout(TimeSpan.FromHours(1));
     }
 
     public static Props CreateProps(
@@ -257,7 +257,7 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         CommandAsync<ThreadOutput>(HandleOutputAsync);
         Command<OutputStreamTerminated>(msg =>
         {
-            if (msg.Generation != _handle.Generation)
+            if (_sessionDeactivationStarted || msg.Generation != _handle.Generation)
                 return;
 
             var reason = msg.Cause is null
@@ -267,22 +267,21 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             _log.Warning("Output stream terminated ({Reason}); reinitializing pipeline", reason);
             Self.Tell(new ReinitializePipeline(reason));
         });
-        CommandAsync<ReinitializePipeline>(async msg => await ReinitializePipelineAsync(msg.Reason));
-        Command<ReceiveTimeout>(_ =>
+        CommandAsync<ReinitializePipeline>(async msg =>
         {
-            if (_pendingApprovalRequests.Count > 0)
-            {
-                _log.Info("Thread idle but {0} approval(s) are pending; deferring passivation", _pendingApprovalRequests.Count);
-                return;
-            }
-
-            _log.Info("Thread idle for 1 hour, passivating");
-            RunTask(async () =>
-            {
-                await _handle.DrainAsync();
-                Context.Stop(Self);
-            });
+            if (!_sessionDeactivationStarted)
+                await ReinitializePipelineAsync(msg.Reason);
         });
+    }
+
+    private async Task HandleSessionDeactivatedAsync()
+    {
+        if (_sessionDeactivationStarted)
+            return;
+
+        _sessionDeactivationStarted = true;
+        await _handle.DrainAsync();
+        Context.Stop(Self);
     }
 
     private async Task HandleProactiveThreadAsync(StartProactiveThread message)
@@ -782,6 +781,12 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
     private async Task HandleOutputAsync(ThreadOutput threadOutput)
     {
+        if (threadOutput.Output is SessionDeactivated)
+        {
+            await HandleSessionDeactivatedAsync();
+            return;
+        }
+
         var clearedPrompts = await _outputEngine.HandleOutputAsync(threadOutput.Output);
         if (clearedPrompts.Count > 0)
             PersistAll(clearedPrompts, ApplyPendingApprovalPromptCleared);

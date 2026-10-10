@@ -440,11 +440,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         Command<ReceiveTimeout>(_ =>
         {
-            if (_subscribers.Count > 0)
+            if (HasLiveBackgroundJobs)
             {
                 _log.Info(
-                    "Session idle but {SubscriberCount} subscriber(s) active; deferring passivation",
-                    _subscribers.Count);
+                    "Session idle but active background jobs remain; deferring passivation");
                 return;
             }
 
@@ -1715,6 +1714,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return;
 
         _passivationCompleted = true;
+        EmitOutput(new SessionDeactivated { SessionId = _sessionId, TimestampMs = NowMs() });
         _lifecycleObserver?.OnSessionDeactivated(_sessionId);
         _restartDrainReplyTo?.Tell(new DaemonRestartPrepared(
             _sessionId,
@@ -1722,6 +1722,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _restartDrainReplyTo = null;
         Context.Stop(Self);
     }
+
+    private bool HasLiveBackgroundJobs
+        => _state.ActiveBackgroundJobs.Values.Any(job => job.ReapedAtMs is null);
 
     private void AbortPassivationTimers()
     {

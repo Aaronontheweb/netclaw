@@ -30,6 +30,12 @@ public sealed class SlackConversationActor : ReceiveActor
         Context.SetReceiveTimeout(TimeSpan.FromHours(2));
         Receive<ReceiveTimeout>(_ =>
         {
+            if (Context.GetChildren().Any())
+            {
+                _log.Debug("Conversation has live thread bindings; retaining parent actor");
+                return;
+            }
+
             _log.Info("Conversation idle for 2 hours, passivating");
             Context.Stop(Self);
         });

@@ -182,6 +182,12 @@ public static partial class SessionProtocol
     }
 
     /// <summary>
+    /// Signals that the session actor will stop after committed passivation.
+    /// Lifecycle — always delivered regardless of <see cref="OutputFilter"/>.
+    /// </summary>
+    public sealed record SessionDeactivated : SessionOutput;
+
+    /// <summary>
     /// Session title was generated or updated by the LLM.
     /// Lifecycle — always delivered regardless of <see cref="OutputFilter"/>.
     /// </summary>

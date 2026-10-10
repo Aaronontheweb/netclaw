@@ -56,9 +56,9 @@ public sealed record ChannelRoutingVerdict(
 /// self-loop filtering, ingress gating (restart drain), routing policy,
 /// text normalization/truncation, empty-content filtering, and session
 /// binding get-or-create — in a fixed order so every channel applies the
-/// same security gates the same way. Also owns idle passivation (2 hours),
-/// stop-on-failure supervision of session bindings, and <c>Terminated</c>
-/// bookkeeping.
+/// same security gates the same way. It owns two-hour idle passivation when
+/// no session binding child exists, stop-on-failure supervision, and
+/// <c>Terminated</c> bookkeeping.
 ///
 /// Subclasses register their channel-specific receives (interactions,
 /// proactive threads, trusted session turns) in their own constructors and
@@ -95,6 +95,12 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
 
         Receive<ReceiveTimeout>(_ =>
         {
+            if (Context.GetChildren().Any())
+            {
+                Log.Debug("Conversation has live session bindings; retaining parent actor");
+                return;
+            }
+
             Log.Info("Conversation idle for 2 hours, passivating");
             Context.Stop(Self);
         });

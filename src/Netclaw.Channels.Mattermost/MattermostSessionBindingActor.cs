@@ -47,6 +47,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
     private readonly IPromptInjectionDetector _promptInjectionDetector;
     private readonly SessionPipelineHandle _handle;
     private readonly ILoggingAdapter _log;
+    private bool _sessionDeactivationStarted;
 
     // Null when the gateway supplies no thread-history fetcher. That is a real
     // runtime state (an instance without history access), not a disabled check:
@@ -60,7 +61,6 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
     private static readonly TimeSpan PipelineInitTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ReinitializeDelay = TimeSpan.FromSeconds(2);
     private static readonly object ReinitializeTimerKey = new();
-    private static readonly TimeSpan IdlePassivationTimeout = TimeSpan.FromHours(1);
     // A Mattermost client clears a typing pulse after about five seconds (the
     // server default for TimeBetweenUserTypingUpdatesMilliseconds). The repeat
     // interval stays below that window so a long turn stays visible. See
@@ -309,7 +309,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
         Command<OutputStreamTerminated>(msg =>
         {
-            if (msg.Generation != _handle.Generation)
+            if (_sessionDeactivationStarted || msg.Generation != _handle.Generation)
                 return;
 
             var reason = msg.Cause is null
@@ -322,6 +322,9 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
         CommandAsync<ReinitializePipeline>(async msg =>
         {
+            if (_sessionDeactivationStarted)
+                return;
+
             // The binding abandons its record of the turn in flight, and the
             // new subscription does not replay the processing state. Stop the
             // pulses here so a lost ProcessingStateOutput(false) cannot leave
@@ -336,19 +339,17 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                     ReinitializeDelay));
         });
 
-        Command<ReceiveTimeout>(_ =>
-        {
-            if (_pendingApprovalRequests.Count > 0)
-            {
-                _log.Info("Session idle but {0} approval(s) pending; deferring passivation", _pendingApprovalRequests.Count);
-                return;
-            }
+    }
 
-            _log.Info("Session idle for 1 hour, passivating");
-            Context.Stop(Self);
-        });
+    private async Task HandleSessionDeactivatedAsync()
+    {
+        if (_sessionDeactivationStarted)
+            return;
 
-        Context.SetReceiveTimeout(IdlePassivationTimeout);
+        _sessionDeactivationStarted = true;
+        StopTypingPulses();
+        await _handle.DrainAsync();
+        Context.Stop(Self);
     }
 
     private async Task EnsureInitializedAsync()
@@ -651,6 +652,12 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
     private async Task HandleOutputReceivedAsync(OutputReceived msg)
     {
+        if (msg.Output is SessionDeactivated)
+        {
+            await HandleSessionDeactivatedAsync();
+            return;
+        }
+
         var clearedPrompts = await _outputEngine.HandleOutputAsync(msg.Output);
         if (clearedPrompts.Count > 0)
             PersistAll(clearedPrompts, ApplyPendingApprovalPromptCleared);
