@@ -570,8 +570,11 @@ public sealed class SlackProactiveThreadActorTests(ITestOutputHelper output) : T
     {
         public AckActor()
         {
-            Receive<StartProactiveThread>(msg =>
-                Sender.Tell(new ProactiveThreadAck(msg.SessionId)));
+            Receive<SessionBindingDelivery>(delivery =>
+            {
+                if (delivery.Message is StartProactiveThread msg)
+                    delivery.ReplyTo.Tell(new ProactiveThreadAck(msg.SessionId), Self);
+            });
         }
     }
 

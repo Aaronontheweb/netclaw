@@ -145,20 +145,20 @@ internal sealed class MattermostConversationActor : ChannelConversationActor<Mat
         }
 
         var sessionId = SessionIdFormat.Build(_channelId.Value, interaction.RootPostId.Value);
-        var sessionBinding = GetOrCreateSessionBinding(
+        Telemetry.RecordEventRouted("interaction");
+        RouteToSessionBinding(
             _channelId.Value,
             interaction.RootPostId.Value,
-            () => SessionBindingProps(sessionId, _channelId, interaction.RootPostId));
-
-        Telemetry.RecordEventRouted("interaction");
-        sessionBinding.Forward(new MattermostApprovalResponse(
-            ChannelId: _channelId,
-            RootPostId: interaction.RootPostId,
-            CallId: new ToolCallId(interaction.CallId),
-            SelectedKey: interaction.SelectedKey,
-            SenderId: interaction.SenderId,
-            RequesterSenderId: interaction.RequesterSenderId,
-            PromptPostId: interaction.PromptPostId));
+            () => SessionBindingProps(sessionId, _channelId, interaction.RootPostId),
+            new MattermostApprovalResponse(
+                ChannelId: _channelId,
+                RootPostId: interaction.RootPostId,
+                CallId: new ToolCallId(interaction.CallId),
+                SelectedKey: interaction.SelectedKey,
+                SenderId: interaction.SenderId,
+                RequesterSenderId: interaction.RequesterSenderId,
+                PromptPostId: interaction.PromptPostId),
+            Sender);
     }
 
     private void HandleProactiveThread(StartMattermostProactiveThread message)
@@ -232,15 +232,15 @@ internal sealed class MattermostConversationActor : ChannelConversationActor<Mat
             return;
         }
 
-        var sessionBinding = GetOrCreateSessionBinding(
-            _channelId.Value,
-            rootPostId.Value,
-            () => SessionBindingProps(message.SessionId, _channelId, rootPostId));
-
         Log.Debug(
             "Routing DeliverTrustedSessionTurn session={Session} channel={Channel} rootPost={RootPost}",
             message.SessionId.Value, parsedChannelId.Value, rootPostId.Value);
-        sessionBinding.Forward(message);
+        RouteToSessionBinding(
+            _channelId.Value,
+            rootPostId.Value,
+            () => SessionBindingProps(message.SessionId, _channelId, rootPostId),
+            message,
+            Sender);
     }
 
     /// <summary>

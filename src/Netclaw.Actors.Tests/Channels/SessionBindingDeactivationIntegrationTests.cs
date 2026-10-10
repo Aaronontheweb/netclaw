@@ -54,7 +54,9 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
     [Fact]
     public async Task Slack_binding_stops_after_its_real_session_passivates()
     {
-        var sessionId = new SessionId("channel-slack/thread-session-deactivation");
+        var channelId = new SlackChannelId("C-TEST");
+        var threadTs = new SlackThreadTs("1000.1");
+        var sessionId = SessionIdFormat.Build(channelId.Value, threadTs.Value);
         var replyClient = new RecordingSlackReplyClient();
         var sessionObserver = CreateTestProbe("slack-session-output");
         await JoinSessionAsync(
@@ -70,6 +72,8 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
             Options: new SlackChannelOptions
             {
                 Enabled = true,
+                MentionOnly = false,
+                AllowedChannelIds = [channelId.Value],
                 AllowDirectMessages = true,
                 BotToken = new SensitiveString("xoxb-test")
             },
@@ -83,36 +87,50 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
             ModelCapabilities: TestSlackGatewayDeps.DefaultTextOnlyModel,
             StorageResolver: new TestSessionStorageResolver(TestPaths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
-        var binding = Sys.ActorOf(SlackThreadBindingActor.CreateProps(
-            sessionId,
-            new SlackChannelId("C-TEST"),
-            new SlackThreadTs("1000.1"),
-            dependencies));
-
-        var bindingWatcher = CreateTestProbe("slack-binding-watch");
-        bindingWatcher.Watch(binding);
-
-        binding.Tell(new SlackThreadInbound(
-            SessionId: sessionId,
-            ChannelId: new SlackChannelId("C-TEST"),
-            ThreadTs: new SlackThreadTs("1000.1"),
+        var parent = Sys.ActorOf(SlackConversationActor.CreateProps(channelId, dependencies));
+        var bindingName = Uri.EscapeDataString(threadTs.Value);
+        parent.Tell(new SlackInboundMessage(
+            Kind: SlackInboundKind.Message,
             EventId: new SlackEventId("slack-deactivation-event"),
-            TurnId: new TurnId("slack-deactivation-turn"),
-            SenderId: new SenderId("U-USER"),
-            Audience: TrustAudience.Team,
-            Principal: PrincipalClassification.UntrustedExternal,
-            Provenance: new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Public)
-            {
-                SourceKind = new SourceKind("slack")
-            },
+            ChannelId: channelId,
+            ThreadTs: threadTs,
+            EventTs: new SlackEventTs("1000.2"),
+            UserId: new SlackUserId("U-USER"),
+            BotId: null,
             Text: "Reply before session shutdown",
-            ReceivedAt: TimeProvider.System.GetUtcNow()), TestActor);
+            Subtype: null,
+            Hidden: false,
+            IsDirectMessage: false), TestActor);
 
         await AwaitAssertAsync(() =>
         {
             Assert.Contains(replyClient.Posts, post => post.Text.Contains(
                 "Response #1", StringComparison.Ordinal));
         }, TimeSpan.FromSeconds(15), cancellationToken: TestContext.Current.CancellationToken);
+        await sessionObserver.FishForMessageAsync<TurnCompleted>(
+            _ => true,
+            TimeSpan.FromSeconds(15),
+            cancellationToken: TestContext.Current.CancellationToken);
+        var binding = await Sys.ActorSelection($"{parent.Path}/{bindingName}")
+            .ResolveOne(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+        var bindingWatcher = CreateTestProbe("slack-binding-watch");
+        bindingWatcher.Watch(binding);
+
+        var parentWatcher = CreateTestProbe("slack-parent-watch");
+        parentWatcher.Watch(parent);
+        parent.Tell(ReceiveTimeout.Instance);
+        parent.Tell(new SlackInboundMessage(
+            Kind: SlackInboundKind.Message,
+            EventId: new SlackEventId("slack-after-parent-timeout"),
+            ChannelId: channelId,
+            ThreadTs: threadTs,
+            EventTs: new SlackEventTs("1000.3"),
+            UserId: new SlackUserId("U-USER"),
+            BotId: null,
+            Text: "Reply after parent timeout",
+            Subtype: null,
+            Hidden: false,
+            IsDirectMessage: false), TestActor);
         await sessionObserver.FishForMessageAsync<TurnCompleted>(
             _ => true,
             TimeSpan.FromSeconds(15),
@@ -134,12 +152,20 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
             binding,
             TimeSpan.FromSeconds(15),
             cancellationToken: TestContext.Current.CancellationToken);
+        parent.Tell(ReceiveTimeout.Instance);
+        await parentWatcher.ExpectTerminatedAsync(
+            parent,
+            TimeSpan.FromSeconds(15),
+            cancellationToken: TestContext.Current.CancellationToken);
     }
 
     [Fact]
     public async Task Discord_binding_stops_after_its_real_session_passivates()
     {
-        var sessionId = new SessionId("channel-discord/thread-session-deactivation");
+        var channelId = new DiscordChannelId("CH-TEST");
+        var replyChannelId = new DiscordReplyChannelId("REPLY-TEST");
+        var threadId = new DiscordThreadOrMessageId("THREAD-TEST");
+        var sessionId = SessionIdFormat.Build(channelId.Value, threadId.Value);
         var replyClient = new SignalDiscordReplyClient();
         var sessionObserver = CreateTestProbe("discord-session-output");
         await JoinSessionAsync(
@@ -151,7 +177,12 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
             Pipeline: Host.Services.GetRequiredService<ISessionPipeline>(),
             IngressGate: null,
             TimeProvider: TimeProvider.System,
-            Options: new DiscordChannelOptions(),
+            Options: new DiscordChannelOptions
+            {
+                Enabled = true,
+                MentionOnly = false,
+                AllowedChannelIds = [channelId.Value]
+            },
             DefaultChannelId: null,
             ChannelRegistry: TestChannelRegistries.DiscordWithProcessingRenderer(replyClient),
             ReplyClient: replyClient,
@@ -160,37 +191,50 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
             ModelCapabilities: TestDiscordGatewayDeps.DefaultVisionCapableModel,
             StorageResolver: new TestSessionStorageResolver(TestPaths),
             PromptInjectionDetector: SafePromptInjectionDetector.Instance);
-        var binding = Sys.ActorOf(DiscordSessionBindingActor.CreateProps(
-            sessionId,
-            new DiscordChannelId("CH-TEST"),
-            new DiscordReplyChannelId("REPLY-TEST"),
-            new DiscordThreadOrMessageId("THREAD-TEST"),
-            rootMessageId: null,
-            dependencies));
-
-        var bindingWatcher = CreateTestProbe("discord-binding-watch");
-        bindingWatcher.Watch(binding);
-
-        binding.Tell(new DiscordThreadInbound(
-            SessionId: sessionId,
-            ChannelId: new DiscordChannelId("CH-TEST"),
-            ReplyChannelId: new DiscordReplyChannelId("REPLY-TEST"),
-            ThreadOrMessageId: new DiscordThreadOrMessageId("THREAD-TEST"),
-            RootMessageId: null,
+        var parent = Sys.ActorOf(DiscordConversationActor.CreateProps(channelId, dependencies));
+        var bindingName = Uri.EscapeDataString($"{channelId.Value}:{threadId.Value}");
+        parent.Tell(new DiscordGatewayMessage(
             EventId: new DiscordEventId("discord-deactivation-event"),
+            ChannelId: channelId,
+            ReplyChannelId: replyChannelId,
+            MessageId: new DiscordMessageId("discord-deactivation-message"),
+            ThreadOrMessageId: threadId,
+            RootMessageId: null,
             SenderId: new DiscordUserId("USER-TEST"),
-            Audience: TrustAudience.Team,
-            Principal: PrincipalClassification.UntrustedExternal,
-            Provenance: new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Public)
-            {
-                SourceKind = new SourceKind("discord")
-            },
+            IsBotMessage: false,
+            IsDirectMessage: false,
+            ContainsBotMention: false,
             Text: "Reply before session shutdown",
             ReceivedAt: TimeProvider.System.GetUtcNow()), TestActor);
 
         var postedReply = await replyClient.FirstPost.Task.WaitAsync(
             TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
         Assert.Contains("Response #1", postedReply.Text, StringComparison.Ordinal);
+        await sessionObserver.FishForMessageAsync<TurnCompleted>(
+            _ => true,
+            TimeSpan.FromSeconds(15),
+            cancellationToken: TestContext.Current.CancellationToken);
+        var binding = await Sys.ActorSelection($"{parent.Path}/{bindingName}")
+            .ResolveOne(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+        var bindingWatcher = CreateTestProbe("discord-binding-watch");
+        bindingWatcher.Watch(binding);
+
+        var parentWatcher = CreateTestProbe("discord-parent-watch");
+        parentWatcher.Watch(parent);
+        parent.Tell(ReceiveTimeout.Instance);
+        parent.Tell(new DiscordGatewayMessage(
+            EventId: new DiscordEventId("discord-after-parent-timeout"),
+            ChannelId: channelId,
+            ReplyChannelId: replyChannelId,
+            MessageId: new DiscordMessageId("discord-after-parent-timeout"),
+            ThreadOrMessageId: threadId,
+            RootMessageId: null,
+            SenderId: new DiscordUserId("USER-TEST"),
+            IsBotMessage: false,
+            IsDirectMessage: false,
+            ContainsBotMention: false,
+            Text: "Reply after parent timeout",
+            ReceivedAt: TimeProvider.System.GetUtcNow()), TestActor);
         await sessionObserver.FishForMessageAsync<TurnCompleted>(
             _ => true,
             TimeSpan.FromSeconds(15),
@@ -210,6 +254,11 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
             cancellationToken: TestContext.Current.CancellationToken);
         await bindingWatcher.ExpectTerminatedAsync(
             binding,
+            TimeSpan.FromSeconds(15),
+            cancellationToken: TestContext.Current.CancellationToken);
+        parent.Tell(ReceiveTimeout.Instance);
+        await parentWatcher.ExpectTerminatedAsync(
+            parent,
             TimeSpan.FromSeconds(15),
             cancellationToken: TestContext.Current.CancellationToken);
     }

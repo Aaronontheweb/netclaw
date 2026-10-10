@@ -152,7 +152,8 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
         var replyChannelId = interaction.ReplyChannelId
             ?? new DiscordReplyChannelId(interaction.ThreadOrMessageId.Value);
         var sessionId = SessionIdFormat.Build(_channelId.Value, interaction.ThreadOrMessageId.Value);
-        var sessionBinding = GetOrCreateSessionBinding(
+        Telemetry.RecordEventRouted("interaction");
+        RouteToSessionBinding(
             _channelId.Value,
             interaction.ThreadOrMessageId.Value,
             () => SessionBindingProps(
@@ -160,17 +161,16 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
                 _channelId,
                 replyChannelId,
                 interaction.ThreadOrMessageId,
-                rootMessageId: null));
-
-        Telemetry.RecordEventRouted("interaction");
-        sessionBinding.Forward(new DiscordApprovalResponse(
-            ChannelId: _channelId,
-            ThreadOrMessageId: interaction.ThreadOrMessageId,
-            CallId: new Netclaw.Tools.ToolCallId(interaction.CallId),
-            SelectedKey: interaction.SelectedKey,
-            SenderId: interaction.SenderId,
-            RequesterSenderId: interaction.RequesterSenderId,
-            PromptMessageId: interaction.PromptMessageId));
+                rootMessageId: null),
+            new DiscordApprovalResponse(
+                ChannelId: _channelId,
+                ThreadOrMessageId: interaction.ThreadOrMessageId,
+                CallId: new Netclaw.Tools.ToolCallId(interaction.CallId),
+                SelectedKey: interaction.SelectedKey,
+                SenderId: interaction.SenderId,
+                RequesterSenderId: interaction.RequesterSenderId,
+                PromptMessageId: interaction.PromptMessageId),
+            Sender);
     }
 
     private void HandleTrustedSessionTurn(DeliverTrustedSessionTurn message)
@@ -191,7 +191,10 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
         }
 
         var replyChannelId = new DiscordReplyChannelId(threadOrMessageId.Value);
-        var sessionBinding = GetOrCreateSessionBinding(
+        Log.Debug(
+            "Routing DeliverTrustedSessionTurn session={Session} channel={Channel} threadOrMessage={ThreadOrMessage}",
+            message.SessionId.Value, parsedChannelId.Value, threadOrMessageId.Value);
+        RouteToSessionBinding(
             _channelId.Value,
             threadOrMessageId.Value,
             () => SessionBindingProps(
@@ -199,12 +202,9 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
                 _channelId,
                 replyChannelId,
                 threadOrMessageId,
-                rootMessageId: null));
-
-        Log.Debug(
-            "Routing DeliverTrustedSessionTurn session={Session} channel={Channel} threadOrMessage={ThreadOrMessage}",
-            message.SessionId.Value, parsedChannelId.Value, threadOrMessageId.Value);
-        sessionBinding.Forward(message);
+                rootMessageId: null),
+            message,
+            Sender);
     }
 
     private void HandleProactiveThread(StartProactiveThread message)
@@ -245,7 +245,8 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
             return;
         }
 
-        var sessionBinding = GetOrCreateSessionBinding(
+        Log.Debug("Routing proactive thread setup to session binding {0}", message.SessionId.Value);
+        RouteToSessionBinding(
             message.ChannelId.Value,
             message.ThreadOrMessageId.Value,
             () => SessionBindingProps(
@@ -253,10 +254,9 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
                 message.ChannelId,
                 message.ReplyChannelId,
                 message.ThreadOrMessageId,
-                message.RootMessageId));
-
-        Log.Debug("Routing proactive thread setup to session binding {0}", message.SessionId.Value);
-        sessionBinding.Forward(message);
+                message.RootMessageId),
+            message,
+            Sender);
     }
 
     private Props SessionBindingProps(

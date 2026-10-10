@@ -19,6 +19,7 @@ using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Tests.Channels.TestHelpers;
 using Netclaw.Channels;
 using Netclaw.Channels.Discord;
+using Netclaw.Channels.Mattermost;
 using Netclaw.Channels.Slack;
 using Netclaw.Configuration;
 using Netclaw.Security;
@@ -60,6 +61,7 @@ public sealed class SessionBindingDrainRaceTests(ITestOutputHelper output) : Tes
                 Enabled = true,
                 MentionOnly = false,
                 AllowedChannelIds = [channelId.Value],
+                AllowedUserIds = ["USER-DRAIN"],
                 BotToken = new SensitiveString("xoxb-test")
             },
             BotUserId: new SlackUserId("U-BOT"),
@@ -81,6 +83,7 @@ public sealed class SessionBindingDrainRaceTests(ITestOutputHelper output) : Tes
             threadTs.Value,
             SlackMessage(parent, channelId, threadTs, "initial-event", "initial"),
             SlackMessage(parent, channelId, threadTs, "raced-event", "raced"),
+            SlackMessage(parent, channelId, threadTs, "denied-event", "denied", "USER-DENIED"),
             ChannelType.Slack);
     }
 
@@ -101,7 +104,8 @@ public sealed class SessionBindingDrainRaceTests(ITestOutputHelper output) : Tes
             {
                 Enabled = true,
                 MentionOnly = false,
-                AllowedChannelIds = [channelId.Value]
+                AllowedChannelIds = [channelId.Value],
+                AllowedUserIds = ["USER-DRAIN"]
             },
             DefaultChannelId: null,
             ChannelRegistry: TestChannelRegistries.DiscordWithProcessingRenderer(replyClient),
@@ -120,7 +124,48 @@ public sealed class SessionBindingDrainRaceTests(ITestOutputHelper output) : Tes
             $"{channelId.Value}:{threadId.Value}",
             DiscordMessage(parent, channelId, replyChannelId, threadId, "initial-event", "initial"),
             DiscordMessage(parent, channelId, replyChannelId, threadId, "raced-event", "raced"),
+            DiscordMessage(parent, channelId, replyChannelId, threadId, "denied-event", "denied", "USER-DENIED"),
             ChannelType.Discord);
+    }
+
+    [Fact]
+    public async Task Mattermost_parent_retries_input_after_binding_drain_finishes()
+    {
+        var pipeline = new GatedSessionPipeline();
+        var channelId = new MattermostChannelId("CH-MATTER-DRAIN");
+        var rootPostId = new MattermostRootPostId("root-drain");
+        var sessionId = SessionIdFormat.Build(channelId.Value, rootPostId.Value);
+        var replyClient = new RecordingMattermostReplyClient();
+        var dependencies = new MattermostGatewayDependencies(
+            Pipeline: pipeline,
+            IngressGate: null,
+            TimeProvider: TimeProvider.System,
+            Options: new MattermostChannelOptions
+            {
+                Enabled = true,
+                MentionOnly = false,
+                AllowedChannelIds = [channelId.Value],
+                AllowedUserIds = ["USER-DRAIN"]
+            },
+            DefaultChannelId: null,
+            ChannelRegistry: TestChannelRegistries.MattermostWithProcessingRenderer(replyClient),
+            ReplyClient: replyClient,
+            ContentScanner: new NullContentScanner(),
+            AudienceProfiles: TestMattermostGatewayDeps.DefaultAudienceProfiles,
+            ModelCapabilities: TestMattermostGatewayDeps.DefaultTextOnlyModel,
+            StorageResolver: TestSessionStorageResolver.Instance,
+            PromptInjectionDetector: SafePromptInjectionDetector.Instance);
+        var parent = Sys.ActorOf(MattermostConversationActor.CreateProps(channelId, dependencies));
+
+        await RunDrainRaceAsync(
+            pipeline,
+            parent,
+            sessionId,
+            $"{channelId.Value}:{rootPostId.Value}",
+            MattermostMessage(parent, channelId, rootPostId, "initial-event", "initial"),
+            MattermostMessage(parent, channelId, rootPostId, "raced-event", "raced"),
+            MattermostMessage(parent, channelId, rootPostId, "denied-event", "denied", "USER-DENIED"),
+            ChannelType.Mattermost);
     }
 
     private async Task RunDrainRaceAsync(
@@ -130,6 +175,7 @@ public sealed class SessionBindingDrainRaceTests(ITestOutputHelper output) : Tes
         string bindingKey,
         Action sendInitial,
         Action sendRaced,
+        Action sendDenied,
         ChannelType channelType)
     {
         try
@@ -155,6 +201,7 @@ public sealed class SessionBindingDrainRaceTests(ITestOutputHelper output) : Tes
                 TestTimeout, TestContext.Current.CancellationToken);
 
             sendRaced();
+            sendDenied();
             parent.Tell(new DeliverTrustedSessionTurn(
                 SessionId: new SessionId("WRONG/thread"),
                 Content: "barrier",
@@ -176,21 +223,22 @@ public sealed class SessionBindingDrainRaceTests(ITestOutputHelper output) : Tes
             Assert.Equal("USER-DRAIN", retriedInput.SenderId.Value);
             Assert.Equal(TrustAudience.Team, retriedInput.Audience);
             Assert.Equal(TrustBoundary.TrustedInstance, retriedInput.Boundary);
-            Assert.Equal(PrincipalClassification.UntrustedExternal, retriedInput.Principal);
+            Assert.Equal(PrincipalClassification.TrustedInternal, retriedInput.Principal);
+            Assert.Equal(initialInput.Provenance, retriedInput.Provenance);
             Assert.Equal("raced", Assert.IsType<TextContent>(Assert.Single(retriedInput.Contents)).Text);
             Assert.Equal(1, pipeline.Inputs.Count(input => input.MessageId == "raced-event"));
+            Assert.DoesNotContain(pipeline.Inputs, input => input.MessageId == "denied-event");
 
             parent.Tell(new DeliverTrustedSessionTurn(
                 SessionId: sessionId,
                 Content: "completion barrier",
                 Source: TrustedSource(channelType, "barrier-event")), TestActor);
-            var ack = await ExpectMsgAsync<CommandAck>(
-                TestTimeout, cancellationToken: TestContext.Current.CancellationToken);
-            Assert.Equal(sessionId, ack.SessionId);
             var barrierInput = await pipeline.InputAsync(1, "barrier-event").WaitAsync(
                 TestTimeout, TestContext.Current.CancellationToken);
             Assert.Equal("completion barrier", Assert.IsType<TextContent>(Assert.Single(barrierInput.Contents)).Text);
+            Assert.Equal(TestActor, barrierInput.AckTarget);
             Assert.Equal(1, pipeline.Inputs.Count(input => input.MessageId == "raced-event"));
+            Assert.DoesNotContain(pipeline.Inputs, input => input.MessageId == "denied-event");
         }
         finally
         {
@@ -203,13 +251,14 @@ public sealed class SessionBindingDrainRaceTests(ITestOutputHelper output) : Tes
         SlackChannelId channelId,
         SlackThreadTs threadTs,
         string eventId,
-        string text) => () => parent.Tell(new SlackInboundMessage(
+        string text,
+        string senderId = "USER-DRAIN") => () => parent.Tell(new SlackInboundMessage(
             Kind: SlackInboundKind.Message,
             EventId: new SlackEventId(eventId),
             ChannelId: channelId,
             ThreadTs: threadTs,
             EventTs: new SlackEventTs(eventId == "initial-event" ? "1000.2" : "1000.3"),
-            UserId: new SlackUserId("USER-DRAIN"),
+            UserId: new SlackUserId(senderId),
             BotId: null,
             Text: text,
             Subtype: null,
@@ -222,17 +271,36 @@ public sealed class SessionBindingDrainRaceTests(ITestOutputHelper output) : Tes
         DiscordReplyChannelId replyChannelId,
         DiscordThreadOrMessageId threadId,
         string eventId,
-        string text) => () => parent.Tell(new DiscordGatewayMessage(
+        string text,
+        string senderId = "USER-DRAIN") => () => parent.Tell(new DiscordGatewayMessage(
             EventId: new DiscordEventId(eventId),
             ChannelId: channelId,
             ReplyChannelId: replyChannelId,
             MessageId: new DiscordMessageId(eventId),
             ThreadOrMessageId: threadId,
             RootMessageId: null,
-            SenderId: new DiscordUserId("USER-DRAIN"),
+            SenderId: new DiscordUserId(senderId),
             IsBotMessage: false,
             IsDirectMessage: false,
             ContainsBotMention: true,
+            Text: text,
+            ReceivedAt: TimeProvider.System.GetUtcNow()), TestActor);
+
+    private Action MattermostMessage(
+        IActorRef parent,
+        MattermostChannelId channelId,
+        MattermostRootPostId rootPostId,
+        string eventId,
+        string text,
+        string senderId = "USER-DRAIN") => () => parent.Tell(new MattermostGatewayMessage(
+            EventId: new MattermostEventId(eventId),
+            ChannelId: channelId,
+            PostId: new MattermostPostId($"post-{eventId}"),
+            RootPostId: rootPostId,
+            SenderId: new MattermostUserId(senderId),
+            IsBotMessage: false,
+            IsDirectMessage: false,
+            ContainsBotMention: false,
             Text: text,
             ReceivedAt: TimeProvider.System.GetUtcNow()), TestActor);
 
@@ -249,6 +317,176 @@ public sealed class SessionBindingDrainRaceTests(ITestOutputHelper output) : Tes
             SourceKind = new SourceKind("test")
         }
     };
+
+    [Fact]
+    public async Task Slack_binding_returns_queued_delivery_before_retire_ready()
+    {
+        var pipeline = new GatedSessionPipeline();
+        var channelId = new SlackChannelId("C-PRE-BARRIER");
+        var threadTs = new SlackThreadTs("2000.1");
+        var sessionId = SessionIdFormat.Build(channelId.Value, threadTs.Value);
+        var replyClient = new RecordingSlackReplyClient();
+        var dependencies = new SlackGatewayDependencies(
+            Pipeline: pipeline,
+            IngressGate: null,
+            ActorSystem: Sys,
+            TimeProvider: TimeProvider.System,
+            Options: new SlackChannelOptions
+            {
+                Enabled = true,
+                MentionOnly = false,
+                AllowedChannelIds = [channelId.Value],
+                BotToken = new SensitiveString("xoxb-test")
+            },
+            BotUserId: new SlackUserId("U-BOT"),
+            DefaultChannelId: null,
+            ChannelRegistry: TestChannelRegistries.SlackWithProcessingRenderer(replyClient),
+            ReplyClient: replyClient,
+            ContentScanner: new NullContentScanner(),
+            ThreadHistoryFetcher: EmptyThreadHistoryFetcher.Instance,
+            AudienceProfiles: TestSlackGatewayDeps.DefaultAudienceProfiles,
+            ModelCapabilities: TestSlackGatewayDeps.DefaultTextOnlyModel,
+            StorageResolver: TestSessionStorageResolver.Instance,
+            PromptInjectionDetector: SafePromptInjectionDetector.Instance);
+        var replyTo = CreateTestProbe("pre-barrier-reply-to");
+        var observer = CreateTestProbe("pre-barrier-parent-events");
+        var initial = new SlackThreadInbound(
+            SessionId: sessionId,
+            ChannelId: channelId,
+            ThreadTs: threadTs,
+            EventId: new SlackEventId("initial-before-retire"),
+            TurnId: new TurnId("initial-turn"),
+            SenderId: new SenderId("USER-PRE-BARRIER"),
+            Audience: TrustAudience.Team,
+            Principal: PrincipalClassification.UntrustedExternal,
+            Provenance: new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Public)
+            {
+                SourceKind = new SourceKind("slack")
+            },
+            Text: "Initial input",
+            ReceivedAt: TimeProvider.System.GetUtcNow());
+        var queued = initial with
+        {
+            EventId = new SlackEventId("queued-before-retire-barrier"),
+            TurnId = new TurnId("queued-turn"),
+            Text = "Must return to the parent"
+        };
+        var bindingProps = SlackThreadBindingActor.CreateProps(sessionId, channelId, threadTs, dependencies);
+        var parent = Sys.ActorOf(Props.Create(() => new RetireBarrierHarnessActor(
+            bindingProps,
+            observer.Ref,
+            queued,
+            replyTo.Ref)));
+
+        try
+        {
+            parent.Tell(StartRealBinding.Instance, TestActor);
+            var binding = await observer.ExpectMsgAsync<RealBindingStarted>(
+                TestTimeout, cancellationToken: TestContext.Current.CancellationToken);
+            var firstInput = await pipeline.FirstInputAsync(0).WaitAsync(
+                TestTimeout, TestContext.Current.CancellationToken);
+            Assert.Equal("initial-before-retire", firstInput.MessageId);
+
+            var outputRef = await pipeline.FirstOutputActor.Task.WaitAsync(
+                TestTimeout, TestContext.Current.CancellationToken);
+            await pipeline.DrainGateReady.Task.WaitAsync(
+                TestTimeout, TestContext.Current.CancellationToken);
+            outputRef.Tell(new SessionDeactivated { SessionId = sessionId });
+
+            await observer.ExpectMsgAsync<RetirementAndBarrierQueued>(
+                TestTimeout, cancellationToken: TestContext.Current.CancellationToken);
+            await pipeline.FirstInputCompleted.Task.WaitAsync(
+                TestTimeout, TestContext.Current.CancellationToken);
+
+            pipeline.ReleaseDrainGate();
+            var returned = await observer.ExpectMsgAsync<DeferredDeliveryObserved>(
+                TestTimeout, cancellationToken: TestContext.Current.CancellationToken);
+            var ready = await observer.ExpectMsgAsync<RetireReadyObserved>(
+                TestTimeout, cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(binding.Binding, returned.Binding);
+            Assert.Same(queued, Assert.IsType<SlackThreadInbound>(returned.Delivery.Message));
+            Assert.Equal(replyTo.Ref, returned.Delivery.ReplyTo);
+            Assert.Equal(binding.Binding, ready.Binding);
+            Assert.DoesNotContain(pipeline.Inputs, input => input.MessageId == "queued-before-retire-barrier");
+            await observer.ExpectMsgAsync<RealBindingStopped>(
+                TestTimeout, cancellationToken: TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            pipeline.ReleaseDrainGate();
+        }
+    }
+
+    private sealed class RetireBarrierHarnessActor : ReceiveActor
+    {
+        private readonly Props _bindingProps;
+        private readonly IActorRef _observer;
+        private readonly SlackThreadInbound _queued;
+        private readonly IActorRef _replyTo;
+        private IActorRef? _binding;
+
+        public RetireBarrierHarnessActor(
+            Props bindingProps,
+            IActorRef observer,
+            SlackThreadInbound queued,
+            IActorRef replyTo)
+        {
+            _bindingProps = bindingProps;
+            _observer = observer;
+            _queued = queued;
+            _replyTo = replyTo;
+
+            Receive<StartRealBinding>(_ =>
+            {
+                var initial = _queued with
+                {
+                    EventId = new SlackEventId("initial-before-retire"),
+                    TurnId = new TurnId("initial-turn"),
+                    Text = "Initial input"
+                };
+                _binding = Context.ActorOf(_bindingProps, "real-binding");
+                Context.Watch(_binding);
+                _observer.Tell(new RealBindingStarted(_binding), Self);
+                _binding.Tell(new SessionBindingDelivery(initial, _replyTo), Self);
+            });
+
+            Receive<SessionBindingRetiring>(_ =>
+            {
+                if (Sender != _binding)
+                    throw new InvalidOperationException("Only the real binding can start retirement.");
+
+                _binding!.Tell(new SessionBindingDelivery(_queued, _replyTo), Self);
+                _binding.Tell(SessionBindingRetireBarrier.Instance, Self);
+                _observer.Tell(RetirementAndBarrierQueued.Instance, Self);
+            });
+
+            Receive<SessionBindingDelivery>(delivery =>
+                _observer.Tell(new DeferredDeliveryObserved(Sender, delivery), Self));
+
+            Receive<SessionBindingRetireReady>(_ =>
+            {
+                _observer.Tell(new RetireReadyObserved(Sender), Self);
+                if (Sender == _binding)
+                    Context.Stop(Sender);
+            });
+
+            Receive<Terminated>(terminated =>
+                _observer.Tell(new RealBindingStopped(terminated.ActorRef), Self));
+        }
+    }
+
+    private sealed record StartRealBinding
+    {
+        public static readonly StartRealBinding Instance = new();
+    }
+    private sealed record RealBindingStarted(IActorRef Binding);
+    private sealed record RetirementAndBarrierQueued
+    {
+        public static readonly RetirementAndBarrierQueued Instance = new();
+    }
+    private sealed record DeferredDeliveryObserved(IActorRef Binding, SessionBindingDelivery Delivery);
+    private sealed record RetireReadyObserved(IActorRef Binding);
+    private sealed record RealBindingStopped(IActorRef Binding);
 
     private sealed class GatedSessionPipeline : ISessionPipeline
     {

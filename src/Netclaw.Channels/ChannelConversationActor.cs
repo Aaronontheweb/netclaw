@@ -66,8 +66,8 @@ public sealed record ChannelRoutingVerdict(
 ///
 /// Slack's conversation actor intentionally does NOT use this base: its
 /// pipeline order differs observably (routing policy before the ingress
-/// gate, thread creation before the empty-text filter) and it has no
-/// truncation, watch, or supervision override — see SPEC-015 §1.3 risk note.
+/// gate, thread creation before the empty-text filter). It has no truncation
+/// or supervision override — see SPEC-015 §1.3 risk note.
 /// </summary>
 /// <typeparam name="TMessage">The channel's normalized inbound gateway message.</typeparam>
 public abstract class ChannelConversationActor<TMessage> : ReceiveActor
@@ -77,6 +77,7 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
     private static readonly TimeSpan PassivationTimeout = TimeSpan.FromHours(2);
 
     private readonly string _channelDisplayName;
+    private readonly SessionBindingRouter _sessionBindings = new();
 
     protected ChannelConversationActor(
         ChannelType channelType,
@@ -106,7 +107,36 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
         });
 
         Receive<TMessage>(HandleGatewayMessage);
-        Receive<Terminated>(msg => Log.Debug("Session binding stopped: {0}", msg.ActorRef.Path.Name));
+        Receive<SessionBindingRetiring>(_ =>
+        {
+            if (!_sessionBindings.HandleRetiring(Context, Sender))
+                Log.Warning("Received retire notice from an untracked session binding {0}", Sender.Path.Name);
+        });
+        Receive<SessionBindingDelivery>(delivery =>
+        {
+            if (!_sessionBindings.HandleDeferred(Sender, delivery))
+                Log.Warning("Received deferred delivery from an untracked session binding {0}", Sender.Path.Name);
+        });
+        Receive<SessionBindingRetireReady>(_ =>
+        {
+            if (!_sessionBindings.HandleReady(Context, Sender))
+                Log.Warning("Received retire-ready from an untracked session binding {0}", Sender.Path.Name);
+        });
+        Receive<Terminated>(msg =>
+        {
+            var droppedCount = _sessionBindings.HandleTerminated(Context, msg.ActorRef);
+            if (droppedCount is null)
+            {
+                Log.Debug("Session binding stopped: {0}", msg.ActorRef.Path.Name);
+            }
+            else if (droppedCount > 0)
+            {
+                Log.Error(
+                    "Session binding {0} stopped before its retire barrier; dropped {1} routed deliveries",
+                    msg.ActorRef.Path.Name,
+                    droppedCount.Value);
+            }
+        });
     }
 
     /// <summary>Conversation log adapter tagged with the channel's <c>Adapter</c> and channel-id contexts.</summary>
@@ -164,8 +194,7 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
         // --- Routing policy ---
         var threadKey = ThreadKeyOf(message);
         var actorName = BindingActorName(ChannelIdValue, threadKey);
-        var existingBinding = Context.Child(actorName);
-        var threadExists = !existingBinding.IsNobody();
+        var threadExists = _sessionBindings.HasBinding(Context, actorName);
 
         var verdict = EvaluateRouting(message, threadExists);
 
@@ -204,9 +233,6 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
 
         // --- Build session and forward ---
         var sessionId = BuildSessionId(threadKey);
-        var sessionBinding = threadExists
-            ? existingBinding
-            : GetOrCreateSessionBinding(ChannelIdValue, threadKey, () => CreateSessionBindingProps(sessionId, message));
 
         var turnId = string.IsNullOrWhiteSpace(eventId)
             ? IdGen.ShortId()
@@ -223,7 +249,12 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
             normalizedText.Length);
 
         Telemetry.RecordEventRouted("message");
-        sessionBinding.Forward(CreateThreadInbound(sessionId, message, aclDecision, normalizedText));
+        RouteToSessionBinding(
+            ChannelIdValue,
+            threadKey,
+            () => CreateSessionBindingProps(sessionId, message),
+            CreateThreadInbound(sessionId, message, aclDecision, normalizedText),
+            Sender);
     }
 
     /// <summary>Builds the deterministic session id (<c>{channelId}/{threadKey}</c>) for a thread key.</summary>
@@ -240,16 +271,15 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
         string channelValue,
         string threadKey,
         Func<Props> propsFactory)
-    {
-        var actorName = BindingActorName(channelValue, threadKey);
-        var existing = Context.Child(actorName);
-        if (!existing.IsNobody())
-            return existing;
+        => _sessionBindings.GetOrCreate(Context, BindingActorName(channelValue, threadKey), propsFactory);
 
-        var child = Context.ActorOf(propsFactory(), actorName);
-        Context.Watch(child);
-        return child;
-    }
+    protected void RouteToSessionBinding(
+        string channelValue,
+        string threadKey,
+        Func<Props> propsFactory,
+        object message,
+        IActorRef replyTo)
+        => _sessionBindings.Route(Context, BindingActorName(channelValue, threadKey), propsFactory, message, replyTo);
 
     /// <summary>
     /// Warns and nacks a <see cref="DeliverTrustedSessionTurn"/> whose session id

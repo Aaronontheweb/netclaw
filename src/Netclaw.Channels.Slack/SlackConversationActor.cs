@@ -18,6 +18,7 @@ public sealed class SlackConversationActor : ReceiveActor
     private readonly SlackChannelId _conversationId;
     private readonly SlackGatewayDependencies _dependencies;
     private readonly ILoggingAdapter _log;
+    private readonly SessionBindingRouter _sessionBindings = new();
 
     public SlackConversationActor(SlackChannelId conversationId, SlackGatewayDependencies dependencies)
     {
@@ -38,6 +39,37 @@ public sealed class SlackConversationActor : ReceiveActor
 
             _log.Info("Conversation idle for 2 hours, passivating");
             Context.Stop(Self);
+        });
+
+        Receive<SessionBindingRetiring>(_ =>
+        {
+            if (!_sessionBindings.HandleRetiring(Context, Sender))
+                _log.Warning("Received retire notice from an untracked Slack binding {0}", Sender.Path.Name);
+        });
+        Receive<SessionBindingDelivery>(delivery =>
+        {
+            if (!_sessionBindings.HandleDeferred(Sender, delivery))
+                _log.Warning("Received deferred delivery from an untracked Slack binding {0}", Sender.Path.Name);
+        });
+        Receive<SessionBindingRetireReady>(_ =>
+        {
+            if (!_sessionBindings.HandleReady(Context, Sender))
+                _log.Warning("Received retire-ready from an untracked Slack binding {0}", Sender.Path.Name);
+        });
+        Receive<Terminated>(msg =>
+        {
+            var droppedCount = _sessionBindings.HandleTerminated(Context, msg.ActorRef);
+            if (droppedCount is null)
+            {
+                _log.Debug("Slack thread binding stopped: {0}", msg.ActorRef.Path.Name);
+            }
+            else if (droppedCount > 0)
+            {
+                _log.Error(
+                    "Slack thread binding {0} stopped before its retire barrier; dropped {1} routed deliveries",
+                    msg.ActorRef.Path.Name,
+                    droppedCount.Value);
+            }
         });
 
         Receive<SlackInboundMessage>(message =>
@@ -64,8 +96,7 @@ public sealed class SlackConversationActor : ReceiveActor
             var containsMention = ContainsBotMention(message.Text);
             var threadTs = message.ThreadTs ?? SlackThreadTs.FromEventTs(message.EventTs);
             var threadActorName = Uri.EscapeDataString(threadTs.Value);
-            var existingThread = Context.Child(threadActorName);
-            var threadExists = !existingThread.IsNobody();
+            var threadExists = _sessionBindings.HasBinding(Context, threadActorName);
 
             var decision = SlackRoutingPolicy.Evaluate(
                 message,
@@ -106,9 +137,10 @@ public sealed class SlackConversationActor : ReceiveActor
                 return;
             }
 
-            var thread = existingThread.IsNobody()
-                ? Context.ActorOf(CreateThreadProps(message.ChannelId, threadTs), threadActorName)
-                : existingThread;
+            _sessionBindings.GetOrCreate(
+                Context,
+                threadActorName,
+                () => CreateThreadProps(message.ChannelId, threadTs));
 
             var normalized = NormalizeInboundText(message.Text);
             if (string.IsNullOrWhiteSpace(normalized) && message.Files is not { Count: > 0 })
@@ -133,7 +165,9 @@ public sealed class SlackConversationActor : ReceiveActor
                 message.Files is { Count: > 0 },
                 normalized.Length);
 
-            thread.Forward(new SlackThreadInbound(
+            _sessionBindings.Route(Context, threadActorName,
+                () => CreateThreadProps(message.ChannelId, threadTs),
+                new SlackThreadInbound(
                 SessionId: sessionId,
                 ChannelId: message.ChannelId,
                 ThreadTs: threadTs,
@@ -145,7 +179,8 @@ public sealed class SlackConversationActor : ReceiveActor
                 Provenance: aclDecision.Provenance,
                 Text: normalized,
                 ReceivedAt: _dependencies.TimeProvider.GetUtcNow(),
-                Files: message.Files));
+                Files: message.Files),
+                Sender);
         });
 
         Receive<StartProactiveThread>(message =>
@@ -177,14 +212,13 @@ public sealed class SlackConversationActor : ReceiveActor
             }
 
             var threadActorName = Uri.EscapeDataString(message.ThreadTs.Value);
-            var existingThread = Context.Child(threadActorName);
-
-            var thread = existingThread.IsNobody()
-                ? Context.ActorOf(CreateThreadProps(message.ChannelId, message.ThreadTs), threadActorName)
-                : existingThread;
-
             _log.Debug("Routing proactive thread setup to thread actor {0}", message.ThreadTs);
-            thread.Forward(message);
+            _sessionBindings.Route(
+                Context,
+                threadActorName,
+                () => CreateThreadProps(message.ChannelId, message.ThreadTs),
+                message,
+                Sender);
         });
 
         Receive<SlackApprovalResponse>(message =>
@@ -195,12 +229,12 @@ public sealed class SlackConversationActor : ReceiveActor
             // binding then forwards to the session actor, which is the authority on pending
             // calls. See issue #979 for the production passivation incident.
             var threadActorName = Uri.EscapeDataString(message.ThreadTs.Value);
-            var thread = Context.Child(threadActorName)
-                .GetOrElse(() => Context.ActorOf(
-                    CreateThreadProps(message.ChannelId, message.ThreadTs),
-                    threadActorName));
-
-            thread.Forward(message);
+            _sessionBindings.Route(
+                Context,
+                threadActorName,
+                () => CreateThreadProps(message.ChannelId, message.ThreadTs),
+                message,
+                Sender);
         });
 
         // No ACL call — audience was validated at reminder mint time.
@@ -217,15 +251,15 @@ public sealed class SlackConversationActor : ReceiveActor
             }
 
             var threadActorName = Uri.EscapeDataString(threadTs.Value);
-            var existingThread = Context.Child(threadActorName);
-            var thread = existingThread.IsNobody()
-                ? Context.ActorOf(CreateThreadProps(_conversationId, threadTs), threadActorName)
-                : existingThread;
-
             _log.Debug(
                 "Routing DeliverTrustedSessionTurn to thread binding session={Session} thread={Thread}",
                 message.SessionId.Value, threadTs.Value);
-            thread.Forward(message);
+            _sessionBindings.Route(
+                Context,
+                threadActorName,
+                () => CreateThreadProps(_conversationId, threadTs),
+                message,
+                Sender);
         });
     }
 
