@@ -2,48 +2,29 @@
 
 ### Requirement: Idle passivation proceeds with pending approvals
 
-**Reason**: The old requirement also made live subscribers block idle passivation.
-The session now uses its phase and active-work state.
+**Reason**: The old requirement combined approval recovery with idle-passivation eligibility and made live CLI and TUI subscribers block passivation. The session-state-machine capability now owns eligibility.
 
-**Migration**: Keep the existing approval journal and response route. An
-outstanding approval alone still permits idle passivation.
+**Migration**: Keep approval recovery in `Approval responses resume after idle passivation`. Use the session-state-machine rules for idle eligibility.
 
 ## ADDED Requirements
 
-### Requirement: Pending approvals remain recoverable after passivation
+### Requirement: Approval responses resume after idle passivation
 
-A session SHALL NOT defer idle passivation because tool approval prompts are outstanding. Pending approval state is journaled (`ToolApprovalRequested` / `ToolApprovalResolved`), and an approval response SHALL rehydrate a passivated session and resume the original turn. A live subscriber SHALL NOT defer idle passivation by itself. The session SHALL preserve the current resolved-approval abandonment behavior for a parked tool batch whose approval was granted but whose tool result never completed. An approval prompt must reach its channel while active work and the binding keep the session available; a click on a prompt that already reached the user can rehydrate the session after passivation.
+When a session with a journaled approval passivates after its active work ends, an approval response SHALL rehydrate the session and resume the original tool batch. This recovery SHALL preserve the existing requester and restored-approval checks. The session-state-machine capability defines whether idle passivation can start. Resolved approvals without a completed tool result SHALL keep the existing abandonment behavior.
 
-#### Scenario: Session passivates with an approval prompt outstanding
+#### Scenario: Approval response resumes the passivated turn
 
-- **GIVEN** a session is idle past its idle timeout
-- **AND** a tool approval prompt is outstanding
-- **WHEN** the idle timeout fires
-- **THEN** the session passivates normally
-- **AND** the pending approval remains recoverable from the journal
-
-#### Scenario: Approval click after passivation resumes the turn
-
-- **GIVEN** a session passivated with an approval prompt outstanding
-- **WHEN** the user responds to the approval prompt
+- **GIVEN** a session has a journaled approval and no active work when idle passivation starts
+- **WHEN** the user responds to the approval prompt after passivation
 - **THEN** the session rehydrates from the journal
-- **AND** re-drives the parked tool batch under the restored-approval requirements
+- **AND** it re-drives the parked tool batch under the restored-approval requirements
 
-#### Scenario: Active work defers passivation
+#### Scenario: Recovery closes an approved call without a tool result
 
-- **GIVEN** a session is idle past its idle timeout
-- **AND** a live CLI, TUI, or channel subscriber is attached
-- **AND** active background work remains
-- **WHEN** the idle timeout fires
-- **THEN** active work defers passivation
-
-#### Scenario: A live subscriber does not defer passivation
-
-- **GIVEN** a session is idle past its idle timeout
-- **AND** a live CLI, TUI, or channel subscriber is attached
-- **AND** no active work remains
-- **WHEN** the idle timeout fires
-- **THEN** the session passivates normally
-- **AND** a later input can rehydrate the session and attach a new subscriber
+- **GIVEN** recovery finds a granted approval without a journaled tool result
+- **WHEN** the session returns to `Ready`
+- **THEN** the session persists a `ToolBatchAbandoned` event with a synthetic tool result
+- **AND** clears the approval state
+- **AND** does not execute the approved tool again
 
 Use the [engineering glossary](../../../../../docs/spec/GLOSSARY.md) for shared terms.

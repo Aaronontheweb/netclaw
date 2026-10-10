@@ -9,12 +9,11 @@
 - [x] 2.1 Remove independent idle stops from Slack, Discord, and Mattermost bindings.
 - [x] 2.2 Keep each binding's session output subscription until committed `SessionDeactivated`; drain its pipeline and then stop.
 - [x] 2.3 Keep conversation parents alive while binding children exist. Verify each parent stops after its last binding child terminates.
-- [x] 2.4 Verify the Slack and Discord lifecycle tests and the three approval-recovery tests pass. Do not claim Mattermost lifecycle proof.
+- [x] 2.4 Verify the Slack and Discord lifecycle tests and the three approval-recovery tests pass. Record that Mattermost has no lifecycle test.
 
 ## 3. Contract reconciliation and validation
 
 - [ ] 3.1 Update the old-contract tests for active-job reaping, subscriber veto, and the one-hour default.
-- [ ] 3.2 Reconcile the main OpenSpec capabilities and the mapped operational skill with this lifetime behavior.
-- [ ] 3.3 Run strict OpenSpec validation, required repository checks, and the full test feed.
-
-Input replay during pipeline drain, parent retirement barriers, and delivery guarantees remain out of scope.
+- [x] 3.2 Sync the four affected main OpenSpec capabilities with this change.
+- [ ] 3.3 Update the mapped operational skill to describe the session-owned channel lifetime.
+- [ ] 3.4 Run the full test feed and required repository checks.

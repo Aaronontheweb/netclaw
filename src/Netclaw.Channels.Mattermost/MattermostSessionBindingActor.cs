@@ -47,7 +47,6 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
     private readonly IPromptInjectionDetector _promptInjectionDetector;
     private readonly SessionPipelineHandle _handle;
     private readonly ILoggingAdapter _log;
-    private bool _sessionDeactivationStarted;
 
     // Null when the gateway supplies no thread-history fetcher. That is a real
     // runtime state (an instance without history access), not a disabled check:
@@ -309,7 +308,7 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
         Command<OutputStreamTerminated>(msg =>
         {
-            if (_sessionDeactivationStarted || msg.Generation != _handle.Generation)
+            if (msg.Generation != _handle.Generation)
                 return;
 
             var reason = msg.Cause is null
@@ -322,9 +321,6 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
         CommandAsync<ReinitializePipeline>(async msg =>
         {
-            if (_sessionDeactivationStarted)
-                return;
-
             // The binding abandons its record of the turn in flight, and the
             // new subscription does not replay the processing state. Stop the
             // pulses here so a lost ProcessingStateOutput(false) cannot leave
@@ -342,10 +338,6 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
     private async Task HandleSessionDeactivatedAsync()
     {
-        if (_sessionDeactivationStarted)
-            return;
-
-        _sessionDeactivationStarted = true;
         StopTypingPulses();
         await _handle.DrainAsync();
         Context.Stop(Self);

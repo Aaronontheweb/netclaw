@@ -2,9 +2,7 @@
 
 ### Requirement: Channel binding lifetime follows session lifetime
 
-Slack, Discord, and Mattermost bindings SHALL keep their session output subscription while the session remains active. A binding SHALL NOT stop on an independent idle timeout. After a binding receives committed `SessionDeactivated`, it SHALL drain its session pipeline and stop. A conversation parent SHALL NOT have an independent idle timeout. It SHALL remain active while a binding child remains and stop after its last binding child terminates.
-
-This requirement does not add input buffering, replay, or a guarantee for input that arrives during pipeline drain. Existing ingress routing and authorization remain unchanged.
+Slack, Discord, and Mattermost bindings SHALL keep their session output subscription while the session remains active. A binding SHALL NOT stop on an independent idle timeout. After a binding receives committed `SessionDeactivated`, it SHALL drain its session pipeline and stop. A conversation parent SHALL NOT have an independent idle timeout. It SHALL stay active while any binding child remains and stop after its last binding child terminates.
 
 #### Scenario: Binding stays active while its session remains active
 
@@ -20,17 +18,17 @@ This requirement does not add input buffering, replay, or a guarantee for input 
 - **THEN** the binding stops
 - **AND** it does not restart its pipeline for that deactivation
 
-#### Scenario: Conversation parent stays alive while a binding exists
+#### Scenario: Parent stays active while another binding child remains
 
-- **GIVEN** a conversation parent has a live channel binding child
-- **WHEN** the former parent idle period elapses
+- **GIVEN** a conversation parent has two binding children
+- **WHEN** one child terminates after session deactivation
 - **THEN** the parent remains active
-- **AND** it does not stop the binding
+- **AND** it keeps the other child
 
-#### Scenario: Conversation parent stops after its last binding child
+#### Scenario: Parent stops after its last binding child
 
-- **GIVEN** all binding children have terminated after session deactivation
-- **WHEN** the parent handles the last child's termination
+- **GIVEN** a conversation parent has one binding child
+- **WHEN** that child terminates after session deactivation
 - **THEN** the parent stops
 
 Use the [engineering glossary](../../../../../docs/spec/GLOSSARY.md) for shared terms.

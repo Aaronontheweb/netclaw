@@ -48,7 +48,6 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     private readonly IPromptInjectionDetector _promptInjectionDetector;
     private readonly SessionPipelineHandle _handle;
     private readonly ILoggingAdapter _log;
-    private bool _sessionDeactivationStarted;
 
     // Null when the gateway supplies no thread-history fetcher. That is a real
     // runtime state (an instance without history access), not a disabled check:
@@ -280,7 +279,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
 
         Command<OutputStreamTerminated>(msg =>
         {
-            if (_sessionDeactivationStarted || msg.Generation != _handle.Generation)
+            if (msg.Generation != _handle.Generation)
                 return;
 
             var reason = msg.Cause is null
@@ -293,9 +292,6 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
 
         CommandAsync<ReinitializePipeline>(async msg =>
         {
-            if (_sessionDeactivationStarted)
-                return;
-
             _outputEngine.ResetForPipelineReinitialize(msg.Reason);
             await _handle.ReinitializeAsync(
                 msg.Reason,
@@ -308,10 +304,6 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
 
     private async Task HandleSessionDeactivatedAsync()
     {
-        if (_sessionDeactivationStarted)
-            return;
-
-        _sessionDeactivationStarted = true;
         await _handle.DrainAsync();
         Context.Stop(Self);
     }

@@ -2,46 +2,32 @@
 
 ### Requirement: Passivating behavior
 
-**Reason**: The old requirement made subscriber presence control idle passivation.
-The session now uses its phase and active-work state.
+**Reason**: The old requirement made subscriber count control idle passivation. The session now uses active-work state. Channel bindings stop only after committed session deactivation.
 
-**Migration**: Keep the existing passivation sequence and idle timer. Apply the
-new active-work eligibility rule and emit deactivation only after the session
-commits to stop.
+**Migration**: Use `Idle passivation follows active work` for idle eligibility. Keep the existing passivation sequence and abort window.
 
 ## ADDED Requirements
 
 ### Requirement: Idle passivation follows active work
 
-The session actor SHALL enter `Passivating` when the existing idle timeout fires, the phase is `Ready`, and the actor-local active-work check returns false. The default idle timeout SHALL be one hour. Subscriber count and journaled approval state SHALL NOT change idle-passivation eligibility. Active-work rules are defined by the `background-job-execution` capability. In `Passivating`, the actor SHALL request final memory distillation from the observer actor, if present, wait up to 5 seconds, save a snapshot, notify the lifecycle observer, and stop itself. Idle-driven passivation SHALL include a short post-snapshot grace window where racing input can abort the stop and return the actor to `Ready`. The actor SHALL emit the session-deactivation output only after it commits to stop; it SHALL NOT emit that output when passivation can still abort.
+The session actor SHALL enter `Passivating` when its idle timeout fires in phase `Ready` and its active-work check returns false. The default idle timeout SHALL be one hour. Subscriber count and journaled approval state SHALL NOT change idle eligibility. The `background-job-execution` capability defines the active-job check. In `Passivating`, the actor SHALL request final memory distillation from the observer actor, if present, wait up to five seconds, save a snapshot, notify the lifecycle observer, and stop itself. Idle passivation SHALL retain the post-snapshot grace window. The actor SHALL emit `SessionDeactivated` only when it commits to stop.
 
-#### Scenario: Idle timeout triggers passivation when no work remains
+#### Scenario: Session passivates with no active work and a live subscriber
 
-- **GIVEN** the session actor is in phase `Ready` with no subscribers and no active work
-- **AND** the session uses the default idle timeout
-- **WHEN** one hour of idle time elapses
-- **THEN** the actor enters `Passivating`
-- **AND** it requests final memory distillation from the observer actor, if present
-
-#### Scenario: Active work defers idle passivation
-
-- **GIVEN** the session actor is in phase `Ready` with subscribers and active work
-- **WHEN** the idle timeout fires
-- **THEN** the actor remains in phase `Ready` because active work remains
-- **AND** it does not emit the session-deactivation output
-
-#### Scenario: Subscriber presence does not defer idle passivation
-
-- **GIVEN** the session actor is in phase `Ready` with subscribers and no active work
+- **GIVEN** the session is in phase `Ready`
+- **AND** a live channel subscriber is attached
+- **AND** a journaled approval is outstanding
+- **AND** no active work remains
 - **WHEN** the one-hour idle timeout fires
-- **THEN** the actor enters `Passivating`
+- **THEN** the session enters `Passivating`
+- **AND** it requests final memory distillation from the observer, if present
 
-#### Scenario: Shell or foreground work prevents deactivation
+#### Scenario: Processing phase disables the idle timeout
 
-- **GIVEN** the session is in phase `Ready` with active background work
-- **WHEN** the idle timeout fires
-- **THEN** the actor remains in phase `Ready`
-- **AND** it does not emit the session-deactivation output
+- **GIVEN** the session is processing a foreground turn
+- **WHEN** the idle period would elapse while the foreground turn remains active
+- **THEN** the session remains in `Processing`
+- **AND** it does not emit `SessionDeactivated`
 
 #### Scenario: Passivation completes after distillation
 
@@ -49,39 +35,32 @@ The session actor SHALL enter `Passivating` when the existing idle timeout fires
 - **WHEN** `SessionDistillationCompleted` arrives from the observer
 - **THEN** the actor saves a snapshot
 - **AND** notifies the lifecycle observer of deactivation
-- **AND** emits the session-deactivation output once
+- **AND** emits `SessionDeactivated` once
 - **AND** stops itself
 
 #### Scenario: Passivation completes on timeout
 
 - **GIVEN** the session is in phase `Passivating`
-- **WHEN** 5 seconds elapse without `SessionDistillationCompleted`
+- **WHEN** five seconds elapse without `SessionDistillationCompleted`
 - **THEN** the actor saves a snapshot and stops itself
 - **AND** it does not wait indefinitely for the observer
-- **AND** it emits the session-deactivation output once
+- **AND** it emits `SessionDeactivated` once
 
-#### Scenario: Passivation without observer actor
+#### Scenario: Passivation without an observer actor
 
 - **GIVEN** the session has no observer actor
-- **AND** the session is idle and has no active work
+- **AND** no active work remains
 - **WHEN** the idle timeout fires
 - **THEN** the actor saves a snapshot and stops itself
 - **AND** it does not request final distillation
-- **AND** it emits the session-deactivation output once
+- **AND** it emits `SessionDeactivated` once
 
-#### Scenario: Racing input aborts passivation before commit
+#### Scenario: User input aborts passivation before commit
 
-- **GIVEN** the session is in `Passivating` during the post-snapshot grace window
-- **WHEN** a racing input aborts the stop
+- **GIVEN** the session is in the post-snapshot grace window
+- **WHEN** the session receives `SendUserMessage` during the idle grace window
 - **THEN** the actor returns to `Ready`
-- **AND** it does not emit the session-deactivation output
-
-#### Scenario: Messages buffered during passivation
-
-- **GIVEN** the session actor is in phase `Passivating` during its grace window
-- **WHEN** a `SendUserMessage` arrives
-- **THEN** idle passivation is aborted
-- **AND** the actor transitions to `Ready`
+- **AND** it does not emit `SessionDeactivated`
 - **AND** it handles the message
 
 Use the [engineering glossary](../../../../../docs/spec/GLOSSARY.md) for shared terms.

@@ -13,8 +13,6 @@ This change supports PRD-001 FR-001, FR-002, and FR-003, and PRD-009.
 - Keep Slack, Discord, and Mattermost bindings alive until session deactivation. Each binding drains its pipeline and then stops.
 - Remove the conversation parent's independent idle timeout. Stop it after its last binding child terminates.
 
-This change adds no route, replay protocol, timer, or crash-delivery guarantee. Input that arrives during pipeline drain has no new delivery guarantee.
-
 ## Capabilities
 
 ### New Capabilities
@@ -34,10 +32,8 @@ The change affects session passivation and channel actor lifetime. It preserves 
 
 ### Security impact
 
-The change does not move ingress checks or authorization decisions. It adds no input replay path.
+The change does not move ingress checks or authorization decisions.
 
 ### Operational impact
 
 An active binding remains attached until its session commits to stop. An idle session can passivate with a journaled approval. A later approval response can rehydrate it through the current route.
-
-PR #2429 contains the session-owned lifecycle prototype. The focused Slack and Discord passivation tests passed. Wider test results and old-contract expectations remain tracked in the design and tasks.

@@ -199,42 +199,31 @@ Use the [engineering glossary](../../../docs/spec/GLOSSARY.md) for shared terms.
 - **AND** its original button or text response resumes the recovered turn
 - **AND** a duplicate response does not execute the tool again
 
-### Requirement: Idle passivation proceeds with pending approvals
+### Requirement: Approval responses resume after idle passivation
 
-A session SHALL NOT defer idle passivation because tool approval prompts are
-outstanding. Pending approval state is journaled (`ToolApprovalRequested` /
-`ToolApprovalResolved`) and the approval response path already rehydrates a
-passivated session and resumes the original turn, so keeping the session in
-memory while a human decides adds no correctness — only resident memory.
-Active live subscribers (CLI/TUI connections) SHALL continue to defer
-passivation, because subscriber connections are ephemeral and cannot survive
-actor stop. The existing resolved-approval abandonment behavior (a parked tool
-batch whose approval was granted but whose tool result never completed) SHALL
-be preserved.
+When a session with a journaled approval passivates after its active work ends,
+an approval response SHALL rehydrate the session and resume the original tool
+batch. This recovery SHALL preserve the existing requester and restored-approval
+checks. The session-state-machine capability defines whether idle passivation can
+start.
 
-#### Scenario: Session passivates with an approval prompt outstanding
+#### Scenario: Approval response resumes the passivated turn
 
-- **GIVEN** a session is idle past its idle timeout
-- **AND** a tool approval prompt is outstanding
-- **AND** no live subscribers are attached
-- **WHEN** the receive timeout fires
-- **THEN** the session passivates normally
-- **AND** the pending approval remains recoverable from the journal
-
-#### Scenario: Approval click after passivation resumes the turn
-
-- **GIVEN** a session passivated with an approval prompt outstanding
-- **WHEN** the user responds to the approval prompt
+- **GIVEN** a session has a journaled approval and no active work when idle
+  passivation starts
+- **WHEN** the user responds to the approval prompt after passivation
 - **THEN** the session rehydrates from the journal
-- **AND** re-drives the parked tool batch per the existing restored-approval
+- **AND** it re-drives the parked tool batch under the restored-approval
   requirements
 
-#### Scenario: Live subscribers still defer passivation
+#### Scenario: Recovery closes an approved call without a tool result
 
-- **GIVEN** a session is idle past its idle timeout
-- **AND** a live CLI or TUI subscriber is attached
-- **WHEN** the receive timeout fires
-- **THEN** passivation is deferred while the subscriber remains attached
+- **GIVEN** recovery finds a granted approval without a journaled tool result
+- **WHEN** the session returns to `Ready`
+- **THEN** the session persists a `ToolBatchAbandoned` event with a synthetic
+  tool result
+- **AND** clears the approval state
+- **AND** does not execute the approved tool again
 
 ### Requirement: Accepted input survives a graceful stop
 

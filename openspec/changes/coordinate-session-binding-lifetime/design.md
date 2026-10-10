@@ -2,8 +2,6 @@
 
 See [proposal.md](proposal.md). PRD-001 FR-001, FR-002, and FR-003 require stable thread identity, output delivery, and recovery. PRD-009 requires adapters to route through the session boundary. The [engineering glossary](../../../docs/spec/GLOSSARY.md) defines shared terms.
 
-PR #2429 contains the session-owned lifecycle prototype. The latest Actors.Tests run reports 5,709 passed, 4 failed, and 40 skipped. Both Slack and Discord lifecycle tests passed. Three approval-recovery tests passed. The four failures match old-policy expectations. The full solution did not run after this scope correction. The input-during-drain race protocol and its tests remain out of scope. No Mattermost lifecycle test passed in this run.
-
 ## Goals / Non-Goals
 
 **Goals:**
@@ -15,10 +13,7 @@ PR #2429 contains the session-owned lifecycle prototype. The latest Actors.Tests
 
 **Non-Goals:**
 
-- Add a gateway output route, parent delivery queue, replay protocol, or admission acknowledgement.
-- Guarantee delivery after actor or process failure.
 - Change approval passivation or response behavior.
-- Guarantee input admission while a binding drains its local pipeline.
 
 ## Decisions
 
@@ -32,7 +27,7 @@ Subscriber count does not block idle passivation. The session emits deactivation
 
 Slack, Discord, and Mattermost bindings keep their direct session output subscription while the session is active. They have no independent idle stop. When a binding receives committed `SessionDeactivated`, it drains its pipeline and stops itself. The conversation parent stops after its last binding child terminates. It has no independent idle timer.
 
-This change does not add a parent queue or a replay path. Input that reaches a binding during drain has no new preservation guarantee. This limitation is separate from session journal admission and crash recovery.
+During deactivation, pipeline drain does not prove that input in the binding's local queue reached session admission. That input may not survive session stop.
 
 ```mermaid
 sequenceDiagram
@@ -47,22 +42,9 @@ sequenceDiagram
     P->>P: Stop when no binding children remain
 ```
 
-The diagram shows actor lifetime only. It does not define input delivery during drain.
-
-### Conversation parent lifetime
-
-The conversation parent has no independent idle timer. It stays active while any binding child remains. It stops after the last binding child terminates.
-
 ### Approval recovery
 
 Keep current approval behavior. A pending journaled approval does not block idle passivation. The current gateway and conversation route can rehydrate the session when the user responds to a prompt that already reached the channel. A prompt that has not reached the channel depends on the active session and binding path.
-
-## Risks / Trade-offs
-
-- [A session commits to stop while a binding has local pipeline input] → This change adds no admission acknowledgement or replay. Keep this race outside the lifetime contract.
-- [A process fails before session deactivation reaches the binding] → Keep crash delivery outside this change.
-- [A pending approval exists when the session becomes idle] → Preserve journaled recovery and the current response route.
-- [A conversation parent stops before its binding] → Stop the parent only after its last binding child terminates.
 
 ## Migration Plan
 
@@ -70,6 +52,6 @@ Keep current approval behavior. A pending journaled approval does not block idle
 2. Remove independent idle stops from Slack, Discord, and Mattermost bindings.
 3. Stop each binding after it drains on committed session deactivation.
 4. Keep each conversation parent alive while it has binding children. Stop it after the last child terminates.
-5. Verify lifecycle behavior and approval recovery. Do not add drain replay tests in this change.
+5. Verify lifecycle behavior and approval recovery.
 
 Rollback restores independent binding idle stops and the prior session eligibility policy. It does not require a persisted data migration.
