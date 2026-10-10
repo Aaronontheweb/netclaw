@@ -2,7 +2,7 @@
 
 - [x] 1.1 Keep the existing session idle timer, set its default to one hour, and defer idle passivation for active work.
 - [x] 1.2 Keep subscriber count out of idle eligibility and preserve journaled approval recovery.
-- [ ] 1.3 Verify active shell-job state blocks passivation, reaped records do not, and `Processing` still disables the idle timeout.
+- [x] 1.3 Verify active shell-job state blocks passivation, reaped records do not, and `Processing` still disables the idle timeout.
 
 ## 2. Channel binding lifetime
 
@@ -13,7 +13,7 @@
 
 ## 3. Contract reconciliation and validation
 
-- [ ] 3.1 Update the old-contract tests for active-job reaping, subscriber veto, and the one-hour default.
+- [x] 3.1 Update the old-contract tests for active-job reaping, subscriber veto, and the one-hour default.
 - [x] 3.2 Sync the four affected main OpenSpec capabilities with this change.
 - [ ] 3.3 Update the mapped operational skill to describe the session-owned channel lifetime.
-- [ ] 3.4 Run the full test feed and required repository checks.
+- [x] 3.4 Run the full test feed and required repository checks.
