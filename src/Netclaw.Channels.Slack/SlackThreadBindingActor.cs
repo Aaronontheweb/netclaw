@@ -174,8 +174,6 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
         Recover<RecoveryCompleted>(_ => Self.Tell(PerformHydration.Instance));
 
         Initializing();
-
-        Context.SetReceiveTimeout(TimeSpan.FromHours(1));
     }
 
     public static Props CreateProps(
@@ -268,21 +266,12 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
             Self.Tell(new ReinitializePipeline(reason));
         });
         CommandAsync<ReinitializePipeline>(async msg => await ReinitializePipelineAsync(msg.Reason));
-        Command<ReceiveTimeout>(_ =>
-        {
-            if (_pendingApprovalRequests.Count > 0)
-            {
-                _log.Info("Thread idle but {0} approval(s) are pending; deferring passivation", _pendingApprovalRequests.Count);
-                return;
-            }
+    }
 
-            _log.Info("Thread idle for 1 hour, passivating");
-            RunTask(async () =>
-            {
-                await _handle.DrainAsync();
-                Context.Stop(Self);
-            });
-        });
+    private async Task HandleSessionDeactivatedAsync()
+    {
+        await _handle.DrainAsync();
+        Context.Stop(Self);
     }
 
     private async Task HandleProactiveThreadAsync(StartProactiveThread message)
@@ -782,6 +771,12 @@ internal sealed class SlackThreadBindingActor : ReceivePersistentActor, IWithTim
 
     private async Task HandleOutputAsync(ThreadOutput threadOutput)
     {
+        if (threadOutput.Output is SessionDeactivated)
+        {
+            await HandleSessionDeactivatedAsync();
+            return;
+        }
+
         var clearedPrompts = await _outputEngine.HandleOutputAsync(threadOutput.Output);
         if (clearedPrompts.Count > 0)
             PersistAll(clearedPrompts, ApplyPendingApprovalPromptCleared);

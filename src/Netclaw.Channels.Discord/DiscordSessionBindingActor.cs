@@ -61,7 +61,6 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     private static readonly TimeSpan PipelineInitTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ReinitializeDelay = TimeSpan.FromSeconds(2);
     private static readonly object ReinitializeTimerKey = new();
-    private static readonly TimeSpan IdlePassivationTimeout = TimeSpan.FromHours(1);
     private string? _lastSetThreadName;
     // Snowflake cursors in canonical decimal string form, which is also the
     // persisted CursorAdvanced form. NormalizeSnowflake produces every value,
@@ -301,24 +300,12 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                     new ReinitializePipeline("retry after failed reinit"),
                     ReinitializeDelay));
         });
+    }
 
-        Command<ReceiveTimeout>(_ =>
-        {
-            if (_pendingApprovalRequests.Count > 0)
-            {
-                _log.Info("Session idle but {0} approval(s) pending; deferring passivation", _pendingApprovalRequests.Count);
-                return;
-            }
-
-            _log.Info("Session idle for 1 hour, passivating");
-            RunTask(async () =>
-            {
-                await _handle.DrainAsync();
-                Context.Stop(Self);
-            });
-        });
-
-        Context.SetReceiveTimeout(IdlePassivationTimeout);
+    private async Task HandleSessionDeactivatedAsync()
+    {
+        await _handle.DrainAsync();
+        Context.Stop(Self);
     }
 
     /// <summary>
@@ -633,6 +620,12 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
 
     private async Task HandleOutputReceivedAsync(OutputReceived msg)
     {
+        if (msg.Output is SessionDeactivated)
+        {
+            await HandleSessionDeactivatedAsync();
+            return;
+        }
+
         var clearedPrompts = await _outputEngine.HandleOutputAsync(msg.Output);
         if (clearedPrompts.Count > 0)
             PersistAll(clearedPrompts, ApplyPendingApprovalPromptCleared);

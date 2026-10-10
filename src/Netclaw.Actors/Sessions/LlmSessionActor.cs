@@ -440,11 +440,10 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
 
         Command<ReceiveTimeout>(_ =>
         {
-            if (_subscribers.Count > 0)
+            if (HasLiveBackgroundJobs)
             {
                 _log.Info(
-                    "Session idle but {SubscriberCount} subscriber(s) active; deferring passivation",
-                    _subscribers.Count);
+                    "Session idle but active background jobs remain; deferring passivation");
                 return;
             }
 
@@ -1498,10 +1497,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         // Disable idle timeout — we're shutting down
         Context.SetReceiveTimeout(null);
 
-        // Reap-on-passivation: a background job is session-scoped — when the
-        // conversation goes idle its processes must not linger. Kills are
-        // requested up front (parallel with distillation) and the final
-        // snapshot is gated on the ack so it captures the reaped marks.
+        // Explicit shutdown or restart reaps session-scoped jobs.
+        // Reaped-only records still use the manager's idempotent reap ack.
         _jobReapPending = false;
         _passivationDeferredForReap = false;
         if (!_state.ActiveBackgroundJobs.IsEmpty)
@@ -1715,6 +1712,7 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             return;
 
         _passivationCompleted = true;
+        EmitOutput(new SessionDeactivated { SessionId = _sessionId, TimestampMs = NowMs() });
         _lifecycleObserver?.OnSessionDeactivated(_sessionId);
         _restartDrainReplyTo?.Tell(new DaemonRestartPrepared(
             _sessionId,
@@ -1722,6 +1720,9 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
         _restartDrainReplyTo = null;
         Context.Stop(Self);
     }
+
+    private bool HasLiveBackgroundJobs
+        => _state.ActiveBackgroundJobs.Values.Any(job => job.ReapedAtMs is null);
 
     private void AbortPassivationTimers()
     {
@@ -2758,8 +2759,8 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             if (!isReJoin)
             {
                 _subscribers.AddOrUpdate(cmd.Subscriber, cmd.Filter);
-                Context.WatchWith(cmd.Subscriber,
-                    new LeaveSession(cmd.Subscriber) { SessionId = _sessionId });
+                // Persistence can replay raw Terminated and discard WatchWith's custom payload.
+                Context.Watch(cmd.Subscriber);
 
                 _log.Info("{Subscriber} joined (filter={Filter})", cmd.Subscriber, cmd.Filter);
             }
@@ -2809,6 +2810,16 @@ public sealed class LlmSessionActor : ReceivePersistentActor, IWithTimers
             if (_subscribers.Remove(cmd.Subscriber))
             {
                 _log.Info("{Subscriber} left", cmd.Subscriber);
+            }
+
+            Context.Unwatch(cmd.Subscriber);
+        });
+
+        Command<Terminated>(msg =>
+        {
+            if (_subscribers.Remove(msg.ActorRef))
+            {
+                _log.Info("{Subscriber} left", msg.ActorRef);
             }
         });
     }

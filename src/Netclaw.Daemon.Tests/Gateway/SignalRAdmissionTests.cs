@@ -10,6 +10,7 @@ using Akka;
 using Akka.Actor;
 using Akka.Hosting;
 using Akka.Hosting.TestKit;
+using Akka.TestKit;
 using Akka.Persistence;
 using Akka.Persistence.Hosting;
 using Akka.Persistence.Journal;
@@ -148,7 +149,28 @@ public sealed class SignalRAdmissionTests(ITestOutputHelper output) : TestKit(ou
                 Assert.Equal(0, _model.Calls);
             }
             else await _model.Started.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+            TestProbe? sessionWatcher = null;
+            IActorRef? sessionActor = null;
+            if (compacting)
+            {
+                var gateway = ActorRegistry.Get<SignalRGatewayActorKey>();
+                sessionActor = await Sys.ActorSelection(
+                        $"{gateway.Path}/{Uri.EscapeDataString(ensured.SessionId)}")
+                    .ResolveOne(TimeSpan.FromSeconds(10), ct);
+                sessionWatcher = CreateTestProbe("signalr-session-watch");
+                sessionWatcher.Watch(sessionActor);
+            }
+
             await client.StopAsync(ct);
+            if (sessionActor is not null)
+            {
+                await sessionWatcher!.ExpectTerminatedAsync(
+                    sessionActor,
+                    TimeSpan.FromSeconds(10),
+                    cancellationToken: ct);
+            }
+
             _context.Release.TrySetResult();
             _model.Release.TrySetResult();
             _model.CompactionRelease.TrySetResult();
@@ -161,6 +183,77 @@ public sealed class SignalRAdmissionTests(ITestOutputHelper output) : TestKit(ou
             _context.Release.TrySetResult();
             _model.Release.TrySetResult();
             _model.CompactionRelease.TrySetResult();
+        }
+    }
+
+    [Fact]
+    public async Task Subscriber_termination_during_admission_persist_does_not_stop_the_turn()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await using var client = await ConnectAsync();
+        var initialized = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var output = client.On<SessionOutputDto>("ReceiveOutput", value =>
+        {
+            if (value.Type == SessionOutputTypes.SessionJoined) initialized.TrySetResult();
+        });
+        var ensured = await client.InvokeAsync<SessionEnsureResultDto>("EnsureSession", null, "tui", ct);
+        await initialized.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+
+        var sessionId = new SessionId(ensured.SessionId);
+        var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
+        var departingSubscriber = CreateTestProbe("departing-session-subscriber");
+        await sessionManager.Ask<SessionJoined>(
+            new JoinSession(departingSubscriber.Ref) { SessionId = sessionId, Filter = OutputFilter.None },
+            TimeSpan.FromSeconds(10),
+            ct);
+        var liveSubscriber = CreateTestProbe("live-session-subscriber");
+        await sessionManager.Ask<SessionJoined>(
+            new JoinSession(liveSubscriber.Ref) { SessionId = sessionId, Filter = OutputFilter.None },
+            TimeSpan.FromSeconds(10),
+            ct);
+        await liveSubscriber.ExpectMsgAsync<SessionJoined>(TimeSpan.FromSeconds(10), cancellationToken: ct);
+
+        var journal = Persistence.Instance.Apply(Sys).JournalFor("test-journal");
+        var writes = CreateTestProbe();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await journal.Ask<Done>(new WriteGate(writes, release.Task, false), TimeSpan.FromSeconds(10), ct);
+
+        var send = client.InvokeAsync("SendMessage", ensured.SessionId, "subscriber-death-during-persist", ct);
+        try
+        {
+            var admitted = await writes.FishForMessageAsync<InputAdmitted>(
+                input => input.UserMessage.Content == "subscriber-death-during-persist",
+                TimeSpan.FromSeconds(10),
+                cancellationToken: ct);
+
+            var subscriberWatcher = CreateTestProbe("session-subscriber-watch");
+            subscriberWatcher.Watch(departingSubscriber.Ref);
+            Sys.Stop(departingSubscriber.Ref);
+            await subscriberWatcher.ExpectTerminatedAsync(
+                departingSubscriber.Ref,
+                TimeSpan.FromSeconds(10),
+                cancellationToken: ct);
+
+            release.TrySetResult();
+            await send.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            await _model.Started.Task.WaitAsync(TimeSpan.FromSeconds(10), ct);
+            _model.Release.TrySetResult();
+
+            await liveSubscriber.FishForMessageAsync<TurnCompleted>(
+                _ => true,
+                TimeSpan.FromSeconds(10),
+                cancellationToken: ct);
+            var recorded = await writes.FishForMessageAsync<TurnRecorded>(
+                turn => turn.ConsumedInputIds.Contains(admitted.InputId),
+                TimeSpan.FromSeconds(10),
+                cancellationToken: ct);
+            Assert.Contains(admitted.InputId, recorded.ConsumedInputIds);
+        }
+        finally
+        {
+            release.TrySetResult();
+            _model.Release.TrySetResult();
+            _context.Release.TrySetResult();
         }
     }
 

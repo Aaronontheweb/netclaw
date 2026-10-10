@@ -60,7 +60,6 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
     private static readonly TimeSpan PipelineInitTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ReinitializeDelay = TimeSpan.FromSeconds(2);
     private static readonly object ReinitializeTimerKey = new();
-    private static readonly TimeSpan IdlePassivationTimeout = TimeSpan.FromHours(1);
     // A Mattermost client clears a typing pulse after about five seconds (the
     // server default for TimeBetweenUserTypingUpdatesMilliseconds). The repeat
     // interval stays below that window so a long turn stays visible. See
@@ -335,20 +334,13 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                     new ReinitializePipeline("retry after failed reinit"),
                     ReinitializeDelay));
         });
+    }
 
-        Command<ReceiveTimeout>(_ =>
-        {
-            if (_pendingApprovalRequests.Count > 0)
-            {
-                _log.Info("Session idle but {0} approval(s) pending; deferring passivation", _pendingApprovalRequests.Count);
-                return;
-            }
-
-            _log.Info("Session idle for 1 hour, passivating");
-            Context.Stop(Self);
-        });
-
-        Context.SetReceiveTimeout(IdlePassivationTimeout);
+    private async Task HandleSessionDeactivatedAsync()
+    {
+        StopTypingPulses();
+        await _handle.DrainAsync();
+        Context.Stop(Self);
     }
 
     private async Task EnsureInitializedAsync()
@@ -651,6 +643,12 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
     private async Task HandleOutputReceivedAsync(OutputReceived msg)
     {
+        if (msg.Output is SessionDeactivated)
+        {
+            await HandleSessionDeactivatedAsync();
+            return;
+        }
+
         var clearedPrompts = await _outputEngine.HandleOutputAsync(msg.Output);
         if (clearedPrompts.Count > 0)
             PersistAll(clearedPrompts, ApplyPendingApprovalPromptCleared);

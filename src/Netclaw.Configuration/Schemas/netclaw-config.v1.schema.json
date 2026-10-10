@@ -153,6 +153,7 @@
         },
         "IdleTimeout": {
           "type": "string",
+          "default": "01:00:00",
           "description": "Session idle timeout in HH:mm:ss format. Set to 00:00:00 to disable."
         },
         "TurnLlmTimeoutSeconds": {
