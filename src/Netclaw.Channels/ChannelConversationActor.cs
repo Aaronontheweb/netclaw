@@ -56,9 +56,8 @@ public sealed record ChannelRoutingVerdict(
 /// self-loop filtering, ingress gating (restart drain), routing policy,
 /// text normalization/truncation, empty-content filtering, and session
 /// binding get-or-create — in a fixed order so every channel applies the
-/// same security gates the same way. It owns two-hour idle passivation when
-/// no session binding child exists, stop-on-failure supervision, and
-/// <c>Terminated</c> bookkeeping.
+/// same security gates the same way. It stops after its last session binding
+/// exits and owns stop-on-failure supervision and <c>Terminated</c> handling.
 ///
 /// Subclasses register their channel-specific receives (interactions,
 /// proactive threads, trusted session turns) in their own constructors and
@@ -66,18 +65,15 @@ public sealed record ChannelRoutingVerdict(
 ///
 /// Slack's conversation actor intentionally does NOT use this base: its
 /// pipeline order differs observably (routing policy before the ingress
-/// gate, thread creation before the empty-text filter). It has no truncation
-/// or supervision override — see SPEC-015 §1.3 risk note.
+/// gate, thread creation before the empty-text filter) and it has no
+/// truncation or supervision override — see SPEC-015 §1.3 risk note.
 /// </summary>
 /// <typeparam name="TMessage">The channel's normalized inbound gateway message.</typeparam>
 public abstract class ChannelConversationActor<TMessage> : ReceiveActor
     where TMessage : class
 {
     private const int MaxInboundTextLength = 4000;
-    private static readonly TimeSpan PassivationTimeout = TimeSpan.FromHours(2);
-
     private readonly string _channelDisplayName;
-    private readonly SessionBindingRouter _sessionBindings = new();
 
     protected ChannelConversationActor(
         ChannelType channelType,
@@ -92,50 +88,15 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
             .WithContext("Adapter", channelType.ToWireValue())
             .WithContext(_channelDisplayName + "ChannelId", channelIdValue);
 
-        Context.SetReceiveTimeout(PassivationTimeout);
-
-        Receive<ReceiveTimeout>(_ =>
-        {
-            if (Context.GetChildren().Any())
-            {
-                Log.Debug("Conversation has live session bindings; retaining parent actor");
-                return;
-            }
-
-            Log.Info("Conversation idle for 2 hours, passivating");
-            Context.Stop(Self);
-        });
-
         Receive<TMessage>(HandleGatewayMessage);
-        Receive<SessionBindingRetiring>(_ =>
-        {
-            if (!_sessionBindings.HandleRetiring(Context, Sender))
-                Log.Warning("Received retire notice from an untracked session binding {0}", Sender.Path.Name);
-        });
-        Receive<SessionBindingDelivery>(delivery =>
-        {
-            if (!_sessionBindings.HandleDeferred(Sender, delivery))
-                Log.Warning("Received deferred delivery from an untracked session binding {0}", Sender.Path.Name);
-        });
-        Receive<SessionBindingRetireReady>(_ =>
-        {
-            if (!_sessionBindings.HandleReady(Context, Sender))
-                Log.Warning("Received retire-ready from an untracked session binding {0}", Sender.Path.Name);
-        });
         Receive<Terminated>(msg =>
         {
-            var droppedCount = _sessionBindings.HandleTerminated(Context, msg.ActorRef);
-            if (droppedCount is null)
-            {
-                Log.Debug("Session binding stopped: {0}", msg.ActorRef.Path.Name);
-            }
-            else if (droppedCount > 0)
-            {
-                Log.Error(
-                    "Session binding {0} stopped before its retire barrier; dropped {1} routed deliveries",
-                    msg.ActorRef.Path.Name,
-                    droppedCount.Value);
-            }
+            Log.Debug("Session binding stopped: {0}", msg.ActorRef.Path.Name);
+            if (Context.GetChildren().Any())
+                return;
+
+            Log.Info("Last session binding stopped; stopping conversation actor");
+            Context.Stop(Self);
         });
     }
 
@@ -194,7 +155,8 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
         // --- Routing policy ---
         var threadKey = ThreadKeyOf(message);
         var actorName = BindingActorName(ChannelIdValue, threadKey);
-        var threadExists = _sessionBindings.HasBinding(Context, actorName);
+        var existingBinding = Context.Child(actorName);
+        var threadExists = !existingBinding.IsNobody();
 
         var verdict = EvaluateRouting(message, threadExists);
 
@@ -233,6 +195,9 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
 
         // --- Build session and forward ---
         var sessionId = BuildSessionId(threadKey);
+        var sessionBinding = threadExists
+            ? existingBinding
+            : GetOrCreateSessionBinding(ChannelIdValue, threadKey, () => CreateSessionBindingProps(sessionId, message));
 
         var turnId = string.IsNullOrWhiteSpace(eventId)
             ? IdGen.ShortId()
@@ -249,12 +214,7 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
             normalizedText.Length);
 
         Telemetry.RecordEventRouted("message");
-        RouteToSessionBinding(
-            ChannelIdValue,
-            threadKey,
-            () => CreateSessionBindingProps(sessionId, message),
-            CreateThreadInbound(sessionId, message, aclDecision, normalizedText),
-            Sender);
+        sessionBinding.Forward(CreateThreadInbound(sessionId, message, aclDecision, normalizedText));
     }
 
     /// <summary>Builds the deterministic session id (<c>{channelId}/{threadKey}</c>) for a thread key.</summary>
@@ -271,15 +231,16 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
         string channelValue,
         string threadKey,
         Func<Props> propsFactory)
-        => _sessionBindings.GetOrCreate(Context, BindingActorName(channelValue, threadKey), propsFactory);
+    {
+        var actorName = BindingActorName(channelValue, threadKey);
+        var existing = Context.Child(actorName);
+        if (!existing.IsNobody())
+            return existing;
 
-    protected void RouteToSessionBinding(
-        string channelValue,
-        string threadKey,
-        Func<Props> propsFactory,
-        object message,
-        IActorRef replyTo)
-        => _sessionBindings.Route(Context, BindingActorName(channelValue, threadKey), propsFactory, message, replyTo);
+        var child = Context.ActorOf(propsFactory(), actorName);
+        Context.Watch(child);
+        return child;
+    }
 
     /// <summary>
     /// Warns and nacks a <see cref="DeliverTrustedSessionTurn"/> whose session id

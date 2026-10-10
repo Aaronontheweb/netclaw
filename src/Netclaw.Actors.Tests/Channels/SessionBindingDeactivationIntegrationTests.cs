@@ -115,6 +115,7 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
             .ResolveOne(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
         var bindingWatcher = CreateTestProbe("slack-binding-watch");
         bindingWatcher.Watch(binding);
+        await AssertBindingSurvivesReceiveTimeoutAsync(binding);
 
         var parentWatcher = CreateTestProbe("slack-parent-watch");
         parentWatcher.Watch(parent);
@@ -152,7 +153,6 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
             binding,
             TimeSpan.FromSeconds(15),
             cancellationToken: TestContext.Current.CancellationToken);
-        parent.Tell(ReceiveTimeout.Instance);
         await parentWatcher.ExpectTerminatedAsync(
             parent,
             TimeSpan.FromSeconds(15),
@@ -218,6 +218,7 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
             .ResolveOne(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
         var bindingWatcher = CreateTestProbe("discord-binding-watch");
         bindingWatcher.Watch(binding);
+        await AssertBindingSurvivesReceiveTimeoutAsync(binding);
 
         var parentWatcher = CreateTestProbe("discord-parent-watch");
         parentWatcher.Watch(parent);
@@ -256,7 +257,6 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
             binding,
             TimeSpan.FromSeconds(15),
             cancellationToken: TestContext.Current.CancellationToken);
-        parent.Tell(ReceiveTimeout.Instance);
         await parentWatcher.ExpectTerminatedAsync(
             parent,
             TimeSpan.FromSeconds(15),
@@ -268,6 +268,16 @@ public sealed class SessionBindingDeactivationIntegrationTests : LlmSessionTestB
         var escapedId = Uri.EscapeDataString(sessionId.Value);
         return await Sys.ActorSelection($"/user/session-manager/{escapedId}")
             .ResolveOne(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
+    }
+
+    private async Task AssertBindingSurvivesReceiveTimeoutAsync(IActorRef binding)
+    {
+        var timeoutProbe = CreateTestProbe("binding-timeout-probe");
+        binding.Tell(ReceiveTimeout.Instance, timeoutProbe.Ref);
+        binding.Tell(new Identify("binding-survives-timeout"), timeoutProbe.Ref);
+        var identity = await timeoutProbe.ExpectMsgAsync<ActorIdentity>(
+            TimeSpan.FromSeconds(15), cancellationToken: TestContext.Current.CancellationToken);
+        Assert.Equal(binding, identity.Subject);
     }
 
     private sealed class TestChatClientProvider(IChatClient client) : IChatClientProvider

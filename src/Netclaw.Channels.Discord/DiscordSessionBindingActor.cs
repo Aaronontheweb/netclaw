@@ -272,22 +272,10 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
 
     private void Active()
     {
-        CommandAsync<DiscordThreadInbound>(message => HandleSessionBindingDeliveryAsync(
-            new SessionBindingDelivery(message, Sender)));
-        CommandAsync<DiscordApprovalResponse>(message => HandleSessionBindingDeliveryAsync(
-            new SessionBindingDelivery(message, Sender)));
-        CommandAsync<DeliverTrustedSessionTurn>(message => HandleSessionBindingDeliveryAsync(
-            new SessionBindingDelivery(message, Sender)));
-        CommandAsync<StartProactiveThread>(message => HandleSessionBindingDeliveryAsync(
-            new SessionBindingDelivery(message, Sender)));
-        CommandAsync<SessionBindingDelivery>(HandleSessionBindingDeliveryAsync);
-        Command<SessionBindingRetireBarrier>(_ =>
-        {
-            if (!_sessionDeactivationStarted)
-                throw new InvalidOperationException("Session binding received a retirement barrier before deactivation.");
-
-            Context.Parent.Tell(SessionBindingRetireReady.Instance, Self);
-        });
+        CommandAsync<DiscordThreadInbound>(HandleInboundAsync);
+        CommandAsync<DiscordApprovalResponse>(HandleApprovalResponseAsync);
+        CommandAsync<DeliverTrustedSessionTurn>(HandleTrustedReminderAsync);
+        CommandAsync<StartProactiveThread>(HandleProactiveThreadAsync);
         CommandAsync<OutputReceived>(HandleOutputReceivedAsync);
 
         Command<OutputStreamTerminated>(msg =>
@@ -316,7 +304,6 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
                     new ReinitializePipeline("retry after failed reinit"),
                     ReinitializeDelay));
         });
-
     }
 
     private async Task HandleSessionDeactivatedAsync()
@@ -325,36 +312,8 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
             return;
 
         _sessionDeactivationStarted = true;
-        Context.Parent.Tell(SessionBindingRetiring.Instance, Self);
         await _handle.DrainAsync();
-    }
-
-    private async Task HandleSessionBindingDeliveryAsync(SessionBindingDelivery delivery)
-    {
-        if (_sessionDeactivationStarted)
-        {
-            Context.Parent.Tell(delivery, Self);
-            return;
-        }
-
-        switch (delivery.Message)
-        {
-            case DiscordThreadInbound inbound:
-                await HandleInboundAsync(inbound);
-                break;
-            case DiscordApprovalResponse approval:
-                await HandleApprovalResponseAsync(approval);
-                break;
-            case DeliverTrustedSessionTurn trusted:
-                await HandleTrustedReminderAsync(trusted, delivery.ReplyTo);
-                break;
-            case StartProactiveThread proactive:
-                await HandleProactiveThreadAsync(proactive, delivery.ReplyTo);
-                break;
-            default:
-                throw new InvalidOperationException(
-                    $"Discord binding cannot dispatch input type '{delivery.Message.GetType().FullName}'.");
-        }
+        Context.Stop(Self);
     }
 
     /// <summary>
@@ -363,7 +322,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
     /// is recovered as adopted context on the first authorized reply via the
     /// deferred re-armed hydration path — see <see cref="PerformOneShotHydrationAsync"/>.
     /// </summary>
-    private async Task HandleProactiveThreadAsync(StartProactiveThread message, IActorRef replyTo)
+    private async Task HandleProactiveThreadAsync(StartProactiveThread message)
     {
         _replyChannelId = message.ReplyChannelId;
         _threadCreated = message.DirectMessageUserId is not null || message.RootMessageId is null;
@@ -371,7 +330,7 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
 
         _log.Info("Initializing proactive thread pipeline for session {0}", message.SessionId.Value);
         await EnsureInitializedAsync();
-        replyTo.Tell(new ProactiveThreadAck(message.SessionId));
+        Sender.Tell(new ProactiveThreadAck(message.SessionId));
     }
 
     private async Task EnsureInitializedAsync()
@@ -585,8 +544,10 @@ internal sealed class DiscordSessionBindingActor : ReceivePersistentActor, IWith
         }
     }
 
-    private async Task HandleTrustedReminderAsync(DeliverTrustedSessionTurn message, IActorRef ackTarget)
+    private async Task HandleTrustedReminderAsync(DeliverTrustedSessionTurn message)
     {
+        var ackTarget = Sender;
+
         if (message.SessionId != _sessionId)
         {
             _log.Warning(

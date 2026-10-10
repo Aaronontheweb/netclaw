@@ -593,11 +593,8 @@ public sealed class DiscordProactiveThreadActorTests(ITestOutputHelper output) :
     {
         public AckActor()
         {
-            Receive<SessionBindingDelivery>(delivery =>
-            {
-                if (delivery.Message is StartProactiveThread msg)
-                    delivery.ReplyTo.Tell(new ProactiveThreadAck(msg.SessionId), Self);
-            });
+            Receive<StartProactiveThread>(msg =>
+                Sender.Tell(new ProactiveThreadAck(msg.SessionId)));
         }
     }
 }

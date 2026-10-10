@@ -280,20 +280,9 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
     private void Active()
     {
-        CommandAsync<MattermostThreadInbound>(message => HandleSessionBindingDeliveryAsync(
-            new SessionBindingDelivery(message, Sender)));
-        CommandAsync<MattermostApprovalResponse>(message => HandleSessionBindingDeliveryAsync(
-            new SessionBindingDelivery(message, Sender)));
-        CommandAsync<DeliverTrustedSessionTurn>(message => HandleSessionBindingDeliveryAsync(
-            new SessionBindingDelivery(message, Sender)));
-        CommandAsync<SessionBindingDelivery>(HandleSessionBindingDeliveryAsync);
-        Command<SessionBindingRetireBarrier>(_ =>
-        {
-            if (!_sessionDeactivationStarted)
-                throw new InvalidOperationException("Session binding received a retirement barrier before deactivation.");
-
-            Context.Parent.Tell(SessionBindingRetireReady.Instance, Self);
-        });
+        CommandAsync<MattermostThreadInbound>(HandleInboundAsync);
+        CommandAsync<MattermostApprovalResponse>(HandleApprovalResponseAsync);
+        CommandAsync<DeliverTrustedSessionTurn>(HandleTrustedReminderAsync);
         CommandAsync<OutputReceived>(HandleOutputReceivedAsync);
 
         CommandAsync<SendTypingPulse>(async _ =>
@@ -349,7 +338,6 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
                     new ReinitializePipeline("retry after failed reinit"),
                     ReinitializeDelay));
         });
-
     }
 
     private async Task HandleSessionDeactivatedAsync()
@@ -359,33 +347,8 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
 
         _sessionDeactivationStarted = true;
         StopTypingPulses();
-        Context.Parent.Tell(SessionBindingRetiring.Instance, Self);
         await _handle.DrainAsync();
-    }
-
-    private async Task HandleSessionBindingDeliveryAsync(SessionBindingDelivery delivery)
-    {
-        if (_sessionDeactivationStarted)
-        {
-            Context.Parent.Tell(delivery, Self);
-            return;
-        }
-
-        switch (delivery.Message)
-        {
-            case MattermostThreadInbound inbound:
-                await HandleInboundAsync(inbound);
-                break;
-            case MattermostApprovalResponse approval:
-                await HandleApprovalResponseAsync(approval, delivery.ReplyTo);
-                break;
-            case DeliverTrustedSessionTurn trusted:
-                await HandleTrustedReminderAsync(trusted, delivery.ReplyTo);
-                break;
-            default:
-                throw new InvalidOperationException(
-                    $"Mattermost binding cannot dispatch input type '{delivery.Message.GetType().FullName}'.");
-        }
+        Context.Stop(Self);
     }
 
     private async Task EnsureInitializedAsync()
@@ -550,8 +513,9 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
     // The Mattermost interactive-message webhook asks the binding over HTTP and
     // waits for the session's verdict, so this is the one channel that registers
     // the synchronous-reply hook.
-    private Task HandleApprovalResponseAsync(MattermostApprovalResponse message, IActorRef replyTo)
+    private Task HandleApprovalResponseAsync(MattermostApprovalResponse message)
     {
+        var replyTo = Sender;
         return _approvalFlow.HandleApprovalResponseAsync(
             message.CallId,
             message.SelectedKey,
@@ -603,8 +567,10 @@ internal sealed class MattermostSessionBindingActor : ReceivePersistentActor, IW
         }
     }
 
-    private async Task HandleTrustedReminderAsync(DeliverTrustedSessionTurn message, IActorRef ackTarget)
+    private async Task HandleTrustedReminderAsync(DeliverTrustedSessionTurn message)
     {
+        var ackTarget = Sender;
+
         if (message.SessionId != _sessionId)
         {
             _log.Warning(

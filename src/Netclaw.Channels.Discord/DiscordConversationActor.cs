@@ -14,8 +14,8 @@ namespace Netclaw.Channels.Discord;
 
 /// <summary>
 /// Per-channel actor that serves as the security boundary for Discord messages.
-/// The inbound pipeline (ACL, routing policy, ingress gating, passivation,
-/// session binding management) lives in <see cref="ChannelConversationActor{TMessage}"/>;
+/// The inbound pipeline (ACL, routing policy, ingress gating, and session
+/// binding management) lives in <see cref="ChannelConversationActor{TMessage}"/>;
 /// this subclass supplies the Discord projections plus the interaction,
 /// proactive-thread, and trusted-turn receives.
 /// Uses blind-write routing: session IDs are derived deterministically from
@@ -152,8 +152,7 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
         var replyChannelId = interaction.ReplyChannelId
             ?? new DiscordReplyChannelId(interaction.ThreadOrMessageId.Value);
         var sessionId = SessionIdFormat.Build(_channelId.Value, interaction.ThreadOrMessageId.Value);
-        Telemetry.RecordEventRouted("interaction");
-        RouteToSessionBinding(
+        var sessionBinding = GetOrCreateSessionBinding(
             _channelId.Value,
             interaction.ThreadOrMessageId.Value,
             () => SessionBindingProps(
@@ -161,16 +160,17 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
                 _channelId,
                 replyChannelId,
                 interaction.ThreadOrMessageId,
-                rootMessageId: null),
-            new DiscordApprovalResponse(
-                ChannelId: _channelId,
-                ThreadOrMessageId: interaction.ThreadOrMessageId,
-                CallId: new Netclaw.Tools.ToolCallId(interaction.CallId),
-                SelectedKey: interaction.SelectedKey,
-                SenderId: interaction.SenderId,
-                RequesterSenderId: interaction.RequesterSenderId,
-                PromptMessageId: interaction.PromptMessageId),
-            Sender);
+                rootMessageId: null));
+
+        Telemetry.RecordEventRouted("interaction");
+        sessionBinding.Forward(new DiscordApprovalResponse(
+            ChannelId: _channelId,
+            ThreadOrMessageId: interaction.ThreadOrMessageId,
+            CallId: new Netclaw.Tools.ToolCallId(interaction.CallId),
+            SelectedKey: interaction.SelectedKey,
+            SenderId: interaction.SenderId,
+            RequesterSenderId: interaction.RequesterSenderId,
+            PromptMessageId: interaction.PromptMessageId));
     }
 
     private void HandleTrustedSessionTurn(DeliverTrustedSessionTurn message)
@@ -191,10 +191,7 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
         }
 
         var replyChannelId = new DiscordReplyChannelId(threadOrMessageId.Value);
-        Log.Debug(
-            "Routing DeliverTrustedSessionTurn session={Session} channel={Channel} threadOrMessage={ThreadOrMessage}",
-            message.SessionId.Value, parsedChannelId.Value, threadOrMessageId.Value);
-        RouteToSessionBinding(
+        var sessionBinding = GetOrCreateSessionBinding(
             _channelId.Value,
             threadOrMessageId.Value,
             () => SessionBindingProps(
@@ -202,9 +199,12 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
                 _channelId,
                 replyChannelId,
                 threadOrMessageId,
-                rootMessageId: null),
-            message,
-            Sender);
+                rootMessageId: null));
+
+        Log.Debug(
+            "Routing DeliverTrustedSessionTurn session={Session} channel={Channel} threadOrMessage={ThreadOrMessage}",
+            message.SessionId.Value, parsedChannelId.Value, threadOrMessageId.Value);
+        sessionBinding.Forward(message);
     }
 
     private void HandleProactiveThread(StartProactiveThread message)
@@ -245,8 +245,7 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
             return;
         }
 
-        Log.Debug("Routing proactive thread setup to session binding {0}", message.SessionId.Value);
-        RouteToSessionBinding(
+        var sessionBinding = GetOrCreateSessionBinding(
             message.ChannelId.Value,
             message.ThreadOrMessageId.Value,
             () => SessionBindingProps(
@@ -254,9 +253,10 @@ internal sealed class DiscordConversationActor : ChannelConversationActor<Discor
                 message.ChannelId,
                 message.ReplyChannelId,
                 message.ThreadOrMessageId,
-                message.RootMessageId),
-            message,
-            Sender);
+                message.RootMessageId));
+
+        Log.Debug("Routing proactive thread setup to session binding {0}", message.SessionId.Value);
+        sessionBinding.Forward(message);
     }
 
     private Props SessionBindingProps(

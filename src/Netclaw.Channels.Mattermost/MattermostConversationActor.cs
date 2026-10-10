@@ -14,8 +14,8 @@ namespace Netclaw.Channels.Mattermost;
 
 /// <summary>
 /// Per-channel actor that serves as the security boundary for Mattermost messages.
-/// The inbound pipeline (ACL, routing policy, ingress gating, passivation,
-/// session binding management) lives in <see cref="ChannelConversationActor{TMessage}"/>;
+/// The inbound pipeline (ACL, routing policy, ingress gating, and session
+/// binding management) lives in <see cref="ChannelConversationActor{TMessage}"/>;
 /// this subclass supplies the Mattermost projections plus the interaction,
 /// proactive-thread, and trusted-turn receives.
 /// Uses blind-write routing: session IDs are derived deterministically from
@@ -145,20 +145,20 @@ internal sealed class MattermostConversationActor : ChannelConversationActor<Mat
         }
 
         var sessionId = SessionIdFormat.Build(_channelId.Value, interaction.RootPostId.Value);
-        Telemetry.RecordEventRouted("interaction");
-        RouteToSessionBinding(
+        var sessionBinding = GetOrCreateSessionBinding(
             _channelId.Value,
             interaction.RootPostId.Value,
-            () => SessionBindingProps(sessionId, _channelId, interaction.RootPostId),
-            new MattermostApprovalResponse(
-                ChannelId: _channelId,
-                RootPostId: interaction.RootPostId,
-                CallId: new ToolCallId(interaction.CallId),
-                SelectedKey: interaction.SelectedKey,
-                SenderId: interaction.SenderId,
-                RequesterSenderId: interaction.RequesterSenderId,
-                PromptPostId: interaction.PromptPostId),
-            Sender);
+            () => SessionBindingProps(sessionId, _channelId, interaction.RootPostId));
+
+        Telemetry.RecordEventRouted("interaction");
+        sessionBinding.Forward(new MattermostApprovalResponse(
+            ChannelId: _channelId,
+            RootPostId: interaction.RootPostId,
+            CallId: new ToolCallId(interaction.CallId),
+            SelectedKey: interaction.SelectedKey,
+            SenderId: interaction.SenderId,
+            RequesterSenderId: interaction.RequesterSenderId,
+            PromptPostId: interaction.PromptPostId));
     }
 
     private void HandleProactiveThread(StartMattermostProactiveThread message)
@@ -232,15 +232,15 @@ internal sealed class MattermostConversationActor : ChannelConversationActor<Mat
             return;
         }
 
+        var sessionBinding = GetOrCreateSessionBinding(
+            _channelId.Value,
+            rootPostId.Value,
+            () => SessionBindingProps(message.SessionId, _channelId, rootPostId));
+
         Log.Debug(
             "Routing DeliverTrustedSessionTurn session={Session} channel={Channel} rootPost={RootPost}",
             message.SessionId.Value, parsedChannelId.Value, rootPostId.Value);
-        RouteToSessionBinding(
-            _channelId.Value,
-            rootPostId.Value,
-            () => SessionBindingProps(message.SessionId, _channelId, rootPostId),
-            message,
-            Sender);
+        sessionBinding.Forward(message);
     }
 
     /// <summary>
