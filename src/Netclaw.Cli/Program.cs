@@ -851,7 +851,7 @@ static async Task RunAsync(string[] args)
             return;
         }
 
-        Environment.ExitCode = await ApprovalsCommand.RunAsync(args, paths);
+        Environment.ExitCode = await ApprovalsCommand.RunAsync(CliContext.ForProcess(paths, TimeProvider.System), args);
         return;
     }
 
@@ -1015,7 +1015,7 @@ static async Task RunAsync(string[] args)
     {
         var pairPaths = new NetclawPaths();
         pairPaths.EnsureDirectoriesExist();
-        Environment.ExitCode = await PairCommand.RunAsync(args, pairPaths);
+        Environment.ExitCode = await PairCommand.RunAsync(CliContext.ForProcess(pairPaths, TimeProvider.System), args);
         return;
     }
 
@@ -1025,16 +1025,13 @@ static async Task RunAsync(string[] args)
         var builder = CreateQuietHostBuilder(args);
 
         using var host = builder.Build();
-        var paths = host.Services.GetRequiredService<NetclawPaths>();
+        var cli = host.Services.GetRequiredService<CliContext>();
         var daemonConfig = host.Services.GetRequiredService<DaemonConfig>();
         Environment.ExitCode = await UpdateCommand.RunAsync(
+            cli,
             args,
-            paths,
             daemonConfig.DisableSelfUpdate,
-            daemonConfig.UpdateChannel,
-            Console.In,
-            Console.Out,
-            Console.Error);
+            daemonConfig.UpdateChannel);
         return;
     }
 
@@ -2135,6 +2132,10 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
 
     // TimeProvider (virtualized for testing)
     services.AddSingleton(TimeProvider.System);
+    // Resolve after all registrations so the context uses the final paths and clock.
+    services.AddSingleton(sp => CliContext.ForProcess(
+        sp.GetRequiredService<NetclawPaths>(),
+        sp.GetRequiredService<TimeProvider>()));
 
     // Shared daemon HTTP API client — single endpoint resolution for all commands
     services.AddHttpClient();

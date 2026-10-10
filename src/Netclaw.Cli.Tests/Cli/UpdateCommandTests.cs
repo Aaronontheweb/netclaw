@@ -4,8 +4,11 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Net;
+using System.IO.Compression;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Extensions.Time.Testing;
 using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Update;
 using Netclaw.Configuration;
@@ -440,11 +443,99 @@ public sealed class UpdateCommandTests : IDisposable
 
         using var stdout = new StringWriter();
         var exitCode = await UpdateCommand.RunAsync(
-            ["update"], _paths, true, UpdateChannel.Stable, TextReader.Null, stdout, TextWriter.Null);
+            new CliContext(_paths, TimeProvider.System, TextReader.Null, stdout, TextWriter.Null),
+            ["update"], true, UpdateChannel.Stable);
 
         Assert.Equal(1, exitCode);
         Assert.Contains("Self-update is disabled", stdout.ToString());
         Assert.Contains("Pull a newer container image to upgrade.", stdout.ToString());
+    }
+
+    [Theory]
+    [InlineData(false, "download failed")]
+    [InlineData(true, "checksum mismatch")]
+    public async Task RunAsync_ReportsAssetFailureToSuppliedOutput_BeforeDaemonChange(
+        bool respondWithAsset, string expectedMessage)
+    {
+        var manifest = CreateManifest("99.0.0", UpdateCheckService.GetCurrentRid());
+        var handler = CreateSignedHandler(manifest);
+        if (respondWithAsset)
+            handler.AddByteResponse(manifest.Releases[0].Assets[0].Url, [1, 2, 3]);
+        UpdateCommand.TestHttpMessageHandlerFactory = () => handler;
+        UpdateCommand.TestDaemonProcessManagerFactory = (_, _) =>
+            throw new InvalidOperationException("Asset failure must precede daemon access.");
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        var cli = new CliContext(_paths, new FakeTimeProvider(), TextReader.Null, stdout, stderr);
+
+        var exitCode = await UpdateCommand.RunAsync(cli, ["update", "--force"], false, UpdateChannel.Stable);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("Downloading netclaw", stdout.ToString());
+        Assert.Contains(expectedMessage, stdout.ToString());
+        Assert.Equal(string.Empty, stderr.ToString());
+    }
+
+    [Fact]
+    public async Task RunAsync_UsesSuppliedHomeAndClock_AndDoesNotStopAnotherHomesUnit()
+    {
+        var manifest = CreateManifest("99.0.0", UpdateCheckService.GetCurrentRid());
+        using var archive = new MemoryStream();
+        using (var zip = new ZipArchive(archive, ZipArchiveMode.Create, leaveOpen: true))
+            zip.CreateEntry("readme.txt");
+        var bytes = archive.ToArray();
+        var original = manifest.Releases[0].Assets[0];
+        var asset = new BinaryAsset
+        {
+            Component = original.Component,
+            Rid = original.Rid,
+            Url = original.Url.Replace(".tar.gz", ".zip", StringComparison.Ordinal),
+            Sha256 = Convert.ToHexString(SHA256.HashData(bytes)),
+            SizeBytes = bytes.Length
+        };
+        manifest.Releases[0].Assets[0] = asset;
+        var handler = CreateSignedHandler(manifest);
+        handler.AddByteResponse(asset.Url, bytes);
+        UpdateCommand.TestHttpMessageHandlerFactory = () => handler;
+        var time = new FakeTimeProvider();
+        var manager = new FakeDaemonUpdateProcessManager { StopResult = new DaemonResult(false, "test stop failed") };
+        manager.EnqueueStatus(Running());
+        var runner = new FakeSystemCommandRunner();
+        runner.Enqueue(Active());
+        runner.Enqueue(MainPid("456"));
+        var managerCreated = false;
+        var serviceCreated = false;
+        UpdateCommand.TestDaemonProcessManagerFactory = (paths, clock) =>
+        {
+            Assert.Same(_paths, paths);
+            Assert.Same(time, clock);
+            managerCreated = true;
+            return manager;
+        };
+        UpdateCommand.TestSystemdUserServiceFactory = paths =>
+        {
+            Assert.Same(_paths, paths);
+            serviceCreated = true;
+            var unitPath = Path.Combine(_dir.Path, "netclaw.service");
+            File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
+            return new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true,
+                homePath: paths.BasePath,
+                environReader: _ => $"NETCLAW_HOME={SystemdUserService.DefaultHomePath}\0");
+        };
+        using var stdout = new StringWriter();
+        using var stderr = new StringWriter();
+        var cli = new CliContext(_paths, time, TextReader.Null, stdout, stderr);
+
+        var exitCode = await UpdateCommand.RunAsync(cli, ["update", "--force"], false, UpdateChannel.Stable);
+
+        Assert.Equal(1, exitCode);
+        Assert.True(managerCreated);
+        Assert.True(serviceCreated);
+        Assert.Equal(1, manager.StopCalls);
+        Assert.Equal(0, manager.StartCalls);
+        Assert.DoesNotContain(runner.Commands, command => command.Arguments == "--user stop netclaw.service");
+        Assert.Contains("Update aborted", stdout.ToString());
+        Assert.Equal(string.Empty, stderr.ToString());
     }
 
     [Theory]
@@ -460,7 +551,8 @@ public sealed class UpdateCommandTests : IDisposable
         // An update is available; decline the install prompt so this exercises
         // only channel switching + persistence, not the download path.
         var exitCode = await UpdateCommand.RunAsync(
-            ["update", "--channel", arg], _paths, false, UpdateChannel.Stable, stdin, stdout, TextWriter.Null);
+            new CliContext(_paths, TimeProvider.System, stdin, stdout, TextWriter.Null),
+            ["update", "--channel", arg], false, UpdateChannel.Stable);
 
         Assert.Equal(0, exitCode);
         Assert.Equal(expectedWire, ReadPersistedChannel());
@@ -475,13 +567,10 @@ public sealed class UpdateCommandTests : IDisposable
 
         using var stdout = new StringWriter();
         var exitCode = await UpdateCommand.RunAsync(
+            new CliContext(_paths, TimeProvider.System, TextReader.Null, stdout, TextWriter.Null),
             ["update", "--check", "--channel", "beta"],
-            _paths,
             false,
-            UpdateChannel.Stable,
-            TextReader.Null,
-            stdout,
-            TextWriter.Null);
+            UpdateChannel.Stable);
 
         Assert.Equal(0, exitCode);
         // --check is read-only: the channel is previewed for this run, not written to disk.
@@ -494,13 +583,10 @@ public sealed class UpdateCommandTests : IDisposable
     {
         using var stderr = new StringWriter();
         var exitCode = await UpdateCommand.RunAsync(
+            new CliContext(_paths, TimeProvider.System, TextReader.Null, TextWriter.Null, stderr),
             ["update", "--channel", "nightly"],
-            _paths,
             false,
-            UpdateChannel.Stable,
-            TextReader.Null,
-            TextWriter.Null,
-            stderr);
+            UpdateChannel.Stable);
 
         Assert.Equal(1, exitCode);
         Assert.Contains("Unknown channel", stderr.ToString());
@@ -524,7 +610,7 @@ public sealed class UpdateCommandTests : IDisposable
         // NTFS path comparison is case-insensitive, so pin that here — a
         // regression to Ordinal would leave the backup deleted.
         var runningBackupPath = Path.Combine(_dir.Path, "NETCLAW.EXE.BACKUP");
-        UpdateCommand.CleanupBackupFile(backupPath, runningBackupPath, isWindows: true);
+        UpdateCommand.CleanupBackupFile(backupPath, runningBackupPath, isWindows: true, error: TextWriter.Null);
 
         Assert.True(File.Exists(backupPath));
     }
@@ -538,7 +624,7 @@ public sealed class UpdateCommandTests : IDisposable
         File.WriteAllText(sourcePath, "new image");
         File.WriteAllText(targetPath, "old image");
 
-        UpdateCommand.SwapBinaryIntoPlace(sourcePath, targetPath, backupPath);
+        UpdateCommand.SwapBinaryIntoPlace(sourcePath, targetPath, backupPath, TextWriter.Null);
 
         Assert.Equal("new image", File.ReadAllText(targetPath));
         Assert.Equal("old image", File.ReadAllText(backupPath));
@@ -557,7 +643,7 @@ public sealed class UpdateCommandTests : IDisposable
         // install directory must never be left without an executable.
         File.Delete(sourcePath);
 
-        Assert.ThrowsAny<Exception>(() => UpdateCommand.SwapBinaryIntoPlace(sourcePath, targetPath, backupPath));
+        Assert.ThrowsAny<Exception>(() => UpdateCommand.SwapBinaryIntoPlace(sourcePath, targetPath, backupPath, TextWriter.Null));
         // The old binary is rolled back into place; the backup is consumed by
         // the restore, so the install directory is left with a working binary.
         Assert.Equal("old image", File.ReadAllText(targetPath));
@@ -590,7 +676,7 @@ public sealed class UpdateCommandTests : IDisposable
                 | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
                 | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
 
-            Assert.ThrowsAny<Exception>(() => UpdateCommand.SwapBinaryIntoPlace(sourcePath, targetPath, backupPath));
+            Assert.ThrowsAny<Exception>(() => UpdateCommand.SwapBinaryIntoPlace(sourcePath, targetPath, backupPath, TextWriter.Null));
             Assert.Equal("old image", File.ReadAllText(targetPath));
             Assert.Equal("stale image", File.ReadAllText(backupPath));
         }
@@ -607,7 +693,7 @@ public sealed class UpdateCommandTests : IDisposable
         File.WriteAllText(backupPath, "old image");
         var runningBackupPath = Path.Combine(_dir.Path, "netclaw.exe") + ".backup";
 
-        UpdateCommand.CleanupBackupFile(backupPath, runningBackupPath, isWindows: true);
+        UpdateCommand.CleanupBackupFile(backupPath, runningBackupPath, isWindows: true, error: TextWriter.Null);
 
         Assert.False(File.Exists(backupPath));
     }
@@ -620,7 +706,7 @@ public sealed class UpdateCommandTests : IDisposable
 
         // POSIX allows unlinking a running image, so even the running
         // process's own backup is removed.
-        UpdateCommand.CleanupBackupFile(backupPath, runningBackupPath: backupPath, isWindows: false);
+        UpdateCommand.CleanupBackupFile(backupPath, runningBackupPath: backupPath, isWindows: false, error: TextWriter.Null);
 
         Assert.False(File.Exists(backupPath));
     }
@@ -636,6 +722,7 @@ public sealed class UpdateCommandTests : IDisposable
         File.WriteAllText(backupPath, "old image");
         var dir = Path.GetDirectoryName(backupPath)!;
         var originalMode = File.GetUnixFileMode(dir);
+        using var error = new StringWriter();
 
         try
         {
@@ -646,10 +733,11 @@ public sealed class UpdateCommandTests : IDisposable
                 | UnixFileMode.GroupRead | UnixFileMode.GroupExecute
                 | UnixFileMode.OtherRead | UnixFileMode.OtherExecute);
 
-            UpdateCommand.CleanupBackupFile(backupPath, runningBackupPath: null, isWindows: false);
+            UpdateCommand.CleanupBackupFile(backupPath, runningBackupPath: null, isWindows: false, error);
 
             // Warned, not crashed; the leftover self-heals on the next update.
             Assert.True(File.Exists(backupPath));
+            Assert.Contains("warn: could not remove backup", error.ToString());
         }
         finally
         {

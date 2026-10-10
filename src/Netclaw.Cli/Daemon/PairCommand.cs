@@ -27,31 +27,26 @@ internal static class PairCommand
     /// <summary>
     /// Entry point for <c>netclaw pair [endpoint]</c>.
     /// </summary>
-    public static async Task<int> RunAsync(string[] args, NetclawPaths paths)
+    public static async Task<int> RunAsync(CliContext cli, string[] args)
     {
         using var handler = CreateHttpHandler();
         using var httpClient = new HttpClient(handler) { Timeout = System.Threading.Timeout.InfiniteTimeSpan };
         return await RunAsync(
+            cli,
             args,
-            paths,
             httpClient,
-            Console.In,
-            Console.Out,
-            Console.Error,
-            TimeProvider.System,
             CancellationToken.None);
     }
 
     internal static async Task<int> RunAsync(
+        CliContext cli,
         string[] args,
-        NetclawPaths paths,
         HttpClient httpClient,
-        TextReader input,
-        TextWriter output,
-        TextWriter error,
-        TimeProvider timeProvider,
         CancellationToken cancellationToken)
     {
+        var paths = cli.Paths;
+        var output = cli.Output;
+        var error = cli.Error;
         var endpoint = args.Length > 1 ? args[1] : null;
 
         if (string.IsNullOrWhiteSpace(endpoint) || IsHelpToken(endpoint))
@@ -68,7 +63,7 @@ internal static class PairCommand
 
         endpoint = normalizedEndpoint;
 
-        var pairingInput = await ReadPairingInputAsync(input, output, error, cancellationToken);
+        var pairingInput = await ReadPairingInputAsync(cli.Input, output, error, cancellationToken);
         if (pairingInput is null)
             return 1;
 
@@ -79,7 +74,7 @@ internal static class PairCommand
             pairingInput.Code,
             pairingInput.DeviceName,
             error,
-            timeProvider,
+            cli.Time,
             cancellationToken);
         if (token is null)
             return 1;

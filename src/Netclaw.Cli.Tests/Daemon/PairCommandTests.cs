@@ -428,13 +428,9 @@ public sealed class PairCommandTests : IDisposable
         using var stderr = new StringWriter();
 
         var exitCode = await PairCommand.RunAsync(
+            new CliContext(_paths, timeProvider, input, stdout, stderr),
             ["pair", endpoint],
-            _paths,
             httpClient,
-            input,
-            stdout,
-            stderr,
-            timeProvider,
             cancellationToken);
 
         return (exitCode, stdout.ToString(), stderr.ToString());
