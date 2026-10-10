@@ -20,6 +20,9 @@ To read or change the setting, run `netclaw config retention` or
 `netclaw config retention --logs-days <days>`. A running daemon applies the change
 automatically.
 
+If a config editor reports `The new netclaw.json would not load`, the original file remains intact.
+Inspect the reported duplicate key and correct the file before another save attempt.
+
 If `netclaw status` or `netclaw chat` prints `daemon not configured - please run
 netclaw init`, do not troubleshoot daemon reachability or model defaults. The
 install has no `netclaw.json`; run `netclaw init` first. If doctor prints the

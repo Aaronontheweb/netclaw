@@ -40,6 +40,8 @@ Behavior:
 - `netclaw config retention` shows how long the daemon keeps data. Each option sets one
   `Retention:*:Days` key in `netclaw.json` and rejects a value that is not a whole number
   of days from 0 to 36500 with exit code 1. Zero keeps the data forever.
+- The shared config editor session validates the final document after the version assignment and before persistence.
+  If the runtime configuration loader rejects the document, the editor preserves the original file.
 - structured validation with property path and remediation hints
 - non-zero exit code on validation failure
 

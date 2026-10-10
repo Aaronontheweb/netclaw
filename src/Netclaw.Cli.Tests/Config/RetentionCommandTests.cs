@@ -262,16 +262,16 @@ public sealed class RetentionCommandTests : IDisposable
     }
 
     [Fact]
-    public void A_document_that_would_not_load_is_refused_before_it_is_written()
+    public void A_duplicate_from_the_final_version_assignment_is_refused_before_persistence()
     {
-        var document = new Dictionary<string, object>
-        {
-            ["Retention"] = new Dictionary<string, object> { ["Logs"] = new Dictionary<string, object> { ["Days"] = 9 } },
-            ["retention"] = new Dictionary<string, object> { ["Logs"] = new Dictionary<string, object> { ["Days"] = 3 } }
-        };
+        const string content = """{"configversion":1}""";
+        File.WriteAllText(_paths.NetclawConfigPath, content);
 
-        var ex = Assert.Throws<InvalidOperationException>(() => RetentionConfigStore.EnsureLoads(document));
-        Assert.StartsWith("The new netclaw.json would not load:", ex.Message, StringComparison.Ordinal);
+        Assert.Equal(1, Run("--logs-days", "9"));
+
+        Assert.StartsWith("Could not use netclaw.json: The new netclaw.json would not load:", _error.ToString(), StringComparison.Ordinal);
+        Assert.Equal(content, File.ReadAllText(_paths.NetclawConfigPath));
+        Assert.Equal("1", new ConfigurationBuilder().AddJsonFile(_paths.NetclawConfigPath).Build()["configVersion"]);
     }
 
     [Fact]

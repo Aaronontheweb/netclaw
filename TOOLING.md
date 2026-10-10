@@ -882,6 +882,7 @@ TUI code SHOULD run the harness before declaring a change done.
 | `./scripts/smoke/run-smoke.sh full` | Full suite (placeholder: identical to light until backfilled) |
 | `./scripts/smoke/run-smoke.sh <name>` | Single tape or scenario, e.g. `init-wizard` (fastest inner loop) |
 | `./scripts/smoke/run-smoke.sh skill-sync` | Live daemon and RFC feed proof for immediate skill updates |
+| `./scripts/smoke/run-smoke.sh config-retention` | Native retention editor: first key, Backspace, paste, save, and re-entry |
 | `./scripts/smoke/run-smoke.sh screenshots` | Screenshot regression: capture + byte-compare against baselines |
 | `./scripts/smoke/install-vhs.sh` | Idempotent VHS install (Linux/x86_64 + macOS via Homebrew) |
 

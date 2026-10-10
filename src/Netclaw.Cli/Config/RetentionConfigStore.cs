@@ -3,9 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Text.Json;
 using Microsoft.Extensions.Configuration;
-using Netclaw.Cli.Json;
 using Netclaw.Cli.Tui.Sections;
 using Netclaw.Configuration;
 
@@ -86,7 +84,6 @@ internal static class RetentionConfigStore
         session.Apply(new SectionContribution(pending
             .Select(p => new SectionFieldAction(PathToWrite(session.Config, configuration, p.Setting), SectionFieldActionKind.Set, p.Days))
             .ToList()));
-        EnsureLoads(session.Config);
         session.Save();
         return pending.Count;
     }
@@ -109,20 +106,6 @@ internal static class RetentionConfigStore
             throw new InvalidOperationException($"{setting.ConfigKey} is set in a spelling this command cannot edit. Edit netclaw.json by hand.");
 
         return nested;
-    }
-
-    // Loads the new document the way the daemon does, before anything is written.
-    internal static void EnsureLoads(Dictionary<string, object> document)
-    {
-        try
-        {
-            using var stream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(document, JsonDefaults.ConfigFile));
-            new ConfigurationBuilder().AddJsonStream(stream).Build();
-        }
-        catch (Exception ex) when (ex is FormatException or InvalidDataException or JsonException)
-        {
-            throw new InvalidOperationException($"The new netclaw.json would not load: {ex.Message}");
-        }
     }
 
     /// <summary>"keep 14 days", "keep 1 day", or "keep forever".</summary>
