@@ -240,4 +240,82 @@ public sealed class RetentionCommandTests : IDisposable
             Environment.SetEnvironmentVariable(name, null);
         }
     }
+
+    [Theory]
+    [InlineData("""{"configVersion":1,"Daemon":{"ExposureMode":"local"},"Retention:Logs":{"Days":""}}""")]
+    [InlineData("""{"configVersion":1,"Retention:Logs":{"Days":null}}""")]
+    [InlineData("""{"configVersion":1,"Retention:Logs":{"Days":" "}}""")]
+    [InlineData("""{"configVersion":1,"Retention:Logs":{"Days":{}}}""")]
+    [InlineData("""{"configVersion":1,"Retention:Logs":{"Days":[]}}""")]
+    [InlineData("""{"configVersion":1,"Retention":{"Logs:Days":null}}""")]
+    [InlineData("""{"configVersion":1,"Retention":{"Logs:Days":""}}""")]
+    public void A_blank_value_in_a_spelling_it_cannot_edit_is_refused_and_nothing_is_written(string content)
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, content);
+
+        Assert.Equal(1, Run("--logs-days", "9"));
+
+        Assert.Equal(
+            "Could not use netclaw.json: Retention:Logs:Days is set in a spelling this command cannot edit. Edit netclaw.json by hand." + Environment.NewLine,
+            _error.ToString());
+        Assert.Equal(content, File.ReadAllText(_paths.NetclawConfigPath));
+    }
+
+    [Fact]
+    public void A_duplicate_from_the_final_version_assignment_is_refused_before_persistence()
+    {
+        const string content = """{"configversion":1}""";
+        File.WriteAllText(_paths.NetclawConfigPath, content);
+
+        Assert.Equal(1, Run("--logs-days", "9"));
+
+        Assert.StartsWith("Could not use netclaw.json: The new netclaw.json would not load:", _error.ToString(), StringComparison.Ordinal);
+        Assert.Equal(content, File.ReadAllText(_paths.NetclawConfigPath));
+        Assert.Equal("1", new ConfigurationBuilder().AddJsonFile(_paths.NetclawConfigPath).Build()["configVersion"]);
+    }
+
+    [Fact]
+    public void A_flat_key_is_matched_without_case()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, """{"configVersion":1,"retention:logs:days":3}""");
+
+        Assert.Equal(0, Run("--logs-days", "9"));
+
+        var text = File.ReadAllText(_paths.NetclawConfigPath);
+        Assert.Equal(9, RetentionConfigStore.Read(_paths, RetentionSettings.Logs).Days);
+        Assert.DoesNotContain("\"Retention\"", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Showing_the_value_accepts_comments_and_trailing_commas()
+    {
+        const string content = "{\n  // kept for a month\n  \"configVersion\": 1,\n  \"Retention\": { \"Logs\": { \"Days\": 30, }, },\n}";
+        File.WriteAllText(_paths.NetclawConfigPath, content);
+
+        Assert.Equal(0, Run());
+
+        Assert.Equal("Daemon and crash logs: keep 30 days" + Environment.NewLine, _output.ToString());
+        Assert.Equal(content, File.ReadAllText(_paths.NetclawConfigPath));
+    }
+
+    [Theory]
+    [InlineData("NETCLAW_RETENTION__LOGS__DAYS", "30")]
+    [InlineData("netclaw_retention__logs__days", "30")]
+    [InlineData("Netclaw_Retention__Logs__Days", "30")]
+    [InlineData("NETCLAW_Retention:Logs:Days", "30")]
+    [InlineData("NETCLAW_Retention__Logs__Days", "")]
+    public void An_environment_variable_in_any_casing_is_reported_by_its_own_name(string name, string value)
+    {
+        Environment.SetEnvironmentVariable(name, value);
+        try
+        {
+            Assert.Equal(0, Run());
+
+            Assert.Contains($"warning: {name} is set and overrides netclaw.json for the daemon.", _error.ToString(), StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(name, null);
+        }
+    }
 }

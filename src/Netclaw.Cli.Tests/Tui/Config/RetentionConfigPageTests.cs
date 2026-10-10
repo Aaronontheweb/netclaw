@@ -88,6 +88,50 @@ public sealed class RetentionConfigPageTests : IDisposable
         Assert.False(terminal.Contains("not a valid number"), $"Screen:\n{terminal}");
     }
 
+    private async Task<string> Screen(string stored, Action<VirtualInputSource> keys)
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, $$"""{ "configVersion": 1, "Retention": { "Logs": { "Days": {{stored}} } } }""");
+        var (terminal, app, _) = CreateHeadlessApp(out var input);
+        keys(input);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+        return terminal.ToString();
+    }
+
+    [Fact]
+    public async Task The_first_key_repaints_the_row()
+    {
+        var screen = await Screen("7", input => input.EnqueueString("9"));
+
+        Assert.Contains("keep 9 days (not saved)", screen, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_first_Backspace_repaints_the_row()
+    {
+        var screen = await Screen("17", input => input.EnqueueKey(ConsoleKey.Backspace));
+
+        Assert.Contains("keep 1 day (not saved)", screen, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task The_first_paste_repaints_the_row()
+    {
+        var screen = await Screen("7", input => input.EnqueuePaste("45"));
+
+        Assert.Contains("keep 45 days (not saved)", screen, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Typing_the_saved_digit_repaints_the_row()
+    {
+        var screen = await Screen("7", input => input.EnqueueString("7"));
+
+        Assert.Contains("keep 7 days (not saved)", screen, StringComparison.Ordinal);
+    }
+
     private (VirtualTerminal Terminal, TerminaApplication App, RetentionConfigViewModel Vm)
         CreateHeadlessApp(out VirtualInputSource input)
         => HeadlessTerminaFixture.Create<RetentionConfigPage, RetentionConfigViewModel>(

@@ -3,6 +3,8 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.Json;
+using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Json;
 using Netclaw.Cli.Secrets;
@@ -45,6 +47,7 @@ internal sealed class ConfigEditorSession
     {
         _paths.EnsureDirectoriesExist();
         Config["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion;
+        EnsureLoads();
         ConfigFileHelper.WriteConfigFile(_paths.NetclawConfigPath, Config);
 
         if (_secretContributions.Count > 0)
@@ -57,6 +60,20 @@ internal sealed class ConfigEditorSession
 
                 return changed && (fileExisted || HasUserSecretData(secrets));
             });
+        }
+    }
+
+    // Validate after the version assignment, which can introduce a duplicate key.
+    private void EnsureLoads()
+    {
+        try
+        {
+            using var stream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(Config, JsonDefaults.ConfigFile));
+            new ConfigurationBuilder().AddJsonStream(stream).Build();
+        }
+        catch (Exception ex) when (ex is FormatException or InvalidDataException or JsonException)
+        {
+            throw new InvalidOperationException($"The new netclaw.json would not load: {ex.Message}");
         }
     }
 
