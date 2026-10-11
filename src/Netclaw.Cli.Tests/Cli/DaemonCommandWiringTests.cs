@@ -305,7 +305,7 @@ public sealed class DaemonCommandWiringTests : IDisposable
         InstallUnit();
         FakeSystemctl("active.code", "0");
         FakeSystemctl("active.out", "active\n");
-        FakeSystemctl("mainpid.out", "4242\n");
+        FakeSystemctl("mainpid.out", int.MaxValue + "\n"); // no such process: its environment is unreadable
         FakeSystemctl("environment.out", "NETCLAW_HOME=/home/op/data");
 
         var (exitCode, output) = await RunAsync(DefaultNetclawHome, ["daemon", "stop"]);
