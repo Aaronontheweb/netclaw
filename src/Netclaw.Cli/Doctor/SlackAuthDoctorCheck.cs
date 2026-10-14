@@ -6,6 +6,7 @@
 using System.Text.Json.Nodes;
 using Netclaw.Channels.Slack;
 using Netclaw.Cli.Config;
+using Netclaw.Cli.Json;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
 
@@ -55,7 +56,7 @@ public sealed class SlackAuthDoctorCheck(NetclawPaths paths, ISlackProbe slackPr
 
         try
         {
-            var secrets = JsonNode.Parse(File.ReadAllText(paths.SecretsPath)) as JsonObject;
+            var secrets = JsonNode.Parse(File.ReadAllText(paths.SecretsPath), documentOptions: JsonDefaults.ConfigDocument) as JsonObject;
             var raw = secrets?["Slack"]?["BotToken"]?.GetValue<string>();
             if (string.IsNullOrWhiteSpace(raw))
                 return (null, null);

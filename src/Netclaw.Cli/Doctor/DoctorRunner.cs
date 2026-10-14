@@ -11,7 +11,18 @@ public sealed class DoctorRunner(IEnumerable<IDoctorCheck> checks)
     {
         var results = new List<DoctorCheckResult>();
         foreach (var check in checks)
-            results.Add(await check.RunAsync(cancellationToken));
+        {
+            try
+            {
+                results.Add(await check.RunAsync(cancellationToken));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // A check that cannot read the files it inspects (unreadable, invalid, duplicate keys)
+                // has found a problem; it must not take the whole report down with it.
+                results.Add(DoctorCheckResult.Error(check.GetType().Name, ex.Message.ReplaceLineEndings(" ")));
+            }
+        }
 
         var hasErrors = results.Any(r => r.Severity == DoctorSeverity.Error);
         var hasWarnings = results.Any(r => r.Severity == DoctorSeverity.Warning);

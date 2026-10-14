@@ -66,9 +66,7 @@ internal static class DaemonClientFactory
 
     internal static DaemonConfig LoadDaemonConfig(NetclawPaths paths)
     {
-        var config = new ConfigurationBuilder()
-            .AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false)
-            .AddJsonFile(paths.SecretsPath, optional: true, reloadOnChange: false)
+        var config = CliConfigPreflight.AddConfigFiles(new ConfigurationBuilder(), paths)
             .AddEnvironmentVariables("NETCLAW_")
             .Build();
 

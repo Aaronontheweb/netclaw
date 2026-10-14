@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text.Json.Nodes;
+using Microsoft.Extensions.Configuration;
 using Netclaw.Cli.Config;
 using Netclaw.Cli.Json;
 using Netclaw.Configuration;
@@ -13,6 +14,66 @@ namespace Netclaw.Cli;
 internal static class CliConfigPreflight
 {
     public const string MissingConfigMessage = "daemon not configured - please run netclaw init";
+
+    /// <summary>True when the command line asks for help, which never needs the config.</summary>
+    public static bool IsHelpRequest(string[] args)
+        => (args.Length > 1 && CliArgsParser.IsHelpToken(args[1]))
+           || CliArgsParser.HasTrailingHelpToken(args, 1, includeBareHelp: false);
+
+    /// <summary>
+    /// Adds netclaw.json and secrets.json the way the daemon reads them (the standard JSON
+    /// provider, so comments and trailing commas are accepted). A file that cannot be loaded is
+    /// left out instead of throwing; <see cref="TryDescribeUnreadableConfig"/> reports it.
+    /// </summary>
+    public static IConfigurationBuilder AddConfigFiles(IConfigurationBuilder builder, NetclawPaths paths)
+    {
+        foreach (var file in ConfigFiles(paths))
+        {
+            if (!TryDescribeUnreadableFile(file, out _))
+                builder.AddJsonFile(file, optional: true, reloadOnChange: false);
+        }
+
+        return builder;
+    }
+
+    /// <summary>
+    /// Loads each config file with the provider the daemon uses and, for the first one that
+    /// fails, returns one line naming the file and the reason (with line and position for a
+    /// parse error).
+    /// </summary>
+    public static bool TryDescribeUnreadableConfig(NetclawPaths paths, out string message)
+    {
+        foreach (var file in ConfigFiles(paths))
+        {
+            if (TryDescribeUnreadableFile(file, out message))
+                return true;
+        }
+
+        message = string.Empty;
+        return false;
+    }
+
+    private static bool TryDescribeUnreadableFile(string file, out string message)
+    {
+        try
+        {
+            new ConfigurationBuilder().AddJsonFile(file, optional: true, reloadOnChange: false).Build();
+            message = string.Empty;
+            return false;
+        }
+        catch (Exception ex)
+        {
+            // The provider wraps parse errors in InvalidDataException/FormatException;
+            // the innermost message is the one that says what is wrong.
+            while (ex is InvalidDataException or FormatException && ex.InnerException is { } inner)
+                ex = inner;
+
+            message = $"Couldn't read {Path.GetFileName(file)}: {ex.Message.ReplaceLineEndings(" ")}";
+            return true;
+        }
+    }
+
+    private static string[] ConfigFiles(NetclawPaths paths) => [paths.NetclawConfigPath, paths.SecretsPath];
 
     public static bool TryWriteMissingChatConfig(
         NetclawPaths paths,

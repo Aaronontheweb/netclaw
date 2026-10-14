@@ -105,6 +105,24 @@ static async Task RunAsync(string[] args)
         args = ["chat"];
     }
 
+    // A config file that cannot be loaded stops every command except help, doctor and status.
+    // Doctor reports it as a failed check; status prints it and carries on.
+    string? configProblem = null;
+    if (!CliConfigPreflight.IsHelpRequest(args)
+        && CliConfigPreflight.TryDescribeUnreadableConfig(new NetclawPaths(), out var unreadableConfig))
+    {
+        configProblem = unreadableConfig;
+        if (mode is not ("doctor" or "status"))
+        {
+            Console.Error.WriteLine(configProblem);
+            Environment.ExitCode = 1;
+            return;
+        }
+
+        if (mode is "status")
+            Console.Error.WriteLine(configProblem);
+    }
+
     // Kick off the update check only for modes that do not boot Termina or
     // otherwise own the current command's startup flow. Buffering the notice
     // protects active TUIs from stray stderr, but it does not make the
@@ -243,7 +261,7 @@ static async Task RunAsync(string[] args)
         try
         {
             DoctorFixPlan? fixPlan = null;
-            if (doctorOptions!.Fix)
+            if (doctorOptions!.Fix && configProblem is null)
             {
                 fixPlan = await fixService.BuildPlanAsync();
                 if (doctorOptions.Format is DoctorOutputFormat.Text)
@@ -270,6 +288,8 @@ static async Task RunAsync(string[] args)
             }
 
             var result = await runner.RunAsync();
+            if (configProblem is not null)
+                result = new DoctorRunResult([DoctorCheckResult.Error("Config Load", configProblem), .. result.Results], ExitCode: 1);
 
             if (doctorOptions.Format is DoctorOutputFormat.Json)
                 WriteDoctorJsonResult(result, fixPlan, doctorOptions);
@@ -278,6 +298,7 @@ static async Task RunAsync(string[] args)
 
             // Hint about --fix when there are issues and fix wasn't requested
             if (!doctorOptions.Fix
+                && configProblem is null
                 && result.ExitCode != 0
                 && doctorOptions.Format is DoctorOutputFormat.Text)
             {
@@ -379,7 +400,7 @@ static async Task RunAsync(string[] args)
         using var host = builder.Build();
         using var scope = host.Services.CreateScope();
         var exitCode = await RunStatusAsync(scope.ServiceProvider, statusAsJson);
-        Environment.ExitCode = exitCode;
+        Environment.ExitCode = configProblem is null ? exitCode : Math.Max(exitCode, 1);
         return;
     }
 
@@ -2123,9 +2144,7 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
     // 1. netclaw.json (daemon-owned config, optional)
     // 2. secrets.json (credentials overlay, optional)
     // 3. NETCLAW_* environment variables (highest priority)
-    configuration
-        .AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false)
-        .AddJsonFile(paths.SecretsPath, optional: true, reloadOnChange: false)
+    CliConfigPreflight.AddConfigFiles(configuration, paths)
         .AddEnvironmentVariables("NETCLAW_");
 
     services.AddSingleton(DaemonConfig.BindFromConfiguration(configuration.GetSection("Daemon")));
@@ -2154,9 +2173,7 @@ static IConfigurationRoot BuildCliConfig()
     var paths = new NetclawPaths();
     paths.EnsureDirectoriesExist();
 
-    return new ConfigurationBuilder()
-        .AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false)
-        .AddJsonFile(paths.SecretsPath, optional: true, reloadOnChange: false)
+    return CliConfigPreflight.AddConfigFiles(new ConfigurationBuilder(), paths)
         .AddEnvironmentVariables("NETCLAW_")
         .Build();
 }
