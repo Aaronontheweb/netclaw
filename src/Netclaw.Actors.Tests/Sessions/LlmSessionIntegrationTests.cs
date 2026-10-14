@@ -835,13 +835,29 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
         await sub2.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(200), cancellationToken: TestContext.Current.CancellationToken);
     }
 
-    [Fact]
-    public async Task Buffered_messages_are_batched_into_follow_up_LLM_call()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Buffered_messages_are_batched_into_follow_up_LLM_call(bool mixedAuthority)
     {
-        _fakeChatClient.Delay = TimeSpan.FromMilliseconds(200);
+        // Arrange
+        var firstResponseGate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _fakeChatClient.NextResponseGate = firstResponseGate;
         var sessionId = new SessionId("channel-C/thread-3");
         var sessionManager = ActorRegistry.Get<SessionManagerActorKey>();
         var subscriber = CreateTestProbe("adapter-batch");
+        (string Content, TrustAudience Audience)[] queued = mixedAuthority
+            ?
+            [
+                ("Personal buffer one", TrustAudience.Personal),
+                ("Public buffer", TrustAudience.Public),
+                ("Personal buffer two", TrustAudience.Personal)
+            ]
+            :
+            [
+                ("Second message", TrustAudience.Personal),
+                ("Third message", TrustAudience.Personal)
+            ];
 
         await sessionManager.Ask<SessionJoined>(new JoinSession(subscriber)
         {
@@ -850,38 +866,67 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
         }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
         await subscriber.ExpectMsgAsync<SessionJoined>(cancellationToken: TestContext.Current.CancellationToken); // Drain subscriber notification
 
-        // First message — actor enters Processing
-        var ack1 = await sessionManager.Ask<CommandAck>(new SendUserMessage
+        // Act
+        try
         {
-            SessionId = sessionId,
-            Content = "First message"
-        }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Equal(sessionId, ack1.SessionId);
+            var ack1 = await sessionManager.Ask<CommandAck>(new SendUserMessage
+            {
+                SessionId = sessionId,
+                Content = "First message",
+                Source = mixedAuthority ? SourceFor("first", TrustAudience.Personal) : null
+            }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+            Assert.Equal(sessionId, ack1.SessionId);
+            await _fakeChatClient.FirstCallEntered.Task.WaitAsync(
+                TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
 
-        // These two are deterministically buffered
-        await sessionManager.Ask<CommandAck>(new SendUserMessage
+            foreach (var (content, audience) in queued)
+            {
+                await sessionManager.Ask<CommandAck>(new SendUserMessage
+                {
+                    SessionId = sessionId,
+                    Content = content,
+                    Source = mixedAuthority ? SourceFor(content.Replace(' ', '-'), audience) : null
+                }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
+            }
+            firstResponseGate.TrySetResult();
+
+            await subscriber.ExpectMsgAsync<TextOutput>(TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
+            await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
+
+            await subscriber.ExpectMsgAsync<TextOutput>(TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
+            await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
+
+            // Assert
+            Assert.Equal(2, _fakeChatClient.CallCount);
+            var bufferedInputs = _fakeChatClient.ReceivedMessages[1]
+                .Where(message => message.Role == Microsoft.Extensions.AI.ChatRole.User
+                    && queued.Any(input => input.Content == message.Text))
+                .Select(message => message.Text)
+                .ToArray();
+            Assert.Equal(queued.Select(input => input.Content), bufferedInputs);
+
+            await subscriber.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300), cancellationToken: TestContext.Current.CancellationToken);
+        }
+        finally
         {
-            SessionId = sessionId,
-            Content = "Second message"
-        }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
-        await sessionManager.Ask<CommandAck>(new SendUserMessage
+            firstResponseGate.TrySetResult();
+        }
+
+        MessageSource SourceFor(string messageId, TrustAudience audience) => new()
         {
-            SessionId = sessionId,
-            Content = "Third message"
-        }, TimeSpan.FromSeconds(3), cancellationToken: TestContext.Current.CancellationToken);
-
-        // First turn output
-        await subscriber.ExpectMsgAsync<TextOutput>(TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
-        await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
-
-        // Second turn output (batched follow-up)
-        await subscriber.ExpectMsgAsync<TextOutput>(TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
-        await subscriber.ExpectMsgAsync<TurnCompleted>(TimeSpan.FromSeconds(6), cancellationToken: TestContext.Current.CancellationToken);
-
-        // Only two LLM calls total
-        Assert.Equal(2, _fakeChatClient.CallCount);
-
-        await subscriber.ExpectNoMsgAsync(TimeSpan.FromMilliseconds(300), cancellationToken: TestContext.Current.CancellationToken);
+            ChannelType = audience == TrustAudience.Public ? ChannelType.Webhook : ChannelType.SignalR,
+            SenderId = new SenderId(audience == TrustAudience.Public ? "webhook:test" : "operator-1"),
+            ChannelId = audience == TrustAudience.Public ? "webhook-channel" : "operator-channel",
+            MessageId = messageId,
+            TurnId = new Netclaw.Actors.Protocol.TurnId($"turn-{messageId}"),
+            Audience = audience,
+            Boundary = SecurityPolicyDefaults.ResolveBoundaryFromAudience(audience),
+            Principal = audience == TrustAudience.Public
+                ? PrincipalClassification.VerifiedAutomation : PrincipalClassification.Operator,
+            Provenance = new SourceProvenance(TransportAuthenticity.Verified,
+                audience == TrustAudience.Public ? PayloadTaint.Public : PayloadTaint.Trusted),
+            ReceivedAt = _timeProvider.GetUtcNow()
+        };
     }
 
     [Fact]
