@@ -32,20 +32,27 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
     private DynamicLayoutNode? _inputContentNode;
     private readonly CompositeDisposable _inputSubs = [];
 
-    public ChatPage(IAnsiTerminal terminal)
+    private readonly TimeProvider _time;
+
+    public ChatPage(IAnsiTerminal terminal, TimeProvider? timeProvider = null)
     {
         _terminal = terminal;
+        _time = timeProvider ?? TimeProvider.System;
     }
 
     private int _nextSegmentId = 1;
 
     private SegmentId NextSegmentId() => new(_nextSegmentId++);
 
-    // Track the current "thinking" spinner segment so we can replace it
-    private SegmentId _thinkingSegmentId;
+    // Pending tool lines by call id: a turn can run several tool calls in
+    // parallel, and each one owns its own row and start time. Every animated
+    // segment makes the history rebuild its whole buffer on each tick, so only
+    // the oldest pending line animates (spinner and elapsed time); the others
+    // show a static marker until the animated one goes away and the oldest of
+    // them takes over. Every call reports its own elapsed time on its result line.
+    private readonly record struct PendingTool(SegmentId Segment, long StartTimestamp, string Label, bool Animated);
 
-    // Track active tool timer so we can read final elapsed on completion
-    private ElapsedTimeSegment? _toolTimer;
+    private readonly Dictionary<Netclaw.Tools.ToolCallId, PendingTool> _pendingTools = new();
 
     // Track active streamed assistant text segment
     private SegmentId _assistantSegmentId;
@@ -371,8 +378,8 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 break;
 
             case TextOutput msg:
-                // Remove thinking spinner if present
-                RemoveThinkingSpinner();
+                // Remove pending tool lines if present
+                RemovePendingToolLines();
 
                 // When streaming deltas were already rendered, TextOutput is the
                 // final full snapshot for compatibility. Finalize without duplicating.
@@ -389,7 +396,7 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 break;
 
             case TextDeltaOutput msg:
-                RemoveThinkingSpinner();
+                RemovePendingToolLines();
                 EnsureAssistantSegment();
                 _assistantBuffer.Append(msg.Delta);
                 _chatHistory.Replace(_assistantSegmentId,
@@ -404,50 +411,39 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 break;
 
             case ToolCallOutput msg:
-                RemoveThinkingSpinner();
                 // Streamed text that never got a closing TextOutput (whitespace-only
                 // preamble, or a tool call straight after deltas) would otherwise
                 // stay open and be joined by the tool line.
                 FinalizeAssistantSegmentIfNeeded();
+                RemovePendingToolLine(msg.CallId);
                 var toolSegmentId = NextSegmentId();
-                _thinkingSegmentId = toolSegmentId;
-                _toolTimer = new ElapsedTimeSegment(Color.BrightBlack);
-                _chatHistory.AppendTracked(toolSegmentId,
-                    new CompositeTextSegment(
-                        new SpinnerSegment(Termina.Components.Streaming.SpinnerStyle.Dots, Color.Yellow, intervalMs: 80),
-                        new StaticTextSegment($" {msg.ToolName}({TruncateArgs(msg.ArgumentsJson)})",
-                            Color.Yellow),
-                        _toolTimer,
-                        new StaticTextSegment("\n", TextStyle.Default)));
+                var pendingTool = new PendingTool(toolSegmentId, _time.GetTimestamp(),
+                    $" {msg.ToolName}({TruncateArgs(msg.ArgumentsJson)})", Animated: _pendingTools.Count == 0);
+                _pendingTools[msg.CallId] = pendingTool;
+                _chatHistory.AppendTracked(toolSegmentId, PendingLine(pendingTool));
                 break;
 
             case ToolResultOutput msg:
                 // Replace spinner+timer with checkmark and final elapsed time
-                if (_thinkingSegmentId.Value != 0)
+                if (_pendingTools.Remove(msg.CallId, out var pending))
                 {
-                    // Read elapsed from the timer segment before it gets disposed by Replace
-                    var elapsed = _toolTimer is not null
-                        ? $" ({FormatElapsed(_toolTimer.Elapsed)})"
-                        : "";
-                    _toolTimer = null;
-
-                    _chatHistory.Replace(_thinkingSegmentId,
+                    _chatHistory.Replace(pending.Segment,
                         new StaticTextSegment(
-                            $"  \u2713 {msg.ToolName} \u2192 {Truncate(msg.Result, 80)}{elapsed}\n",
+                            $"  \u2713 {msg.ToolName} \u2192 {Truncate(msg.Result, 80)} ({FormatElapsed(_time.GetElapsedTime(pending.StartTimestamp))})\n",
                             Color.Green),
                         keepTracked: false);
-                    _thinkingSegmentId = default;
+                    PromoteOldestPendingToolLine(pending);
                 }
 
                 break;
 
             case ErrorOutput msg:
-                RemoveThinkingSpinner();
+                RemovePendingToolLines();
                 _chatHistory.AppendLine($"  [error] {msg.Message}", Color.Red);
                 break;
 
             case ToolInteractionRequest msg:
-                RemoveThinkingSpinner();
+                RemovePendingToolLine(msg.CallId);
                 _chatHistory.AppendLine(
                     msg.ToolName.IsMcp
                         ? "System: MCP tool approval required"
@@ -465,7 +461,7 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 break;
 
             case TurnCompleted:
-                RemoveThinkingSpinner();
+                RemovePendingToolLines();
                 FinalizeAssistantSegmentIfNeeded();
                 _chatHistory.ScrollToBottom();
                 break;
@@ -487,13 +483,45 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
         ViewModel.RequestRedraw();
     }
 
-    private void RemoveThinkingSpinner()
+    private ITextSegment PendingLine(PendingTool tool)
     {
-        if (_thinkingSegmentId.Value != 0)
-        {
-            _chatHistory.Remove(_thinkingSegmentId);
-            _thinkingSegmentId = default;
-        }
+        var label = new StaticTextSegment(tool.Label, Color.Yellow);
+        var endOfLine = new StaticTextSegment("\n", TextStyle.Default);
+        return tool.Animated
+            ? new CompositeTextSegment(
+                new SpinnerSegment(Termina.Components.Streaming.SpinnerStyle.Dots, Color.Yellow, intervalMs: 80),
+                label,
+                new ElapsedTimeSegment(Color.BrightBlack, timeProvider: _time, startTimestamp: tool.StartTimestamp),
+                endOfLine)
+            : new CompositeTextSegment(new StaticTextSegment("\u280f", Color.Yellow), label, endOfLine);
+    }
+
+    // The animated line is gone: the oldest line left starts animating, counting from its own start.
+    private void PromoteOldestPendingToolLine(PendingTool gone)
+    {
+        if (!gone.Animated || _pendingTools.Count == 0)
+            return;
+
+        var oldest = _pendingTools.MinBy(p => p.Value.Segment.Value);
+        var promoted = oldest.Value with { Animated = true };
+        _pendingTools[oldest.Key] = promoted;
+        _chatHistory.Replace(promoted.Segment, PendingLine(promoted), keepTracked: true);
+    }
+
+    private void RemovePendingToolLine(Netclaw.Tools.ToolCallId callId)
+    {
+        if (!_pendingTools.Remove(callId, out var pending))
+            return;
+
+        _chatHistory.Remove(pending.Segment);
+        PromoteOldestPendingToolLine(pending);
+    }
+
+    private void RemovePendingToolLines()
+    {
+        foreach (var pending in _pendingTools.Values)
+            _chatHistory.Remove(pending.Segment);
+        _pendingTools.Clear();
     }
 
     private static readonly Regex WhitespaceRun = new(@"\s+", RegexOptions.Compiled);
@@ -506,13 +534,25 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
     // bounded prefix is scanned: the preview is far shorter than the result.
     private const int PreviewScanChars = 512;
 
+    // The preview is one plain row: control sequences are stripped (a cut escape
+    // would swallow the text after it) and the cut falls on a text element, by
+    // display width, so a wide or surrogate-pair character is never split.
     private static string Truncate(string text, int maxLength)
     {
         var clipped = text.Length > PreviewScanChars;
-        text = WhitespaceRun.Replace(clipped ? text[..PreviewScanChars] : text, " ").Trim();
-        return !clipped && text.Length <= maxLength
+        if (clipped)
+        {
+            // Clamp on a small window: parsing a whole multi-megabyte result costs far more than the preview.
+            var window = text[..Math.Min(text.Length, PreviewScanChars + 64)];
+            text = text[..DisplayWidth.ClampToTextElementBoundary(window, PreviewScanChars)];
+        }
+
+        // Whitespace first: sanitizing drops \f, \v and U+0085 without a space.
+        text = DisplayWidth.SanitizeTerminalText(WhitespaceRun.Replace(text, " "));
+        text = WhitespaceRun.Replace(text, " ").Trim();
+        return !clipped && DisplayWidth.GetColumnCount(text) <= maxLength
             ? text
-            : string.Concat(text.AsSpan(0, Math.Min(text.Length, maxLength - 3)), "...");
+            : DisplayWidth.TruncateToColumns(text, maxLength - 3) + "...";
     }
 
     private static string FormatElapsed(TimeSpan elapsed) =>

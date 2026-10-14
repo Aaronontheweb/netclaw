@@ -3,7 +3,6 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Diagnostics;
 using R3;
 using Termina.Components.Streaming;
 using Termina.Rendering;
@@ -18,7 +17,8 @@ namespace Netclaw.Cli.Tui;
 /// </summary>
 public sealed class ElapsedTimeSegment : IAnimatedTextSegment
 {
-    private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
+    private readonly TimeProvider _time;
+    private readonly long _startTimestamp;
     private readonly System.Timers.Timer _timer;
     private readonly Subject<Unit> _invalidated = new();
     private readonly TextStyle _style;
@@ -31,10 +31,13 @@ public sealed class ElapsedTimeSegment : IAnimatedTextSegment
     /// <summary>
     /// The current elapsed time. Read this before disposing to capture the final value.
     /// </summary>
-    public TimeSpan Elapsed => _stopwatch.Elapsed;
+    public TimeSpan Elapsed => _time.GetElapsedTime(_startTimestamp);
 
-    public ElapsedTimeSegment(Color? color = null, int intervalMs = 1000)
+    /// <param name="startTimestamp">A <paramref name="timeProvider"/> timestamp to count from; defaults to now.</param>
+    public ElapsedTimeSegment(Color? color = null, int intervalMs = 1000, TimeProvider? timeProvider = null, long? startTimestamp = null)
     {
+        _time = timeProvider ?? TimeProvider.System;
+        _startTimestamp = startTimestamp ?? _time.GetTimestamp();
         _style = new TextStyle(color ?? Color.BrightBlack);
         _timer = new System.Timers.Timer(intervalMs);
         _timer.Elapsed += OnTick;
@@ -44,7 +47,7 @@ public sealed class ElapsedTimeSegment : IAnimatedTextSegment
 
     public StyledSegment GetCurrentSegment()
     {
-        var elapsed = _stopwatch.Elapsed;
+        var elapsed = Elapsed;
         var text = elapsed.TotalSeconds < 60
             ? $" {elapsed.TotalSeconds:F0}s"
             : $" {(int)elapsed.TotalMinutes}m {elapsed.Seconds}s";
