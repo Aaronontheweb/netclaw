@@ -693,6 +693,44 @@ public sealed class McpCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Add_NameDifferingOnlyByCase_UpdatesTheExistingEntry()
+    {
+        await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "add", "Git", "--", "echo", "hi2"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        var config = ReadConfigFile(_paths.NetclawConfigPath);
+        var servers = config.RootElement.GetProperty("McpServers");
+        var entry = Assert.Single(servers.EnumerateObject());
+        Assert.Equal("git", entry.Name);
+        Assert.Equal("echo", entry.Value.GetProperty("Command").GetString());
+        Assert.Equal("hi2", entry.Value.GetProperty("Arguments")[0].GetString());
+
+        // The file the next command loads must not carry two keys that differ only by case.
+        var loaded = new ConfigurationBuilder().AddJsonFile(_paths.NetclawConfigPath).Build();
+        Assert.Equal("echo", loaded["McpServers:git:Command"]);
+    }
+
+    [Theory]
+    [InlineData("get")]
+    [InlineData("remove")]
+    [InlineData("enable")]
+    [InlineData("disable")]
+    [InlineData("auth")]
+    public async Task ExistingServerCommands_NameTheConfiguredSpellingWhenOnlyTheCaseDiffers(string subcommand)
+    {
+        await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
+        _output.GetStringBuilder().Clear();
+
+        var exitCode = await McpCommand.RunAsync(["mcp", subcommand, "Git"], _paths, output: _output);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("The configured server is 'git'", _output.ToString());
+        Assert.Contains("git", ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("McpServers").EnumerateObject().Select(p => p.Name));
+    }
+
+    [Fact]
     public async Task Remove_NotFound_ReturnsError()
     {
         var exitCode = await McpCommand.RunAsync(

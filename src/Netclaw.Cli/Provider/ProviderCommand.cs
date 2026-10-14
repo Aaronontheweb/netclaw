@@ -172,6 +172,12 @@ internal static class ProviderCommand
             return 1;
         }
 
+        if (!string.IsNullOrWhiteSpace(endpoint) && !IsHttpEndpoint(endpoint))
+        {
+            writer.WriteLine($"Error: Endpoint '{endpoint}' is not an absolute http or https URL. Use a form like http://localhost:8080.");
+            return 1;
+        }
+
         AuthMethod? requestedAuthMethod = null;
         if (authFlag is not null)
         {
@@ -442,6 +448,11 @@ internal static class ProviderCommand
             return 1;
         }
     }
+
+    /// <summary>True when <paramref name="endpoint"/> is an absolute http or https URL, the only form a probe or client can use.</summary>
+    internal static bool IsHttpEndpoint(string endpoint)
+        => Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)
+           && uri.Scheme is "http" or "https";
 
     private static int RunRemove(string[] args, NetclawPaths paths, TextWriter writer)
     {

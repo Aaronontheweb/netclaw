@@ -251,6 +251,10 @@ internal static class McpCommand
 
         var mcpServers = GetOrCreateSection(config, "McpServers");
 
+        // Configuration keys are case-insensitive, so "Git" beside "git" would make the next
+        // load fail on a duplicate key. A name that differs only by case is the same server.
+        serverName = new McpServerName(ExistingKey(mcpServers, serverName.Value));
+
         // Re-running add on an existing name replaces the connection definition only. The
         // audience grants, approval modes and allow-lists belong to the operator, so only a
         // new server gets the secure defaults.
@@ -901,16 +905,6 @@ internal static class McpCommand
         if (!TryReadExistingServerName(args, "Usage: netclaw mcp remove <name>", configured, writer, out var serverName, out var exitCode))
             return exitCode;
 
-        // Names are case-sensitive everywhere but the allow-list, so a name that differs from a
-        // configured server only by case is a typo, not a leftover to clean up.
-        if (!configured.Contains(serverName.Value, StringComparer.Ordinal)
-            && configured.FirstOrDefault(name => name.Equals(serverName.Value, StringComparison.OrdinalIgnoreCase)) is { } configuredName)
-        {
-            writer.WriteLine($"Error: There is no MCP server named '{serverName.Value}'. The configured server is '{configuredName}' "
-                + "(names are case-sensitive). Nothing was removed.");
-            return 1;
-        }
-
         // Check the approval store before changing anything, so a store that cannot be read
         // does not leave the server half removed.
         var savedApprovals = FindSavedApprovals(paths, serverName, configured, out var store);
@@ -1103,6 +1097,13 @@ internal static class McpCommand
         if (nameIndex == 2 && HasHelpFlag(args, startIndex: exists ? 3 : 2))
         {
             exitCode = WriteHelp(writer);
+            return false;
+        }
+
+        if (!exists && configuredServers.FirstOrDefault(name => name.Equals(args[nameIndex], StringComparison.OrdinalIgnoreCase)) is { } configuredName)
+        {
+            writer.WriteLine($"Error: There is no MCP server named '{args[nameIndex]}'. The configured server is '{configuredName}' "
+                + "(names are case-sensitive). Nothing was changed.");
             return false;
         }
 

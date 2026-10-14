@@ -385,6 +385,13 @@ internal static class ModelCommand
             return 1;
         }
 
+        if (!string.IsNullOrWhiteSpace(entry.Endpoint) && !ProviderCommand.IsHttpEndpoint(entry.Endpoint))
+        {
+            writer.WriteLine($"Error: Provider '{providerName}' has endpoint '{entry.Endpoint}', which is not an absolute http or https URL. "
+                + $"Fix it with `netclaw provider add {providerName} {entry.Type} --endpoint http://host:port`.");
+            return 1;
+        }
+
         // Use the registry as the probe (it implements IProviderProbe)
         probe ??= ProviderCommand.CreateDefaultRegistry();
 
@@ -518,11 +525,12 @@ internal static class ModelCommand
     {
         models = null;
         error = null;
-        if (!File.Exists(paths.NetclawConfigPath))
-            return true;
 
+        // The daemon layers NETCLAW_* environment variables over netclaw.json, so the roles it
+        // runs with (or refuses to start with) can differ from the file alone.
         var configuration = new ConfigurationBuilder()
-            .AddJsonFile(paths.NetclawConfigPath, optional: false, reloadOnChange: false)
+            .AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false)
+            .AddEnvironmentVariables("NETCLAW_")
             .Build();
         return TryResolveModelSelection(configuration, out models, out error);
     }

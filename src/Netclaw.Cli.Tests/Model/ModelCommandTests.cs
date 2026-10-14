@@ -317,6 +317,34 @@ public sealed class ModelCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Discover_StoredEndpointWithoutScheme_FailsInOneLineWithoutProbing()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["noscheme"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "localhost:8080"
+                }
+            }
+        });
+
+        var exitCode = await ModelCommand.RunAsync(
+            ["model", "discover", "noscheme"],
+            _paths, _fakeProbe, output: _output);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(
+            "Error: Provider 'noscheme' has endpoint 'localhost:8080', which is not an absolute http or https URL. "
+            + "Fix it with `netclaw provider add noscheme openai-compatible --endpoint http://host:port`.",
+            _output.ToString().Trim());
+        Assert.Equal(0, _fakeProbe.ProbeCallCount);
+    }
+
+    [Fact]
     public async Task Discover_NonexistentProvider_ReturnsError()
     {
         var exitCode = await ModelCommand.RunAsync(
@@ -653,6 +681,74 @@ public sealed class ModelCommandTests : IDisposable
         Assert.Contains("Fix the Models section", output);
         Assert.DoesNotContain("could not be parsed", output);
         Assert.DoesNotContain("doctor --fix", output);
+    }
+
+    [Fact]
+    public async Task List_NamedRolesWithLegacyEnvironmentRoles_ReportsTheMixTheDaemonRefuses()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Definitions"] = new Dictionary<string, object>
+                {
+                    ["known"] = new Dictionary<string, object> { ["Provider"] = "my-ollama", ["ModelId"] = "qwen3:30b" }
+                },
+                ["Roles"] = new Dictionary<string, object> { ["Main"] = "known" }
+            }
+        });
+
+        var exitCode = await WithEnvironment(
+            [("NETCLAW_Models__Main__Provider", "stub"), ("NETCLAW_Models__Main__ModelId", "zzz")],
+            () => ModelCommand.RunAsync(["model", "list"], _paths, output: _output));
+
+        var output = _output.ToString();
+        Assert.Equal(1, exitCode);
+        Assert.Contains("Models configuration mixes legacy inline roles", output);
+        Assert.DoesNotContain("qwen3:30b", output);
+    }
+
+    [Fact]
+    public async Task List_RoleOverriddenByEnvironment_ShowsTheModelTheDaemonUses()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Definitions"] = new Dictionary<string, object>
+                {
+                    ["known"] = new Dictionary<string, object> { ["Provider"] = "my-ollama", ["ModelId"] = "qwen3:30b" }
+                },
+                ["Roles"] = new Dictionary<string, object> { ["Main"] = "known" }
+            }
+        });
+
+        var exitCode = await WithEnvironment(
+            [("NETCLAW_Models__Definitions__known__ModelId", "from-env")],
+            () => ModelCommand.RunAsync(["model", "list"], _paths, output: _output));
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("from-env", _output.ToString());
+        Assert.DoesNotContain("qwen3:30b", _output.ToString());
+    }
+
+    private static async Task<int> WithEnvironment((string Name, string Value)[] variables, Func<Task<int>> run)
+    {
+        var previous = variables.Select(v => Environment.GetEnvironmentVariable(v.Name)).ToArray();
+        try
+        {
+            foreach (var (name, value) in variables)
+                Environment.SetEnvironmentVariable(name, value);
+
+            return await run();
+        }
+        finally
+        {
+            for (var i = 0; i < variables.Length; i++)
+                Environment.SetEnvironmentVariable(variables[i].Name, previous[i]);
+        }
     }
 
     [Fact]

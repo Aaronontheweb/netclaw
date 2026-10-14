@@ -76,7 +76,7 @@ public sealed class InitExistingInstallViewModel : ReactiveViewModel
         InitNavigationState navigationState,
         DaemonManager daemonManager,
         TimeProvider timeProvider)
-        : this(paths, navigationState, daemonManager, new SystemdUserService(), timeProvider)
+        : this(paths, navigationState, daemonManager, new SystemdUserService(paths.BasePath), timeProvider)
     {
     }
 

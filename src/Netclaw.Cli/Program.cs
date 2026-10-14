@@ -528,14 +528,14 @@ static async Task RunAsync(string[] args)
             case "start":
                 var startResult = await UpdateCommand.StartDaemonAsync(
                     new UpdateCommand.DaemonProcessLifecycle(manager),
-                    new SystemdUserService());
+                    new SystemdUserService(paths.BasePath));
                 WriteDaemonResult(startResult);
                 return;
 
             case "stop":
                 var stopResult = (await UpdateCommand.StopDaemonAsync(
                     new UpdateCommand.DaemonProcessLifecycle(manager),
-                    new SystemdUserService(),
+                    new SystemdUserService(paths.BasePath),
                     "cli-stop")).ToDaemonResult();
                 WriteDaemonResult(stopResult);
                 if (stopResult.Success && new ContainerSupervisor().IsExternallySupervised)

@@ -438,7 +438,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
         var unitPath = Path.Combine(_dir.Path, "netclaw.service");
         File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
         var systemd = new SystemdUserService(
-            unitPath, new BusUnreachableRunner(), enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
+            SystemdUserService.DefaultHomePath, unitPath, new BusUnreachableRunner(), enabledOnThisPlatform: true);
         var vm = new InitExistingInstallViewModel(
             _paths, _nav, new DaemonManager(_paths, TimeProvider.System), systemd, _time);
 
@@ -490,7 +490,7 @@ public sealed class InitExistingInstallViewModelTests : IDisposable
             var unitPath = Path.Combine(_dir.Path, "netclaw.service");
             File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
             var runner = new RecordingCommandRunner(daemon.Id);
-            var systemd = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true, homePath: _paths.BasePath,
+            var systemd = new SystemdUserService(_paths.BasePath, unitPath, runner, enabledOnThisPlatform: true,
                 environReader: _ => null);
             using var vm = new InitExistingInstallViewModel(
                 _paths, _nav, new DaemonManager(_paths, TimeProvider.System), systemd, _time);

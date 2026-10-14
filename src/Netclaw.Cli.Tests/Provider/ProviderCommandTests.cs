@@ -83,6 +83,51 @@ public sealed class ProviderCommandTests : IDisposable
         Assert.Equal("http://my-gpu-server:11434", entry.GetProperty("Endpoint").GetString());
     }
 
+    [Theory]
+    [InlineData("localhost:8080")]
+    [InlineData("ftp://host/models")]
+    [InlineData("/v1")]
+    public async Task Add_EndpointThatIsNotAnAbsoluteHttpUrl_FailsInOneLineAndWritesNothing(string endpoint)
+    {
+        var exitCode = await ProviderCommand.RunAsync(
+            ["provider", "add", "noscheme", "openai-compatible", "--endpoint", endpoint],
+            _paths, output: _output);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(
+            $"Error: Endpoint '{endpoint}' is not an absolute http or https URL. Use a form like http://localhost:8080.",
+            _output.ToString().Trim());
+        Assert.False(File.Exists(_paths.NetclawConfigPath));
+    }
+
+    [Theory]
+    [InlineData("http://localhost:8080")]
+    [InlineData("https://llm.example.com/v1")]
+    public async Task Add_AbsoluteHttpEndpoint_IsAccepted(string endpoint)
+    {
+        var exitCode = await ProviderCommand.RunAsync(
+            ["provider", "add", "local", "openai-compatible", "--endpoint", endpoint],
+            _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+    }
+
+    [Fact]
+    public async Task Add_NameDifferingOnlyByCase_ReplacesTheExistingEntry()
+    {
+        await ProviderCommand.RunAsync(
+            ["provider", "add", "local", "ollama", "--endpoint", "http://one:11434"], _paths, output: _output);
+
+        var exitCode = await ProviderCommand.RunAsync(
+            ["provider", "add", "Local", "ollama", "--endpoint", "http://two:11434"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        var providers = ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("Providers");
+        var entry = Assert.Single(providers.EnumerateObject());
+        Assert.Equal("local", entry.Name);
+        Assert.Equal("http://two:11434", entry.Value.GetProperty("Endpoint").GetString());
+    }
+
     [Fact]
     public async Task Add_ApiKeyProvider_WritesConfigAndSecrets()
     {

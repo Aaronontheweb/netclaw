@@ -31,10 +31,10 @@ internal sealed record SystemdUserServiceOwnership(
 }
 
 internal sealed class SystemdUserService(
+    string homePath,
     string? unitFilePath = null,
     ISystemCommandRunner? commandRunner = null,
     bool? enabledOnThisPlatform = null,
-    string? homePath = null,
     Func<int, string?>? environReader = null)
 {
     private const string ServiceName = "netclaw.service";
@@ -45,7 +45,7 @@ internal sealed class SystemdUserService(
 
     private readonly Func<int, string?> _readEnviron = environReader ?? ReadProcEnviron;
 
-    private readonly string _homePath = homePath ?? new NetclawPaths().BasePath;
+    private readonly string _homePath = homePath;
 
     /// <summary>
     /// Stop rule: after a stop succeeds, nothing may bring this home's daemon back. The unit is
