@@ -68,6 +68,49 @@ public sealed class ChatAdmissionTests : IDisposable
         finally { release.TrySetResult(); }
     }
 
+    [Fact]
+    public async Task Over_limit_text_is_refused_with_a_transcript_error_and_stays_in_the_composer()
+    {
+        var transport = new FakeDaemonHubTransport();
+        await using var client = new DaemonClient("http://localhost", transport, reconnectDelays: [TimeSpan.Zero]);
+        var input = new VirtualInputSource();
+        var terminal = new VirtualTerminal(80, 30);
+        using var chat = new ChatViewModel(client, TimeProvider.System, new ModelCapabilities { ModelId = "test" }, new ChatNavigationState(), Paths);
+        var ready = Gate();
+        var refused = Gate();
+        using var statusSub = chat.StatusMessage.Subscribe(value =>
+        {
+            if (value == "Ready") ready.TrySetResult();
+            if (value.StartsWith("Message is too large", StringComparison.Ordinal)) refused.TrySetResult();
+        });
+        await using var provider = CreateHost(chat, input, terminal);
+        var run = provider.GetRequiredService<TerminaApplication>().RunAsync(TestContext.Current.CancellationToken);
+        await ready.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+
+        // 600,000 raw ASCII characters is past the 512 KB frame limit. Paste it, press Enter (refused), then
+        // press Enter again: the composer must still hold the text, so the second Enter is refused too.
+        input.EnqueuePaste(new string('a', 600_000));
+        input.EnqueueKey(ConsoleKey.Enter);
+        await refused.Task.WaitAsync(TimeSpan.FromSeconds(30), TestContext.Current.CancellationToken);
+        input.EnqueueKey(ConsoleKey.Enter);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+        await run.WaitAsync(TimeSpan.FromSeconds(60), TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain(transport.Invocations, call => call.Method == "SendMessage");
+        var screen = terminal.ToString();
+        Assert.Contains("limit 512 KB)", screen);
+        Assert.Equal(2, CountOccurrences(screen, "[error] Message is too large"));
+        Assert.DoesNotContain("You:", screen);
+    }
+
+    private static int CountOccurrences(string text, string value)
+    {
+        var count = 0;
+        for (var i = text.IndexOf(value, StringComparison.Ordinal); i >= 0; i = text.IndexOf(value, i + value.Length, StringComparison.Ordinal))
+            count++;
+        return count;
+    }
+
     private static ServiceProvider CreateHost(ChatViewModel chat, VirtualInputSource input, VirtualTerminal terminal)
     {
         var services = new ServiceCollection();
