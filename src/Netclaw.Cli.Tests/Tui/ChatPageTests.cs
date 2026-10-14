@@ -6,6 +6,7 @@
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Protocol;
+using Microsoft.Extensions.Time.Testing;
 using Netclaw.Actors.Tools;
 using Netclaw.Cli.Daemon;
 using Netclaw.Cli.Tui;
@@ -700,6 +701,65 @@ public sealed class ChatPageTests
         Assert.Contains("→ abc def ghi jkl (", row, StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ParallelToolCalls_ResultLineReportsTheCallsOwnElapsedTime()
+    {
+        // The fake clock advances one second after each replayed output.
+        var screen = await RenderSessionOutputsAsync(new FakeTimeProvider(), TimeSpan.FromSeconds(1),
+            ToolCall("tool_a", "call-1", "{}"),
+            ToolCall("tool_b", "call-2", "{}"),
+            ToolCall("tool_c", "call-3", "{}"),
+            ToolResult("tool_c", "c", "call-3"),
+            ToolResult("tool_a", "a", "call-1"),
+            ToolResult("tool_b", "b", "call-2"));
+
+        var rows = ChatRows(screen);
+        Assert.Contains(rows, r => r.StartsWith("  ✓ tool_a → a (4.0s)", StringComparison.Ordinal));
+        Assert.Contains(rows, r => r.StartsWith("  ✓ tool_b → b (4.0s)", StringComparison.Ordinal));
+        Assert.Contains(rows, r => r.StartsWith("  ✓ tool_c → c (1.0s)", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ParallelToolCalls_NextPendingLineAnimatesWhenTheAnimatedOneFinishes()
+    {
+        var screen = await RenderSessionOutputsAsync(new FakeTimeProvider(), TimeSpan.FromSeconds(1),
+            ToolCall("tool_a", "call-1", "{}"),
+            ToolCall("tool_b", "call-2", "{}"),
+            ToolCall("tool_c", "call-3", "{}"),
+            ToolResult("tool_a", "a", "call-1"),
+            new SessionJoined { SessionId = new SessionId("tui/test"), Title = "later" });
+
+        var rows = ChatRows(screen);
+        // tool_b started at 1s and takes over the spinner at 3s, when tool_a finishes: it counts from its own start.
+        Assert.Matches("^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] tool_b\\(\\{\\}\\) 2s", Assert.Single(rows, r => r.Contains("tool_b(", StringComparison.Ordinal)));
+        Assert.Equal("⠏ tool_c({})", Assert.Single(rows, r => r.Contains("tool_c(", StringComparison.Ordinal)));
+    }
+
+    [Fact]
+    public async Task ParallelToolCalls_ApprovalPromptForTheAnimatedCallHandsTheSpinnerOn()
+    {
+        var approval = BuildApproval("rm -rf build") with { CallId = new Netclaw.Tools.ToolCallId("call-1") };
+        var screen = await RenderSessionOutputsAsync(new FakeTimeProvider(), TimeSpan.FromSeconds(1),
+            ToolCall("shell_execute", "call-1", "{\"command\":\"rm -rf build\"}"),
+            ToolCall("tool_b", "call-2", "{}"),
+            approval);
+
+        var row = Assert.Single(ChatRows(screen), r => r.Contains("tool_b(", StringComparison.Ordinal));
+        Assert.Matches("^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] tool_b\\(\\{\\}\\) 1s", row);
+    }
+
+    [Fact]
+    public async Task ToolPreview_ScansOnlyABoundedWindowOfAHugeResult()
+    {
+        var huge = new string('x', 5_000_000);
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch"),
+            ToolResult("web_fetch", huge));
+
+        var row = Assert.Single(ChatRows(screen), r => r.Contains("✓ web_fetch", StringComparison.Ordinal));
+        Assert.Contains("→ " + new string('x', 77) + "... (", row, StringComparison.Ordinal);
+    }
+
     private static ToolCallOutput ToolCall(
         string toolName, string callId = "call-1", string argumentsJson = "{\"url\":\"http://example.test/weather\"}") => new()
     {
@@ -716,6 +776,16 @@ public sealed class ChatPageTests
         ToolName = new Netclaw.Tools.ToolName(toolName),
         Result = result
     };
+
+    private static async Task<string> RenderSessionOutputsAsync(FakeTimeProvider clock, TimeSpan stepPerOutput, params SessionOutput[] outputs)
+    {
+        var (terminal, app, _) = CreateHeadlessApp(null, out var input, replay: outputs, clock: clock, stepPerOutput: stepPerOutput);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+        return terminal.ToString();
+    }
 
     /// <summary>
     /// Runs the chat page headlessly with <paramref name="outputs"/> replayed
@@ -1032,7 +1102,9 @@ public sealed class ChatPageTests
             int width = 120, int height = 40,
             IReadOnlyList<ToolInteractionOption>? options = null,
             bool startGenerating = false,
-            IReadOnlyList<SessionOutput>? replay = null)
+            IReadOnlyList<SessionOutput>? replay = null,
+            FakeTimeProvider? clock = null,
+            TimeSpan stepPerOutput = default)
     {
         var terminal = new VirtualTerminal(width, height);
         var virtualInput = new VirtualInputSource();
@@ -1047,7 +1119,7 @@ public sealed class ChatPageTests
         {
             builder.RegisterRoute<ChatPage, ChatViewModel>(
                 "/chat",
-                sp => new ChatPage(sp.GetRequiredService<IAnsiTerminal>()),
+                sp => new ChatPage(sp.GetRequiredService<IAnsiTerminal>(), clock),
                 _ =>
                 {
                     var effectiveSeed = seed is null
@@ -1055,7 +1127,7 @@ public sealed class ChatPageTests
                         : options is null
                             ? seed
                             : seed with { Options = options };
-                    capturedVm = new TestChatViewModel(effectiveSeed, startGenerating, replay);
+                    capturedVm = new TestChatViewModel(effectiveSeed, startGenerating, replay, clock, stepPerOutput);
                     return capturedVm;
                 });
         });
@@ -1101,8 +1173,11 @@ public sealed class ChatPageTests
         /// </summary>
         public string? LastSubmittedInteractionKey { get; private set; }
 
+        private readonly FakeTimeProvider? _clock;
+        private readonly TimeSpan _stepPerOutput;
+
         public TestChatViewModel(ToolInteractionRequest? seed, bool startGenerating = false,
-            IReadOnlyList<SessionOutput>? replay = null)
+            IReadOnlyList<SessionOutput>? replay = null, FakeTimeProvider? clock = null, TimeSpan stepPerOutput = default)
             : base(
                 // 127.0.0.1:1 is never dialed: InitializeSessionAsync is
                 // overridden to no-op, so the underlying HubConnection stays
@@ -1117,12 +1192,17 @@ public sealed class ChatPageTests
             _seed = seed;
             _startGenerating = startGenerating;
             _replay = replay;
+            _clock = clock;
+            _stepPerOutput = stepPerOutput;
         }
 
         protected override Task InitializeSessionAsync()
         {
             foreach (var output in _replay ?? [])
+            {
                 ProcessOutputForTesting(output);
+                _clock?.Advance(_stepPerOutput);
+            }
             return Task.CompletedTask;
         }
 

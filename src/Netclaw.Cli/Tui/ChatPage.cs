@@ -3,7 +3,6 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using Netclaw.Actors.Protocol;
@@ -33,9 +32,12 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
     private DynamicLayoutNode? _inputContentNode;
     private readonly CompositeDisposable _inputSubs = [];
 
-    public ChatPage(IAnsiTerminal terminal)
+    private readonly TimeProvider _time;
+
+    public ChatPage(IAnsiTerminal terminal, TimeProvider? timeProvider = null)
     {
         _terminal = terminal;
+        _time = timeProvider ?? TimeProvider.System;
     }
 
     private int _nextSegmentId = 1;
@@ -45,10 +47,10 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
     // Pending tool lines by call id: a turn can run several tool calls in
     // parallel, and each one owns its own row and start time. Every animated
     // segment makes the history rebuild its whole buffer on each tick, so only
-    // the first pending line animates (spinner and elapsed time); later ones
-    // show a static marker. Every call still reports its own elapsed time on
-    // its result line.
-    private readonly record struct PendingTool(SegmentId Segment, long StartTimestamp);
+    // the oldest pending line animates (spinner and elapsed time); the others
+    // show a static marker until the animated one goes away and the oldest of
+    // them takes over. Every call reports its own elapsed time on its result line.
+    private readonly record struct PendingTool(SegmentId Segment, long StartTimestamp, string Label, bool Animated);
 
     private readonly Dictionary<Netclaw.Tools.ToolCallId, PendingTool> _pendingTools = new();
 
@@ -415,20 +417,10 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 FinalizeAssistantSegmentIfNeeded();
                 RemovePendingToolLine(msg.CallId);
                 var toolSegmentId = NextSegmentId();
-                var animated = _pendingTools.Count == 0;
-                _pendingTools[msg.CallId] = new PendingTool(toolSegmentId, Stopwatch.GetTimestamp());
-                var toolLabel = new StaticTextSegment($" {msg.ToolName}({TruncateArgs(msg.ArgumentsJson)})", Color.Yellow);
-                var endOfLine = new StaticTextSegment("\n", TextStyle.Default);
-                _chatHistory.AppendTracked(toolSegmentId, animated
-                    ? new CompositeTextSegment(
-                        new SpinnerSegment(Termina.Components.Streaming.SpinnerStyle.Dots, Color.Yellow, intervalMs: 80),
-                        toolLabel,
-                        new ElapsedTimeSegment(Color.BrightBlack),
-                        endOfLine)
-                    : new CompositeTextSegment(
-                        new StaticTextSegment("\u280f", Color.Yellow),
-                        toolLabel,
-                        endOfLine));
+                var pendingTool = new PendingTool(toolSegmentId, _time.GetTimestamp(),
+                    $" {msg.ToolName}({TruncateArgs(msg.ArgumentsJson)})", Animated: _pendingTools.Count == 0);
+                _pendingTools[msg.CallId] = pendingTool;
+                _chatHistory.AppendTracked(toolSegmentId, PendingLine(pendingTool));
                 break;
 
             case ToolResultOutput msg:
@@ -437,9 +429,10 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 {
                     _chatHistory.Replace(pending.Segment,
                         new StaticTextSegment(
-                            $"  \u2713 {msg.ToolName} \u2192 {Truncate(msg.Result, 80)} ({FormatElapsed(Stopwatch.GetElapsedTime(pending.StartTimestamp))})\n",
+                            $"  \u2713 {msg.ToolName} \u2192 {Truncate(msg.Result, 80)} ({FormatElapsed(_time.GetElapsedTime(pending.StartTimestamp))})\n",
                             Color.Green),
                         keepTracked: false);
+                    PromoteOldestPendingToolLine(pending);
                 }
 
                 break;
@@ -490,10 +483,38 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
         ViewModel.RequestRedraw();
     }
 
+    private ITextSegment PendingLine(PendingTool tool)
+    {
+        var label = new StaticTextSegment(tool.Label, Color.Yellow);
+        var endOfLine = new StaticTextSegment("\n", TextStyle.Default);
+        return tool.Animated
+            ? new CompositeTextSegment(
+                new SpinnerSegment(Termina.Components.Streaming.SpinnerStyle.Dots, Color.Yellow, intervalMs: 80),
+                label,
+                new ElapsedTimeSegment(Color.BrightBlack, timeProvider: _time, startTimestamp: tool.StartTimestamp),
+                endOfLine)
+            : new CompositeTextSegment(new StaticTextSegment("\u280f", Color.Yellow), label, endOfLine);
+    }
+
+    // The animated line is gone: the oldest line left starts animating, counting from its own start.
+    private void PromoteOldestPendingToolLine(PendingTool gone)
+    {
+        if (!gone.Animated || _pendingTools.Count == 0)
+            return;
+
+        var oldest = _pendingTools.MinBy(p => p.Value.Segment.Value);
+        var promoted = oldest.Value with { Animated = true };
+        _pendingTools[oldest.Key] = promoted;
+        _chatHistory.Replace(promoted.Segment, PendingLine(promoted), keepTracked: true);
+    }
+
     private void RemovePendingToolLine(Netclaw.Tools.ToolCallId callId)
     {
-        if (_pendingTools.Remove(callId, out var pending))
-            _chatHistory.Remove(pending.Segment);
+        if (!_pendingTools.Remove(callId, out var pending))
+            return;
+
+        _chatHistory.Remove(pending.Segment);
+        PromoteOldestPendingToolLine(pending);
     }
 
     private void RemovePendingToolLines()
@@ -520,7 +541,11 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
     {
         var clipped = text.Length > PreviewScanChars;
         if (clipped)
-            text = text[..DisplayWidth.ClampToTextElementBoundary(text, PreviewScanChars)];
+        {
+            // Clamp on a small window: parsing a whole multi-megabyte result costs far more than the preview.
+            var window = text[..Math.Min(text.Length, PreviewScanChars + 64)];
+            text = text[..DisplayWidth.ClampToTextElementBoundary(window, PreviewScanChars)];
+        }
 
         // Whitespace first: sanitizing drops \f, \v and U+0085 without a space.
         text = DisplayWidth.SanitizeTerminalText(WhitespaceRun.Replace(text, " "));
