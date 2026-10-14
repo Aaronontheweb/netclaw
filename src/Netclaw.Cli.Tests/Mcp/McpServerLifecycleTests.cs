@@ -71,6 +71,25 @@ public sealed class McpServerLifecycleTests : IDisposable
     }
 
     [Fact]
+    public async Task Add_ExistingServerInOtherCase_KeepsTheStoredSpellingAndEveryAudienceUntouched()
+    {
+        await AddNotionAsync(clientSecret: null);
+        ConfigureOperatorState("notion");
+        var toolsBefore = ReadConfig()["Tools"]!.ToJsonString();
+        Assert.Contains("notion/fetch", toolsBefore, StringComparison.Ordinal);
+
+        Assert.Equal(0, await McpCommand.RunAsync(
+            ["mcp", "add", "--transport", "http", "Notion", "https://changed.example.test/mcp"], _paths, output: _output));
+
+        var config = ReadConfig();
+        var server = Assert.Single(config["McpServers"]!.AsObject());
+        Assert.Equal("notion", server.Key);
+        Assert.Equal("https://changed.example.test/mcp", server.Value!["Url"]!.GetValue<string>());
+        Assert.Equal(toolsBefore, config["Tools"]!.ToJsonString());
+        Assert.Contains("Updated MCP server 'notion'", _output.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Add_ExistingServer_KeepsItDisabledAndIgnoresGrantAll()
     {
         await AddNotionAsync(clientSecret: null);

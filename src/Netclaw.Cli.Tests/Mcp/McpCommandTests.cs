@@ -764,26 +764,6 @@ public sealed class McpCommandTests : IDisposable
         Assert.DoesNotContain("not found", _output.ToString());
     }
 
-    [Theory]
-    [InlineData("add")]
-    [InlineData("get")]
-    [InlineData("remove")]
-    [InlineData("disable")]
-    public async Task TwoServersDifferingOnlyByCase_RefuseAWrongCaseNameNamingBothSpellings(string subcommand)
-    {
-        var json = """{"McpServers":{"git":{"Transport":"stdio","Command":"echo","Enabled":true},"Git":{"Transport":"stdio","Command":"echo","Enabled":true}}}""";
-        File.WriteAllText(_paths.NetclawConfigPath, json);
-
-        var args = subcommand == "add"
-            ? new[] { "mcp", "add", "GIT", "--", "echo", "x" }
-            : ["mcp", subcommand, "GIT"];
-        var exitCode = await McpCommand.RunAsync(args, _paths, output: _output);
-
-        Assert.Equal(1, exitCode);
-        Assert.Contains("'git' and 'Git' differ only by case, so 'GIT' is ambiguous", _output.ToString());
-        Assert.Equal(json, File.ReadAllText(_paths.NetclawConfigPath));
-    }
-
     [Fact]
     public async Task TwoServersDifferingOnlyByCase_ExactSpellingStillRemovesThatOne()
     {

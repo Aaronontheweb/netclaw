@@ -142,22 +142,18 @@ public sealed class ProviderCommandTests : IDisposable
         Assert.Empty(ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("Providers").EnumerateObject());
     }
 
-    [Theory]
-    [InlineData("remove")]
-    [InlineData("add")]
-    public async Task TwoProvidersDifferingOnlyByCase_RefuseAWrongCaseNameNamingBothSpellings(string subcommand)
+    [Fact]
+    public async Task Rename_WrongCase_RenamesTheConfiguredProvider()
     {
-        var json = """{"Providers":{"local":{"Type":"ollama","Endpoint":"http://a:1"},"Local":{"Type":"ollama","Endpoint":"http://b:1"}}}""";
-        File.WriteAllText(_paths.NetclawConfigPath, json);
+        await ProviderCommand.RunAsync(
+            ["provider", "add", "local", "ollama", "--endpoint", "http://one:11434"], _paths, output: _output);
+        _output.GetStringBuilder().Clear();
 
-        var args = subcommand == "add"
-            ? new[] { "provider", "add", "LOCAL", "ollama" }
-            : ["provider", "remove", "LOCAL"];
-        var exitCode = await ProviderCommand.RunAsync(args, _paths, output: _output);
+        var exitCode = await ProviderCommand.RunAsync(["provider", "rename", "LOCAL", "renamed"], _paths, output: _output);
 
-        Assert.Equal(1, exitCode);
-        Assert.Contains("'local' and 'Local' differ only by case, so 'LOCAL' is ambiguous", _output.ToString());
-        Assert.Equal(json, File.ReadAllText(_paths.NetclawConfigPath));
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Renamed provider 'local' to 'renamed'", _output.ToString());
+        Assert.Equal("renamed", Assert.Single(ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("Providers").EnumerateObject()).Name);
     }
 
     [Fact]

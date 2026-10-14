@@ -339,9 +339,34 @@ public sealed class ModelCommandTests : IDisposable
         Assert.Equal(1, exitCode);
         Assert.Equal(
             "Error: Provider 'noscheme' has endpoint 'localhost:8080', which is not an absolute http or https URL. "
-            + "Fix it with `netclaw provider add noscheme openai-compatible --endpoint http://host:port`.",
+            + "Fix it by editing the provider's endpoint in `netclaw provider`.",
             _output.ToString().Trim());
         Assert.Equal(0, _fakeProbe.ProbeCallCount);
+    }
+
+    [Fact]
+    public async Task Discover_StoredEndpointWithoutScheme_HintCannotDropTheStoredApiKey()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["keyed"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "localhost:8080",
+                    ["AuthMethod"] = "ApiKey"
+                }
+            }
+        });
+        File.WriteAllText(_paths.SecretsPath, """{"Providers":{"keyed":{"ApiKey":"sk-keep"}}}""");
+
+        await ModelCommand.RunAsync(["model", "discover", "keyed"], _paths, _fakeProbe, output: _output);
+
+        // `provider add` without --api-key rewrites the entry as unauthenticated and deletes the secret.
+        Assert.DoesNotContain("provider add", _output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("sk-keep", File.ReadAllText(_paths.SecretsPath), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -757,6 +782,55 @@ public sealed class ModelCommandTests : IDisposable
         Assert.Equal(0, exitCode);
         Assert.Contains("from-env", _output.ToString());
         Assert.DoesNotContain("qwen3:30b", _output.ToString());
+        Assert.Contains("NETCLAW_Models__Definitions__known__ModelId", _output.ToString());
+    }
+
+    [Fact]
+    public async Task ProviderRemove_GuardReadsTheFileNotTheShellEnvironment()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-ollama"] = new Dictionary<string, object> { ["Type"] = "ollama", ["Endpoint"] = "http://localhost:11434" },
+                ["other"] = new Dictionary<string, object> { ["Type"] = "ollama", ["Endpoint"] = "http://localhost:11435" }
+            },
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Definitions"] = new Dictionary<string, object>
+                {
+                    ["known"] = new Dictionary<string, object> { ["Provider"] = "my-ollama", ["ModelId"] = "qwen3:30b" }
+                },
+                ["Roles"] = new Dictionary<string, object> { ["Main"] = "known" }
+            }
+        });
+
+        var exitCode = await WithEnvironment(
+            [("NETCLAW_Models__Definitions__known__Provider", "other")],
+            () => Netclaw.Cli.Provider.ProviderCommand.RunAsync(["provider", "remove", "my-ollama"], _paths, output: _output));
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("referenced by model role(s): Main", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Set_ProviderNameInOtherCase_WritesTheConfiguredSpelling()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-ollama"] = new Dictionary<string, object> { ["Type"] = "ollama", ["Endpoint"] = "http://localhost:11434" }
+            }
+        });
+
+        var exitCode = await ModelCommand.RunAsync(
+            ["model", "set", "main", "MY-Ollama", "qwen3:30b", "--context-window", "32768"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Set main model to my-ollama/qwen3:30b", _output.ToString());
     }
 
     private static async Task<int> WithEnvironment((string Name, string Value)[] variables, Func<Task<int>> run)
