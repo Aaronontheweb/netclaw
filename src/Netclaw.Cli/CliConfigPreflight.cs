@@ -31,9 +31,19 @@ internal static class CliConfigPreflight
     /// otherwise the load failure throws and <see cref="TryDescribeLoadFailure"/> reports it.
     /// </summary>
     public static IConfigurationBuilder AddConfigSources(IConfigurationBuilder builder, NetclawPaths paths, bool lenient)
-        => lenient && TryDescribeUnreadableConfig(paths, out _, out _)
-            ? builder.AddEnvironmentVariables("NETCLAW_")
-            : builder.AddNetclawDaemonSources(paths);
+    {
+        if (!lenient)
+            return builder.AddNetclawDaemonSources(paths);
+
+        // Leave out only the file that cannot be loaded; the other still says where the daemon is.
+        foreach (var file in new[] { paths.NetclawConfigPath, paths.SecretsPath })
+        {
+            if (!TryDescribeUnreadableFile(file, out _, out _))
+                builder.AddJsonFile(file, optional: true, reloadOnChange: false);
+        }
+
+        return builder.AddEnvironmentVariables("NETCLAW_");
+    }
 
     /// <summary>
     /// Loads each config file with the provider the daemon uses and, for the first one that
@@ -43,29 +53,38 @@ internal static class CliConfigPreflight
     {
         foreach (var file in new[] { paths.NetclawConfigPath, paths.SecretsPath })
         {
-            var name = Path.GetFileName(file);
-            if (Directory.Exists(file))
-            {
-                message = $"Couldn't read {name}: it is a directory.";
-                fix = $"Move {file} aside and restore the file.";
+            if (TryDescribeUnreadableFile(file, out message, out fix))
                 return true;
-            }
+        }
 
-            try
+        message = fix = string.Empty;
+        return false;
+    }
+
+    private static bool TryDescribeUnreadableFile(string file, out string message, out string fix)
+    {
+        var name = Path.GetFileName(file);
+        if (Directory.Exists(file))
+        {
+            message = $"Couldn't read {name}: it is a directory.";
+            fix = $"Move {file} aside and restore the file.";
+            return true;
+        }
+
+        try
+        {
+            new ConfigurationBuilder().AddJsonFile(file, optional: true, reloadOnChange: false).Build();
+        }
+        catch (Exception ex)
+        {
+            message = DaemonConfigurationSources.DescribeLoadFailure(name, ex);
+            fix = Unwrap(ex) switch
             {
-                new ConfigurationBuilder().AddJsonFile(file, optional: true, reloadOnChange: false).Build();
-            }
-            catch (Exception ex)
-            {
-                message = DaemonConfigurationSources.DescribeLoadFailure(name, ex);
-                fix = Unwrap(ex) switch
-                {
-                    UnauthorizedAccessException => $"Fix the permissions on {file}.",
-                    FileNotFoundException or DirectoryNotFoundException => $"{file} is a link to a file that is missing: restore the target or remove the link.",
-                    _ => $"Fix the JSON in {file} (a duplicate key, or a file that is empty or cut off), or restore it from a backup.",
-                };
-                return true;
-            }
+                UnauthorizedAccessException => $"Fix the permissions on {file}.",
+                FileNotFoundException or DirectoryNotFoundException => $"{file} is a link to a file that is missing: restore the target or remove the link.",
+                _ => $"Fix the JSON in {file} (a duplicate key, or a file that is empty or cut off), or restore it from a backup.",
+            };
+            return true;
         }
 
         message = fix = string.Empty;
@@ -76,9 +95,9 @@ internal static class CliConfigPreflight
     /// A file the daemon reads but the CLI cannot edit: it has comments or trailing commas, and
     /// writing it back would drop them.
     /// </summary>
-    public static bool TryDescribeUneditableConfig(NetclawPaths paths, out string message)
+    public static bool TryDescribeUneditableConfig(NetclawPaths paths, out string message, bool secretsFirst = false)
     {
-        foreach (var file in new[] { paths.NetclawConfigPath, paths.SecretsPath })
+        foreach (var file in secretsFirst ? new[] { paths.SecretsPath, paths.NetclawConfigPath } : new[] { paths.NetclawConfigPath, paths.SecretsPath })
         {
             try
             {
@@ -135,7 +154,7 @@ internal static class CliConfigPreflight
         for (var ex = exception; ex is not null; ex = ex.InnerException)
         {
             if (ex is JsonException)
-                return TryDescribeUneditableConfig(paths, out message);
+                return TryDescribeUneditableConfig(paths, out message, secretsFirst: exception.ToString().Contains("Secrets", StringComparison.Ordinal));
         }
 
         message = string.Empty;

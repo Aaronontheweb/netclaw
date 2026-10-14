@@ -126,6 +126,9 @@ public sealed class BrokenConfigCliTests : IDisposable
     {
         File.WriteAllText(ConfigPath, "{\n// a comment\n\"configVersion\":1,\n\"McpServers\":{},\n}\n");
         File.WriteAllText(SecretsPath, "{\n// a comment\n\"Foo\":{\"Bar\":\"x\"},\n}\n");
+        // Owner-only, so SecretsJsonDoctorCheck goes on to read the values on Linux as it does on Windows.
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(SecretsPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
 
         var mcp = await RunAsync("mcp", "list");
         var provider = await RunAsync("provider", "list");
@@ -159,6 +162,29 @@ public sealed class BrokenConfigCliTests : IDisposable
         Assert.StartsWith($"Couldn't read {commented}: it has comments", Assert.Single(add.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries)));
         Assert.Equal(content, File.ReadAllText(commented == "netclaw.json" ? ConfigPath : SecretsPath));
         AssertNoCrashLog();
+    }
+
+    [Fact]
+    public async Task A_writer_names_the_file_it_read_when_both_files_have_comments()
+    {
+        File.WriteAllText(ConfigPath, "{\n// c\n\"configVersion\":1}\n");
+        File.WriteAllText(SecretsPath, "{\n// c\n\"Foo\":\"x\"}\n");
+
+        var secrets = await RunAsync("secrets", "set", "Foo.Bar", "baz");
+
+        Assert.Equal(1, secrets.ExitCode);
+        Assert.StartsWith("Couldn't read secrets.json: it has comments", secrets.Output.Trim());
+    }
+
+    [Fact]
+    public async Task Status_still_finds_a_configured_daemon_port_when_only_secrets_json_cannot_be_read()
+    {
+        File.WriteAllText(ConfigPath, "{\"configVersion\":1,\"Daemon\":{\"Port\":5987}}");
+        File.WriteAllText(SecretsPath, "{\"Providers\":{");
+
+        var status = await RunAsync("status");
+
+        Assert.Contains("127.0.0.1:5987", status.Output);
     }
 
     [Fact]
