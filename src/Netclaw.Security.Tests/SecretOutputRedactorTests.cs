@@ -287,14 +287,13 @@ public sealed class SecretOutputRedactorTests
     }
 
     // "sk-" is also how ordinary words and CSS classes start. The rule wants the shape of a real
-    // key (see KnownTokenRegex), and the key must not begin inside a hyphenated word.
+    // key (see KnownTokenRegex).
     [Theory]
     [InlineData("sk-learn-contrib")]
     [InlineData("pip install scikit-learn sk-learn-contrib")]
     [InlineData("class=\"sk-top-container\"")]
     [InlineData("<div class=\"sk-toggleable__label-arrow\">")]
     [InlineData("task-sk-1234567890")]
-    [InlineData("task-sk-abcdefghijklmnopqrstuvwxyz0123456789")]
     [InlineData("risk-averse")]
     [InlineData("sk-12345678")]
     [InlineData("_sk-abcdefghijklmnopqrstuvwxyz")]
@@ -323,6 +322,22 @@ public sealed class SecretOutputRedactorTests
         })
         {
             Assert.Equal(expected, SecretOutputRedactor.Redact(string.Format(template, key)));
+        }
+    }
+
+    [Theory]
+    [InlineData("prod-{0}", "prod-***REDACTED***")]
+    [InlineData("task-{0}", "task-***REDACTED***")]
+    [InlineData("OPENAI-{0}-backup", "OPENAI-***REDACTED***")]
+    [InlineData("https://host.example/{0}/x", "https://host.example/***REDACTED***/x")]
+    [InlineData("https://host.example/v1/prod-{0}?a=b", "https://host.example/v1/prod-***REDACTED***?a=b")]
+    public void Redact_masks_a_real_shaped_sk_key_glued_after_a_hyphen_or_slash(string template, string expected)
+    {
+        foreach (var key in new[] { Pad("sk-", 48, 'k'), "sk-proj-" + new string('k', 40) + "_" + new string('K', 20) })
+        {
+            var redacted = SecretOutputRedactor.Redact(string.Format(template, key));
+            Assert.DoesNotContain(key, redacted, StringComparison.Ordinal);
+            Assert.StartsWith(expected[..expected.IndexOf("***", StringComparison.Ordinal)], redacted, StringComparison.Ordinal);
         }
     }
 

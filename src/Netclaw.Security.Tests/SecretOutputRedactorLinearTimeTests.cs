@@ -80,27 +80,21 @@ public sealed class SecretOutputRedactorLinearTimeTests
         AssertSameAsOldRedactor(input);
     }
 
-    private static readonly Regex OldSkToken = new(@"\bsk-[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])", RegexOptions.None);
-
     // The shape the narrowed sk- rule requires, stated independently of the production pattern.
     private static readonly Regex RealSkKey = new(@"^sk-(?:[A-Za-z0-9]{20}|[A-Za-z0-9]{1,16}-[A-Za-z0-9_-]{40})", RegexOptions.None);
 
-    // The one intended difference: the sk- rule no longer masks "sk-" words. The old rule masked a
-    // whole run of [A-Za-z0-9_-] that starts with sk-, and a "sk-" inside that run follows a '-',
-    // so the run stands or falls with its first sk-. Where the first one is not a real key (wrong
-    // shape, or glued to a preceding '-'), every sk- in the run is neutralised in the input
-    // (sk- becomes Sk-), after which the old and new redactors must agree exactly. An input with
-    // no such run is compared as it stands.
-    private static string NeutraliseOrdinaryWords(string input) =>
-        OldSkToken.Replace(input, m =>
-        {
-            var afterDash = m.Index > 0 && input[m.Index - 1] == '-';
-            return afterDash || !RealSkKey.IsMatch(m.Value) ? m.Value.Replace("sk-", "Sk-", StringComparison.Ordinal) : m.Value;
-        });
+    // The one intended difference: the sk- rule no longer masks "sk-" words. Every sk- whose
+    // text from there on is not key-shaped is neutralised in the input (sk- becomes Sk-), in
+    // whatever run or token it sits; after that the old and new redactors must agree exactly. An
+    // input with no such sk- is compared as it stands.
+    private static string NeutraliseOrdinarySkWords(string input) =>
+        AnySk.Replace(input, m => RealSkKey.IsMatch(input.AsSpan(m.Index).ToString()) ? m.Value : "Sk-");
+
+    private static readonly Regex AnySk = new("sk-", RegexOptions.None);
 
     private static void AssertSameAsOldRedactor(string input)
     {
-        var comparable = NeutraliseOrdinaryWords(input);
+        var comparable = NeutraliseOrdinarySkWords(input);
         var old = PreLinearSecretOutputRedactor.Redact(comparable);
         var current = SecretOutputRedactor.Redact(comparable);
         Assert.True(old == current, $"input [{Shorten(comparable)}]\nold     [{Shorten(old)}]\ncurrent [{Shorten(current)}]");

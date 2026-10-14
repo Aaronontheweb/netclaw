@@ -90,10 +90,6 @@ public sealed class SecretOutputRedactorOldBehaviourTests
             {
                 foreach (var after in After)
                 {
-                    // A "sk-" glued to a preceding '-' is the "task-sk-..." false positive, no longer masked.
-                    if (unit.StartsWith("sk-", StringComparison.Ordinal) && before.EndsWith('-'))
-                        continue;
-
                     var input = before + unit + after;
                     inputs++;
 
