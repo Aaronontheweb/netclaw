@@ -551,46 +551,71 @@ public sealed class ChatPageTests
     }
 
     [Fact]
-    public async Task ParallelToolCalls_EachGetsItsOwnTimerAndAllAreDisposedWithThePage()
-    {
-        ChatPage? page = null;
-        var (terminal, app, _) = CreateHeadlessApp(null, out var input, replay:
-        [
-            ToolCall("tool_a", "call-1", "{}"),
-            ToolCall("tool_b", "call-2", "{}"),
-            ToolCall("tool_c", "call-3", "{}"),
-            ToolResult("tool_c", "done", "call-3")
-        ], onPage: p => page = p);
-        input.EnqueueKey(ConsoleKey.Q, false, false, true);
-
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await app.RunAsync(cts.Token);
-
-        // call-3 finished and was released; call-1 and call-2 were still pending at shutdown.
-        var timers = page!.PendingToolTimers;
-        Assert.Equal(2, timers.Count);
-        Assert.Equal(2, timers.Distinct().Count());
-        page.Dispose();
-        Assert.All(timers, t => Assert.False(t.IsAnimating, "page disposal stops every pending timer"));
-    }
-
-    [Fact]
     public async Task ParallelToolCalls_NothingStaysPendingOnceTheLastCallFinishes()
     {
-        ChatPage? page = null;
-        var (_, app, _) = CreateHeadlessApp(null, out var input, replay:
-        [
+        var screen = await RenderSessionOutputsAsync(
             ToolCall("tool_a", "call-1", "{}"),
             ToolCall("tool_b", "call-2", "{}"),
             ToolResult("tool_a", "one", "call-1"),
-            ToolResult("tool_b", "two", "call-2")
-        ], onPage: p => page = p);
-        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+            ToolResult("tool_b", "two", "call-2"));
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
-        await app.RunAsync(cts.Token);
+        var rows = ChatRows(screen);
+        Assert.Equal(2, rows.Count(r => r.Contains('✓', StringComparison.Ordinal)));
+        Assert.DoesNotContain(rows, r => r.Contains("tool_a(", StringComparison.Ordinal)
+            || r.Contains("tool_b(", StringComparison.Ordinal));
+    }
 
-        Assert.Empty(page!.PendingToolTimers);
+    [Fact]
+    public async Task ParallelToolCalls_OnlyTheFirstPendingLineAnimatesASpinner()
+    {
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("tool_a", "call-1", "{}"),
+            ToolCall("tool_b", "call-2", "{}"),
+            ToolCall("tool_c", "call-3", "{}"));
+
+        var rows = ChatRows(screen);
+        // Every animated segment rebuilds the whole history buffer on each tick.
+        Assert.Matches("^[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] tool_a\\(", Assert.Single(rows, r => r.Contains("tool_a(", StringComparison.Ordinal)));
+        Assert.StartsWith("⠏ tool_b(", Assert.Single(rows, r => r.Contains("tool_b(", StringComparison.Ordinal)), StringComparison.Ordinal);
+        Assert.StartsWith("⠏ tool_c(", Assert.Single(rows, r => r.Contains("tool_c(", StringComparison.Ordinal)), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ParallelToolCalls_RepeatedCallIdReplacesItsEarlierPendingLine()
+    {
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("tool_a", "dup", "{}"),
+            ToolCall("tool_b", "dup", "{}"),
+            ToolResult("tool_b", "result B", "dup"));
+
+        var rows = ChatRows(screen);
+        Assert.DoesNotContain(rows, r => r.Contains("tool_a", StringComparison.Ordinal));
+        Assert.Single(rows, r => r.Contains("✓ tool_b → result B", StringComparison.Ordinal));
+    }
+
+    public static TheoryData<string> OutputsThatClearPendingToolLines() => new() { "turn", "error", "delta", "text" };
+
+    [Theory]
+    [MemberData(nameof(OutputsThatClearPendingToolLines))]
+    public async Task ParallelToolCalls_AreClearedByTheOutputThatEndsThem(string kind)
+    {
+        var sid = new SessionId("tui/test");
+        SessionOutput ender = kind switch
+        {
+            "turn" => new TurnCompleted { SessionId = sid, TurnNumber = new TurnNumber(1) },
+            "error" => new ErrorOutput { SessionId = sid, Message = "boom" },
+            "delta" => new TextDeltaOutput("moving on") { SessionId = sid },
+            _ => new TextOutput("moving on") { SessionId = sid }
+        };
+
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("tool_a", "call-1", "{}"),
+            ToolCall("tool_b", "call-2", "{}"),
+            ender);
+
+        var rows = ChatRows(screen);
+        Assert.DoesNotContain(rows, r => r.Contains("tool_a", StringComparison.Ordinal)
+            || r.Contains("tool_b", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -634,6 +659,45 @@ public sealed class ChatPageTests
         var row = Assert.Single(ChatRows(screen), r => r.Contains("✓ web_fetch", StringComparison.Ordinal));
         Assert.DoesNotContain('\u001b', row);
         Assert.Matches(@"→ a{70}b{7}\.\.\. \(\d+\.\ds\)$", row);
+    }
+
+    [Fact]
+    public async Task ToolPreview_PrefixCutDoesNotSplitASurrogatePair()
+    {
+        // 509 spaces + "ab" put the 512-character scan limit between the halves of the emoji.
+        var result = new string(' ', 509) + "ab\U0001F600 and more text after it";
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch"),
+            ToolResult("web_fetch", result));
+
+        var row = Assert.Single(ChatRows(screen), r => r.Contains("✓ web_fetch", StringComparison.Ordinal));
+        Assert.Contains("→ ab... (", row, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ToolPreview_PrefixCutDoesNotSplitAGraphemeCluster()
+    {
+        // The family emoji (man, woman, girl joined by ZWJ) straddles the 512-character scan limit.
+        var family = "\U0001F468\u200D\U0001F469\u200D\U0001F467";
+        var result = string.Concat(Enumerable.Repeat("\u001b[0m", 126)) + "x" + family + " tail text";
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch"),
+            ToolResult("web_fetch", result));
+
+        var row = Assert.Single(ChatRows(screen), r => r.Contains("✓ web_fetch", StringComparison.Ordinal));
+        Assert.Contains("→ x... (", row, StringComparison.Ordinal);
+        Assert.DoesNotContain("\U0001F468", row, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ToolPreview_TreatsFormFeedVerticalTabAndNextLineAsSpaces()
+    {
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch"),
+            ToolResult("web_fetch", "abc\fdef\vghi\u0085jkl"));
+
+        var row = Assert.Single(ChatRows(screen), r => r.Contains("✓ web_fetch", StringComparison.Ordinal));
+        Assert.Contains("→ abc def ghi jkl (", row, StringComparison.Ordinal);
     }
 
     private static ToolCallOutput ToolCall(
@@ -968,8 +1032,7 @@ public sealed class ChatPageTests
             int width = 120, int height = 40,
             IReadOnlyList<ToolInteractionOption>? options = null,
             bool startGenerating = false,
-            IReadOnlyList<SessionOutput>? replay = null,
-            Action<ChatPage>? onPage = null)
+            IReadOnlyList<SessionOutput>? replay = null)
     {
         var terminal = new VirtualTerminal(width, height);
         var virtualInput = new VirtualInputSource();
@@ -984,12 +1047,7 @@ public sealed class ChatPageTests
         {
             builder.RegisterRoute<ChatPage, ChatViewModel>(
                 "/chat",
-                sp =>
-                {
-                    var page = new ChatPage(sp.GetRequiredService<IAnsiTerminal>());
-                    onPage?.Invoke(page);
-                    return page;
-                },
+                sp => new ChatPage(sp.GetRequiredService<IAnsiTerminal>()),
                 _ =>
                 {
                     var effectiveSeed = seed is null

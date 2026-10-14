@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Diagnostics;
 using System.Text;
 using System.Text.RegularExpressions;
 using Netclaw.Actors.Protocol;
@@ -42,13 +43,14 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
     private SegmentId NextSegmentId() => new(_nextSegmentId++);
 
     // Pending tool lines by call id: a turn can run several tool calls in
-    // parallel, and each one owns its own spinner row and elapsed timer.
-    private readonly record struct PendingTool(SegmentId Segment, ElapsedTimeSegment Timer);
+    // parallel, and each one owns its own row and start time. Every animated
+    // segment makes the history rebuild its whole buffer on each tick, so only
+    // the first pending line animates (spinner and elapsed time); later ones
+    // show a static marker. Every call still reports its own elapsed time on
+    // its result line.
+    private readonly record struct PendingTool(SegmentId Segment, long StartTimestamp);
 
     private readonly Dictionary<Netclaw.Tools.ToolCallId, PendingTool> _pendingTools = new();
-
-    internal IReadOnlyCollection<ElapsedTimeSegment> PendingToolTimers =>
-        _pendingTools.Values.Select(p => p.Timer).ToArray();
 
     // Track active streamed assistant text segment
     private SegmentId _assistantSegmentId;
@@ -413,25 +415,29 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
                 FinalizeAssistantSegmentIfNeeded();
                 RemovePendingToolLine(msg.CallId);
                 var toolSegmentId = NextSegmentId();
-                var toolTimer = new ElapsedTimeSegment(Color.BrightBlack);
-                _pendingTools[msg.CallId] = new PendingTool(toolSegmentId, toolTimer);
-                _chatHistory.AppendTracked(toolSegmentId,
-                    new CompositeTextSegment(
+                var animated = _pendingTools.Count == 0;
+                _pendingTools[msg.CallId] = new PendingTool(toolSegmentId, Stopwatch.GetTimestamp());
+                var toolLabel = new StaticTextSegment($" {msg.ToolName}({TruncateArgs(msg.ArgumentsJson)})", Color.Yellow);
+                var endOfLine = new StaticTextSegment("\n", TextStyle.Default);
+                _chatHistory.AppendTracked(toolSegmentId, animated
+                    ? new CompositeTextSegment(
                         new SpinnerSegment(Termina.Components.Streaming.SpinnerStyle.Dots, Color.Yellow, intervalMs: 80),
-                        new StaticTextSegment($" {msg.ToolName}({TruncateArgs(msg.ArgumentsJson)})",
-                            Color.Yellow),
-                        toolTimer,
-                        new StaticTextSegment("\n", TextStyle.Default)));
+                        toolLabel,
+                        new ElapsedTimeSegment(Color.BrightBlack),
+                        endOfLine)
+                    : new CompositeTextSegment(
+                        new StaticTextSegment("\u280f", Color.Yellow),
+                        toolLabel,
+                        endOfLine));
                 break;
 
             case ToolResultOutput msg:
                 // Replace spinner+timer with checkmark and final elapsed time
                 if (_pendingTools.Remove(msg.CallId, out var pending))
                 {
-                    // Read elapsed from the timer segment before it gets disposed by Replace
                     _chatHistory.Replace(pending.Segment,
                         new StaticTextSegment(
-                            $"  \u2713 {msg.ToolName} \u2192 {Truncate(msg.Result, 80)} ({FormatElapsed(pending.Timer.Elapsed)})\n",
+                            $"  \u2713 {msg.ToolName} \u2192 {Truncate(msg.Result, 80)} ({FormatElapsed(Stopwatch.GetElapsedTime(pending.StartTimestamp))})\n",
                             Color.Green),
                         keepTracked: false);
                 }
@@ -513,7 +519,11 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
     private static string Truncate(string text, int maxLength)
     {
         var clipped = text.Length > PreviewScanChars;
-        text = DisplayWidth.SanitizeTerminalText(clipped ? text[..PreviewScanChars] : text);
+        if (clipped)
+            text = text[..DisplayWidth.ClampToTextElementBoundary(text, PreviewScanChars)];
+
+        // Whitespace first: sanitizing drops \f, \v and U+0085 without a space.
+        text = DisplayWidth.SanitizeTerminalText(WhitespaceRun.Replace(text, " "));
         text = WhitespaceRun.Replace(text, " ").Trim();
         return !clipped && DisplayWidth.GetColumnCount(text) <= maxLength
             ? text
