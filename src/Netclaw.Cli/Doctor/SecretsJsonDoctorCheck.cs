@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using Netclaw.Cli.Json;
 using Netclaw.Configuration;
 
 namespace Netclaw.Cli.Doctor;
@@ -25,7 +26,7 @@ public sealed class SecretsJsonDoctorCheck(NetclawPaths paths) : IDoctorCheck
         try
         {
             json = File.ReadAllText(paths.SecretsPath);
-            using var _ = JsonDocument.Parse(json);
+            using var _ = JsonDocument.Parse(json, JsonDefaults.ConfigDocument);
         }
         catch (Exception ex)
         {

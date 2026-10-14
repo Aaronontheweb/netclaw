@@ -139,7 +139,7 @@ catch (InvalidDataException ex)
     // duplicate key such as Models and models): also an operator error.
     StartupConfigurationFailure.Report(
         bootstrapPaths,
-        $"Cannot read netclaw.json or secrets.json: {ex.InnerException?.Message ?? ex.Message}",
+        DaemonConfigurationSources.DescribeLoadFailure(ex),
         Console.Error);
     Environment.ExitCode = 1;
 }

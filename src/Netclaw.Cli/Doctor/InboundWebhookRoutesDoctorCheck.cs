@@ -84,7 +84,7 @@ public sealed class InboundWebhookRoutesDoctorCheck(NetclawPaths paths) : IDocto
 
     private bool IsInboundWebhooksEnabled()
     {
-        var config = ConfigFileHelper.LoadJsonDict(paths.NetclawConfigPath);
+        var config = ConfigFileHelper.LoadJsonDict(paths.NetclawConfigPath, readOnly: true);
         return ConfigFileHelper.TryGetPathValue(config, "Webhooks.Enabled", out var enabled)
             && enabled is bool enabledFlag
             && enabledFlag;

@@ -126,7 +126,8 @@ public static class SecretsFileWriter
     /// </summary>
     public static (int Encrypted, int Plaintext) CountEncryptionStatus(string json)
     {
-        var node = JsonNode.Parse(json);
+        // Read-only: comments and trailing commas load, as they do for the daemon.
+        var node = JsonNode.Parse(json, documentOptions: new JsonDocumentOptions { CommentHandling = JsonCommentHandling.Skip, AllowTrailingCommas = true });
         if (node is null)
             return (0, 0);
 

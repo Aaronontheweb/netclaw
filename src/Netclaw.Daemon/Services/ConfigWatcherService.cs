@@ -264,7 +264,7 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         }
         catch (InvalidDataException ex)
         {
-            return $"Cannot read netclaw.json or secrets.json: {FirstLine(ex.InnerException?.Message ?? ex.Message)}";
+            return DaemonConfigurationSources.DescribeLoadFailure(ex);
         }
 
         var check = ModelConfigurationValidation.Check(configuration);

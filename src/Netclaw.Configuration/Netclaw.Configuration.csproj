@@ -22,6 +22,7 @@
          CVE-2026-26171 / CVE-2026-33116 (https://github.com/advisories/GHSA-w3x6-4m5h-cxqf). -->
     <PackageReference Include="System.Security.Cryptography.Xml" />
     <PackageReference Include="Microsoft.Extensions.AI.Abstractions" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" />
     <PackageReference Include="Microsoft.Extensions.Http" />
     <PackageReference Include="NSec.Cryptography" />
     <PackageReference Include="SauceControl.Blake2Fast" />

@@ -69,6 +69,26 @@ internal static class JsonDefaults
     };
 
     /// <summary>
+    /// Plain-dictionary reads of netclaw.json and secrets.json that never write the file back:
+    /// comments and trailing commas load, as they do for the daemon.
+    /// </summary>
+    internal static readonly JsonSerializerOptions ConfigDictRead = new()
+    {
+        ReadCommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
+
+    /// <summary>
+    /// Parse options for netclaw.json and secrets.json read as a document: the daemon's JSON
+    /// provider accepts comments and trailing commas, so the CLI's direct reads must too.
+    /// </summary>
+    internal static readonly JsonDocumentOptions ConfigDocument = new()
+    {
+        CommentHandling = JsonCommentHandling.Skip,
+        AllowTrailingCommas = true,
+    };
+
+    /// <summary>
     /// Pretty-printed terminal output with camelCase property names.
     /// Used for structured JSON output (stats, sessions) that maps to daemon API response shapes.
     /// </summary>

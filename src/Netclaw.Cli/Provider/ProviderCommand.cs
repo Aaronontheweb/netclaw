@@ -516,8 +516,8 @@ internal static class ProviderCommand
         var secretsText = File.Exists(paths.SecretsPath)
             ? File.ReadAllText(paths.SecretsPath) : "{}";
 
-        using var configDoc = JsonDocument.Parse(configText);
-        using var secretsDoc = JsonDocument.Parse(secretsText);
+        using var configDoc = JsonDocument.Parse(configText, JsonDefaults.ConfigDocument);
+        using var secretsDoc = JsonDocument.Parse(secretsText, JsonDefaults.ConfigDocument);
 
         var result = new Dictionary<string, ProviderEntry>();
         var configuredAuthMethods = new HashSet<string>(StringComparer.OrdinalIgnoreCase);

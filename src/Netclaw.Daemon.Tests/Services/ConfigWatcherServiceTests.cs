@@ -155,7 +155,7 @@ public sealed class ConfigWatcherServiceTests : IDisposable
         await _sut.ApplyReloadAsync(CancellationToken.None);
 
         Assert.Equal(0, _restartCoordinator.RequestCount);
-        Assert.StartsWith("Cannot read netclaw.json or secrets.json", _rejectedConfig.Reason);
+        Assert.StartsWith("Couldn't read netclaw.json:", _rejectedConfig.Reason);
         Assert.DoesNotContain('\n', _rejectedConfig.Reason!);
     }
 

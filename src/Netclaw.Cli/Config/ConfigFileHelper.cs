@@ -101,14 +101,16 @@ internal static class ConfigFileHelper
 
     /// <summary>
     /// Load a JSON file as a mutable dictionary. Returns a default skeleton if the file doesn't exist.
+    /// Comments and trailing commas are an error unless <paramref name="readOnly"/> is set: a caller
+    /// that writes the dictionary back would drop them. Read-only callers accept what the daemon accepts.
     /// </summary>
-    internal static Dictionary<string, object> LoadJsonDict(string path)
+    internal static Dictionary<string, object> LoadJsonDict(string path, bool readOnly = false)
     {
         if (!File.Exists(path))
             return new Dictionary<string, object> { ["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion };
 
         var text = File.ReadAllText(path);
-        return JsonSerializer.Deserialize<Dictionary<string, object>>(text)
+        return JsonSerializer.Deserialize<Dictionary<string, object>>(text, readOnly ? JsonDefaults.ConfigDictRead : null)
             ?? new Dictionary<string, object> { ["configVersion"] = EmbeddedSchemaLoader.CurrentSchemaVersion };
     }
 
@@ -417,7 +419,7 @@ internal static class ConfigFileHelper
 
     internal static bool SecretPresent(Configuration.NetclawPaths paths, string path)
     {
-        var secrets = LoadJsonDict(paths.SecretsPath);
+        var secrets = LoadJsonDict(paths.SecretsPath, readOnly: true);
         return PathPresent(secrets, path);
     }
 
@@ -439,7 +441,7 @@ internal static class ConfigFileHelper
     /// </summary>
     internal static string? ReadDecryptedSecret(Configuration.NetclawPaths paths, string path)
     {
-        var secrets = LoadJsonDict(paths.SecretsPath);
+        var secrets = LoadJsonDict(paths.SecretsPath, readOnly: true);
         return TryGetPathValue(secrets, path, out var value)
             ? DecryptIfEncrypted(paths, value?.ToString())
             : null;

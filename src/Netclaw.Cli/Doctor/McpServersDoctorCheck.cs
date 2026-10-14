@@ -6,6 +6,7 @@
 using System.Text.Json;
 using System.Net;
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Json;
 using Netclaw.Cli.Mcp;
 using Netclaw.Configuration;
 
@@ -47,7 +48,7 @@ public sealed class McpServersDoctorCheck : IDoctorCheck
         try
         {
             var text = File.ReadAllText(_paths.NetclawConfigPath);
-            using var doc = JsonDocument.Parse(text);
+            using var doc = JsonDocument.Parse(text, JsonDefaults.ConfigDocument);
 
             if (!doc.RootElement.TryGetProperty("McpServers", out var mcpSection))
                 return DoctorCheckResult.Pass("mcp-servers",

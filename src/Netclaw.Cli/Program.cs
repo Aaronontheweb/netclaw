@@ -48,6 +48,12 @@ try
 {
     await RunAsync(args);
 }
+catch (Exception ex) when (CliConfigPreflight.TryDescribeLoadFailure(ex, new NetclawPaths(), out var configFailure))
+{
+    // An operator error (a config file the CLI cannot read), not a crash: one line, no crash log.
+    Console.Error.WriteLine(configFailure);
+    Environment.ExitCode = 1;
+}
 catch (Exception ex)
 {
     WriteCrashLog(ex);
@@ -105,13 +111,28 @@ static async Task RunAsync(string[] args)
         args = ["chat"];
     }
 
+    // Doctor and status run when netclaw.json or secrets.json cannot be loaded and report it;
+    // any other command that needs the config ends at the handler above with one line.
+    string? configProblem = null;
+    var configFix = string.Empty;
+    if (mode is "doctor" or "status" && !CliConfigPreflight.IsHelpRequest(args)
+        && CliConfigPreflight.TryDescribeUnreadableConfig(new NetclawPaths(), out var unreadableConfig, out configFix))
+    {
+        configProblem = unreadableConfig;
+        if (mode is "status")
+        {
+            Console.Error.WriteLine(configProblem);
+            Console.Error.WriteLine("The daemon address could not be read from the config; checking the default port.");
+        }
+    }
+
     // Kick off the update check only for modes that do not boot Termina or
     // otherwise own the current command's startup flow. Buffering the notice
     // protects active TUIs from stray stderr, but it does not make the
     // background network probe itself safe during interactive startup.
     if (UpdateCommand.ShouldRunStartupUpdateCheck(mode, args))
     {
-        var backgroundUpdateConfig = BuildCliConfig();
+        var backgroundUpdateConfig = BuildCliConfig(CliConfigPreflight.RunsWithUnreadableConfig(args));
         var backgroundDaemonConfig = DaemonConfig.BindFromConfiguration(backgroundUpdateConfig.GetSection("Daemon"));
         _ = UpdateCommand.BackgroundUpdateCheckAsync(backgroundDaemonConfig.DisableSelfUpdate, backgroundDaemonConfig.UpdateChannel);
     }
@@ -243,7 +264,11 @@ static async Task RunAsync(string[] args)
         try
         {
             DoctorFixPlan? fixPlan = null;
-            if (doctorOptions!.Fix)
+            var fixBlocked = configProblem
+                ?? (doctorOptions!.Fix && CliConfigPreflight.TryDescribeUneditableConfig(new NetclawPaths(), out var uneditable) ? uneditable : null);
+            if (doctorOptions!.Fix && fixBlocked is not null)
+                Console.Error.WriteLine($"Nothing was fixed. {fixBlocked}");
+            if (doctorOptions.Fix && fixBlocked is null)
             {
                 fixPlan = await fixService.BuildPlanAsync();
                 if (doctorOptions.Format is DoctorOutputFormat.Text)
@@ -269,7 +294,7 @@ static async Task RunAsync(string[] args)
                 }
             }
 
-            var result = await runner.RunAsync();
+            var result = await runner.RunAsync(configProblem is null ? null : DoctorCheckResult.Error("Config Load", configProblem, configFix));
 
             if (doctorOptions.Format is DoctorOutputFormat.Json)
                 WriteDoctorJsonResult(result, fixPlan, doctorOptions);
@@ -278,6 +303,7 @@ static async Task RunAsync(string[] args)
 
             // Hint about --fix when there are issues and fix wasn't requested
             if (!doctorOptions.Fix
+                && configProblem is null
                 && result.ExitCode != 0
                 && doctorOptions.Format is DoctorOutputFormat.Text)
             {
@@ -378,8 +404,8 @@ static async Task RunAsync(string[] args)
 
         using var host = builder.Build();
         using var scope = host.Services.CreateScope();
-        var exitCode = await RunStatusAsync(scope.ServiceProvider, statusAsJson);
-        Environment.ExitCode = exitCode;
+        var exitCode = await RunStatusAsync(scope.ServiceProvider, statusAsJson, configProblem is not null);
+        Environment.ExitCode = configProblem is null ? exitCode : Math.Max(exitCode, 1);
         return;
     }
 
@@ -940,7 +966,7 @@ static async Task RunAsync(string[] args)
         var paths = new NetclawPaths();
         paths.EnsureDirectoriesExist();
         // All memory subcommands are offline — direct SQLite/model-file access, no daemon needed
-        Environment.ExitCode = await MemoryCommand.RunAsync(args, paths, BuildCliConfig(), Console.Out, Console.Error);
+        Environment.ExitCode = await MemoryCommand.RunAsync(args, paths, BuildCliConfig(lenient: false), Console.Out, Console.Error);
         return;
     }
 
@@ -1646,7 +1672,7 @@ static void WriteSimpleDiff(string original, string updated)
     }
 }
 
-static async Task<int> RunStatusAsync(IServiceProvider services, bool jsonOutput)
+static async Task<int> RunStatusAsync(IServiceProvider services, bool jsonOutput, bool configUnreadable)
 {
     var api = services.GetRequiredService<DaemonApi>();
     var httpClientFactory = services.GetRequiredService<IHttpClientFactory>();
@@ -1700,14 +1726,16 @@ static async Task<int> RunStatusAsync(IServiceProvider services, bool jsonOutput
     {
         await updateCts.CancelAsync();
         Console.WriteLine($"[FAIL] status: daemon returned {(int)ex.StatusCode} from {api.Endpoint}");
-        Console.WriteLine("       fix: run `netclaw daemon status` and `netclaw daemon start`.");
+        if (!configUnreadable)
+            Console.WriteLine("       fix: run `netclaw daemon status` and `netclaw daemon start`.");
         return 1;
     }
     catch (Exception ex)
     {
         await updateCts.CancelAsync();
         Console.WriteLine($"[FAIL] status: unable to reach daemon at {api.Endpoint}: {ex.Message}");
-        Console.WriteLine("       fix: run `netclaw daemon start` and retry.");
+        if (!configUnreadable)
+            Console.WriteLine("       fix: run `netclaw daemon start` and retry.");
         return 1;
     }
 }
@@ -2096,13 +2124,13 @@ static void WriteDailyTable(List<DaemonStats.DailyRow> rows)
 static HostApplicationBuilder CreateQuietHostBuilder(string[] args)
 {
     var builder = Host.CreateApplicationBuilder(args);
-    ConfigureConfigServices(builder.Services, builder.Configuration);
+    ConfigureConfigServices(builder.Services, builder.Configuration, CliConfigPreflight.RunsWithUnreadableConfig(args));
     builder.Logging.ClearProviders();
     builder.Logging.SetMinimumLevel(LogLevel.Warning);
     return builder;
 }
 
-static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfigurationManager configuration)
+static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfigurationManager configuration, bool lenient = false)
 {
     // Netclaw paths (creates ~/.netclaw/ structure)
     var paths = new NetclawPaths();
@@ -2123,10 +2151,7 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
     // 1. netclaw.json (daemon-owned config, optional)
     // 2. secrets.json (credentials overlay, optional)
     // 3. NETCLAW_* environment variables (highest priority)
-    configuration
-        .AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false)
-        .AddJsonFile(paths.SecretsPath, optional: true, reloadOnChange: false)
-        .AddEnvironmentVariables("NETCLAW_");
+    CliConfigPreflight.AddConfigSources(configuration, paths, lenient);
 
     services.AddSingleton(DaemonConfig.BindFromConfiguration(configuration.GetSection("Daemon")));
 
@@ -2149,16 +2174,12 @@ static NetclawPaths ConfigureConfigServices(IServiceCollection services, IConfig
     return paths;
 }
 
-static IConfigurationRoot BuildCliConfig()
+static IConfigurationRoot BuildCliConfig(bool lenient)
 {
     var paths = new NetclawPaths();
     paths.EnsureDirectoriesExist();
 
-    return new ConfigurationBuilder()
-        .AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false)
-        .AddJsonFile(paths.SecretsPath, optional: true, reloadOnChange: false)
-        .AddEnvironmentVariables("NETCLAW_")
-        .Build();
+    return CliConfigPreflight.AddConfigSources(new ConfigurationBuilder(), paths, lenient).Build();
 }
 
 // ═══════════════════════════════════════════════════════════════════════

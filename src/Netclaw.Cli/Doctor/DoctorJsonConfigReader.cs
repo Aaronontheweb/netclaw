@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Text.Json.Nodes;
 using Netclaw.Cli;
+using Netclaw.Cli.Json;
 using Netclaw.Configuration;
 
 namespace Netclaw.Cli.Doctor;
@@ -69,7 +70,7 @@ internal static class DoctorJsonConfigReader
             try
             {
                 raw = File.Exists(paths.NetclawConfigPath)
-                    ? (JsonNode.Parse(File.ReadAllText(paths.NetclawConfigPath)) as JsonObject)?["Retention"]?["Logs"]?["Days"]?.ToString()
+                    ? (JsonNode.Parse(File.ReadAllText(paths.NetclawConfigPath), documentOptions: JsonDefaults.ConfigDocument) as JsonObject)?["Retention"]?["Logs"]?["Days"]?.ToString()
                     : null;
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Text.Json.JsonException)
@@ -107,7 +108,7 @@ internal static class DoctorJsonConfigReader
 
         try
         {
-            var root = JsonNode.Parse(File.ReadAllText(paths.NetclawConfigPath)) as JsonObject;
+            var root = JsonNode.Parse(File.ReadAllText(paths.NetclawConfigPath), documentOptions: JsonDefaults.ConfigDocument) as JsonObject;
             if (root is null)
             {
                 return (null, DoctorCheckResult.Error(

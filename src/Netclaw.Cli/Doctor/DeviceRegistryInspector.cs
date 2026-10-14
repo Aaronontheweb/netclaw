@@ -51,7 +51,7 @@ internal static class DeviceRegistryInspector
         if (!File.Exists(paths.SecretsPath))
             return (false, false);
 
-        var secrets = ConfigFileHelper.LoadJsonDict(paths.SecretsPath);
+        var secrets = ConfigFileHelper.LoadJsonDict(paths.SecretsPath, readOnly: true);
         if (!secrets.TryGetValue("DeviceToken", out var rawValue))
             return (false, false);
 
