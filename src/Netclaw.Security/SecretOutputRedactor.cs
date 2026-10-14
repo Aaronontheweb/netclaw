@@ -60,10 +60,10 @@ public static partial class SecretOutputRedactor
         sanitized = JsonSecretValueRegex().Replace(sanitized, m =>
             $"\"{m.Groups[1].Value}\": \"{Redacted}\"");
 
-        sanitized = ConnectionStringPasswordRegex().Replace(sanitized, m =>
+        sanitized = ConnectionStringPasswordRegex.Replace(sanitized, m =>
             $"{m.Groups[1].Value}{Redacted};");
 
-        sanitized = EnvSecretValueRegex().Replace(sanitized, m =>
+        sanitized = EnvSecretValueRegex.Replace(sanitized, m =>
             $"{m.Groups[1].Value}={Redacted}");
 
         var beforePrefixed = sanitized;
@@ -77,9 +77,9 @@ public static partial class SecretOutputRedactor
 
         sanitized = KnownTokenRegex().Replace(sanitized, Redacted);
 
-        sanitized = JwtTokenRegex().Replace(sanitized, Redacted);
+        sanitized = JwtTokenRegex.Replace(sanitized, Redacted);
 
-        sanitized = PrivateKeyBlockRegex().Replace(sanitized, Redacted);
+        sanitized = PrivateKeyBlockRegex.Replace(sanitized, Redacted);
 
         return sanitized;
     }
@@ -145,14 +145,22 @@ public static partial class SecretOutputRedactor
         return name.Equals(value, StringComparison.OrdinalIgnoreCase);
     }
 
+    // Redact runs on every tool result, on inputs up to megabytes, so a pattern must not rescan
+    // from each candidate start to a terminator that may never come ("token-token-...", a BEGIN
+    // PRIVATE KEY with no END). The backtracking engine is quadratic on those; NonBacktracking
+    // matches in time linear in the input. It rules out lookarounds, so the rules that need
+    // them (PrefixedEnvSecretValueRegex, KnownTokenRegex) stay source-generated with bounded
+    // quantifiers instead.
+    private static Regex LinearRegex(string pattern, RegexOptions options = RegexOptions.IgnoreCase)
+        => new(pattern, options | RegexOptions.NonBacktracking | RegexOptions.CultureInvariant);
+
     [GeneratedRegex("\"((?:" + SecretNameWords + ")[^\"]*)\"\\s*:\\s*\"([^\"]+)\"", RegexOptions.IgnoreCase)]
     private static partial Regex JsonSecretValueRegex();
 
     // Kept in lockstep with JsonSecretValueRegex's key words: an OAuth token endpoint's
     // error body is as likely to arrive form-urlencoded ("client_secret=...&grant_type=...")
     // as JSON. The secret word must sit at the start of a name (\b), e.g. TOKEN_FILE, --password.
-    [GeneratedRegex("\\b((?:" + SecretNameWords + ")[A-Z0-9_-]*)=([^\\s;]+)", RegexOptions.IgnoreCase)]
-    private static partial Regex EnvSecretValueRegex();
+    private static readonly Regex EnvSecretValueRegex = LinearRegex("\\b((?:" + SecretNameWords + ")[A-Z0-9_-]*)=([^\\s;]+)");
 
     // The same words after an underscore: DB_PASSWORD, AWS_SECRET_ACCESS_KEY, GITHUB_TOKEN.
     // Narrower than the rule above because ordinary settings carry these words too:
@@ -174,8 +182,7 @@ public static partial class SecretOutputRedactor
     [GeneratedRegex("(https://hooks\\.slack\\.com/services/)[A-Z0-9_-]+/[A-Z0-9_-]+/[A-Z0-9_-]+", RegexOptions.IgnoreCase)]
     private static partial Regex SlackWebhookUrlRegex();
 
-    [GeneratedRegex("((?:Password|Pwd)\\s*=\\s*)[^;]+;", RegexOptions.IgnoreCase)]
-    private static partial Regex ConnectionStringPasswordRegex();
+    private static readonly Regex ConnectionStringPasswordRegex = LinearRegex("((?:Password|Pwd)\\s*=\\s*)[^;]+;");
 
     // Credentials recognisable by a fixed prefix and structure, redacted wherever they
     // appear, whatever the surrounding name. One alternation = one pass over the text.
@@ -190,7 +197,11 @@ public static partial class SecretOutputRedactor
     //    entry ends where its own class stops: (?![class]).
     [GeneratedRegex("\\b(?:" +
         // OpenAI (sk-, sk-proj-, sk-svcacct-) and Anthropic (sk-ant-): https://platform.openai.com/docs/api-reference/authentication , https://docs.anthropic.com/en/api/getting-started
-        "sk-[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])" +
+        // A real key is either 20+ letters and digits straight after "sk-" (classic keys), or a short
+        // family word ("proj", "svcacct", "ant", "or") and then 40+ more characters. Words joined by
+        // hyphens ("sk-learn-contrib", CSS classes like "sk-toggleable__label-arrow") are neither,
+        // and a key does not start right after a '-' ("task-sk-...").
+        "(?<!-)sk-(?:[A-Za-z0-9]{20}|[A-Za-z0-9]{1,16}-[A-Za-z0-9_-]{40})[A-Za-z0-9_-]*(?![A-Za-z0-9_-])" +
         // Slack bot/user/app/config tokens (letters, digits, '-'): https://api.slack.com/authentication/token-types
         "|(?:xox[abeprs]|xapp)-[A-Za-z0-9-]{8,}(?![A-Za-z0-9-])" +
         // GitHub ghp_/gho_/ghu_/ghs_/ghr_ (letters and digits): https://github.blog/engineering/platform-security/behind-githubs-new-authentication-token-formats/
@@ -214,9 +225,7 @@ public static partial class SecretOutputRedactor
         ")")]
     private static partial Regex KnownTokenRegex();
 
-    [GeneratedRegex("\\beyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b")]
-    private static partial Regex JwtTokenRegex();
+    private static readonly Regex JwtTokenRegex = LinearRegex("\\beyJ[A-Za-z0-9_-]{10,}\\.eyJ[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b", RegexOptions.None);
 
-    [GeneratedRegex("-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]+?-----END [A-Z ]*PRIVATE KEY-----", RegexOptions.IgnoreCase)]
-    private static partial Regex PrivateKeyBlockRegex();
+    private static readonly Regex PrivateKeyBlockRegex = LinearRegex("-----BEGIN [A-Z ]*PRIVATE KEY-----[\\s\\S]+?-----END [A-Z ]*PRIVATE KEY-----");
 }
