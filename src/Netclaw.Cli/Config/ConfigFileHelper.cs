@@ -87,6 +87,19 @@ internal static class ConfigFileHelper
     }
 
     /// <summary>
+    /// Resolves a name typed by the operator to the spelling the file already has. Configuration
+    /// keys are read without case, so "Git" is the server "git". An exact match wins; a name that
+    /// matches nothing comes back unchanged.
+    /// </summary>
+    internal static string ResolveName(IEnumerable<string> storedNames, string name)
+    {
+        var stored = storedNames.ToList();
+        return stored.Contains(name, StringComparer.Ordinal)
+            ? name
+            : stored.FirstOrDefault(key => string.Equals(key, name, StringComparison.OrdinalIgnoreCase)) ?? name;
+    }
+
+    /// <summary>
     /// Load a JSON file as a mutable dictionary. Returns a default skeleton if the file doesn't exist.
     /// </summary>
     internal static Dictionary<string, object> LoadJsonDict(string path)

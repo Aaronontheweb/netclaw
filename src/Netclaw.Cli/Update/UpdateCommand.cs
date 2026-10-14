@@ -467,7 +467,7 @@ internal static class UpdateCommand
     private static SystemdUserService CreateSystemdUserService(NetclawPaths paths)
     {
         return TestSystemdUserServiceFactory?.Invoke(paths)
-            ?? new SystemdUserService(homePath: paths.BasePath);
+            ?? new SystemdUserService(paths.BasePath);
     }
 
     internal sealed class DaemonProcessLifecycle(DaemonManager manager) : IDaemonProcessLifecycle

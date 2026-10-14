@@ -19,7 +19,7 @@ public sealed class SystemdUserServiceTests : IDisposable
 
     // environ == null means the process environment is unreadable. Never reads the real /proc.
     private SystemdUserService ServiceFor(FakeSystemCommandRunner runner, string homePath, string? environ = null)
-        => new(WriteUnit(), runner, enabledOnThisPlatform: true, homePath: homePath, environReader: _ => environ);
+        => new(homePath, WriteUnit(), runner, enabledOnThisPlatform: true, environReader: _ => environ);
 
     private static string Environ(string? netclawHome) =>
         "PATH=/usr/bin\0" + (netclawHome is null ? string.Empty : $"NETCLAW_HOME={netclawHome}\0") + "LANG=C\0";
@@ -45,7 +45,7 @@ public sealed class SystemdUserServiceTests : IDisposable
     {
         var runner = new FakeSystemCommandRunner();
         var service = new SystemdUserService(
-            Path.Combine(_dir.Path, "missing.service"), runner, enabledOnThisPlatform: true, homePath: DefaultHome);
+            DefaultHome, Path.Combine(_dir.Path, "missing.service"), runner, enabledOnThisPlatform: true);
 
         AssertKind(SystemdUserServiceOwnershipKind.Unmanaged, await service.GetStopOwnershipAsync(NotRunning));
         Assert.Empty(runner.Commands);
@@ -358,7 +358,7 @@ public sealed class SystemdUserServiceTests : IDisposable
         var runner = new FakeSystemCommandRunner();
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
         runner.Enqueue(new SystemCommandResult(0, string.Empty));
-        var service = new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
+        var service = new SystemdUserService(SystemdUserService.DefaultHomePath, unitPath, runner, enabledOnThisPlatform: true);
 
         var stop = await service.StopAsync();
         var start = await service.StartAsync();

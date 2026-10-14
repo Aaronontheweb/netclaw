@@ -56,6 +56,10 @@ internal static class ProviderCommand
         var oldName = args[2];
         var newName = args[3];
 
+        var (storedConfig, _) = ConfigFileHelper.LoadConfigFiles(paths);
+        oldName = ConfigFileHelper.ResolveName(
+            ConfigFileHelper.GetSectionOrNull(storedConfig, "Providers")?.Keys.AsEnumerable() ?? [], oldName);
+
         var result = ProviderRenamer.Rename(paths, oldName, newName);
         if (!result.Success)
         {
@@ -169,6 +173,12 @@ internal static class ProviderCommand
         if (apiKeyFlagSupplied && string.IsNullOrWhiteSpace(apiKey))
         {
             writer.WriteLine("Error: API key cannot be empty or whitespace.");
+            return 1;
+        }
+
+        if (!string.IsNullOrWhiteSpace(endpoint) && !IsHttpEndpoint(endpoint))
+        {
+            writer.WriteLine($"Error: Endpoint '{endpoint}' is not an absolute http or https URL. Use a form like http://localhost:8080.");
             return 1;
         }
 
@@ -443,6 +453,11 @@ internal static class ProviderCommand
         }
     }
 
+    /// <summary>True when <paramref name="endpoint"/> is an absolute http or https URL, the only form a probe or client can use.</summary>
+    internal static bool IsHttpEndpoint(string endpoint)
+        => Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)
+           && uri.Scheme is "http" or "https";
+
     private static int RunRemove(string[] args, NetclawPaths paths, TextWriter writer)
     {
         if (args.Length < 3)
@@ -456,6 +471,9 @@ internal static class ProviderCommand
         var (config, secrets) = ConfigFileHelper.LoadConfigFiles(paths);
         var providers = ConfigFileHelper.GetSectionOrNull(config, "Providers");
         var secretProviders = ConfigFileHelper.GetSectionOrNull(secrets, "Providers");
+        name = ConfigFileHelper.ResolveName(
+            (providers?.Keys.AsEnumerable() ?? []).Concat(secretProviders?.Keys.AsEnumerable() ?? []), name);
+
         if (providers?.ContainsKey(name) != true && secretProviders?.ContainsKey(name) != true)
         {
             writer.WriteLine($"Provider '{name}' not found.");

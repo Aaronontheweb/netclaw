@@ -353,7 +353,7 @@ public sealed class HealthCheckStepViewModel : IWizardStepViewModel
             // itself, instead of a detached copy beside a unit that stays inactive.
             var result = await UpdateCommand.StartDaemonAsync(
                 new UpdateCommand.DaemonProcessLifecycle(_daemonManager),
-                SystemdService ?? new SystemdUserService());
+                SystemdService ?? new SystemdUserService(_daemonManager.HomePath));
             if (!result.Success
                 && !result.Message.Contains("already running", StringComparison.OrdinalIgnoreCase)
                 && !result.Message.Contains("container supervisor", StringComparison.OrdinalIgnoreCase))

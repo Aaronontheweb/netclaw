@@ -331,9 +331,10 @@ public sealed class UpdateCommandTests : IDisposable
     {
         var manager = new FakeDaemonUpdateProcessManager();
         var systemd = new SystemdUserService(
+            SystemdUserService.DefaultHomePath,
             Path.Combine(_dir.Path, "missing.service"),
             new FakeSystemCommandRunner(),
-            enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath);
+            enabledOnThisPlatform: true);
 
         var result = await UpdateCommand.StartDaemonAsync(manager, systemd);
 
@@ -368,7 +369,7 @@ public sealed class UpdateCommandTests : IDisposable
         var unitPath = Path.Combine(_dir.Path, "netclaw.service");
         File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
         var systemd = new SystemdUserService(
-            unitPath, runner, enabledOnThisPlatform: true, homePath: Path.Combine(_dir.Path, "scratch-home"));
+            Path.Combine(_dir.Path, "scratch-home"), unitPath, runner, enabledOnThisPlatform: true);
 
         var stop = await UpdateCommand.StopDaemonAsync(manager, systemd, "cli-stop", TestContext.Current.CancellationToken);
         var start = await UpdateCommand.StartDaemonAsync(manager, systemd);
@@ -518,8 +519,7 @@ public sealed class UpdateCommandTests : IDisposable
             serviceCreated = true;
             var unitPath = Path.Combine(_dir.Path, "netclaw.service");
             File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
-            return new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true,
-                homePath: paths.BasePath,
+            return new SystemdUserService(paths.BasePath, unitPath, runner, enabledOnThisPlatform: true,
                 environReader: _ => $"NETCLAW_HOME={SystemdUserService.DefaultHomePath}\0");
         };
         using var stdout = new StringWriter();
@@ -862,7 +862,7 @@ public sealed class UpdateCommandTests : IDisposable
     {
         var unitPath = Path.Combine(_dir.Path, "netclaw.service");
         File.WriteAllText(unitPath, "[Service]\nExecStart=/opt/netclaw/netclawd\n");
-        return new SystemdUserService(unitPath, runner, enabledOnThisPlatform: true, homePath: homePath ?? SystemdUserService.DefaultHomePath);
+        return new SystemdUserService(homePath ?? SystemdUserService.DefaultHomePath, unitPath, runner, enabledOnThisPlatform: true);
     }
 
     private sealed class FakeDaemonUpdateProcessManager : IDaemonProcessLifecycle

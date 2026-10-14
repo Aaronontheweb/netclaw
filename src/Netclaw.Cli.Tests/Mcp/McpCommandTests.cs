@@ -693,6 +693,91 @@ public sealed class McpCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Add_NameDifferingOnlyByCase_UpdatesTheExistingEntry()
+    {
+        await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "add", "Git", "--", "echo", "hi2"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        var config = ReadConfigFile(_paths.NetclawConfigPath);
+        var servers = config.RootElement.GetProperty("McpServers");
+        var entry = Assert.Single(servers.EnumerateObject());
+        Assert.Equal("git", entry.Name);
+        Assert.Equal("echo", entry.Value.GetProperty("Command").GetString());
+        Assert.Equal("hi2", entry.Value.GetProperty("Arguments")[0].GetString());
+
+        // The file the next command loads must not carry two keys that differ only by case.
+        var loaded = new ConfigurationBuilder().AddJsonFile(_paths.NetclawConfigPath).Build();
+        Assert.Equal("echo", loaded["McpServers:git:Command"]);
+    }
+
+    [Fact]
+    public async Task Remove_WrongCase_RemovesTheConfiguredServer()
+    {
+        await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
+        _output.GetStringBuilder().Clear();
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "remove", "GIT"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Removed MCP server 'git'", _output.ToString());
+        Assert.Empty(ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("McpServers").EnumerateObject());
+    }
+
+    [Fact]
+    public async Task Disable_WrongCase_TogglesTheConfiguredServer()
+    {
+        await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
+        _output.GetStringBuilder().Clear();
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "disable", "Git"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Disabled MCP server 'git'", _output.ToString());
+        var servers = ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("McpServers");
+        Assert.False(Assert.Single(servers.EnumerateObject()).Value.GetProperty("Enabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Get_WrongCase_ShowsTheConfiguredServer()
+    {
+        await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
+        _output.GetStringBuilder().Clear();
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "get", "GIT"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Name:       git", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Auth_WrongCase_ResolvesTheNameBeforeNeedingTheDaemon()
+    {
+        await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
+        _output.GetStringBuilder().Clear();
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "auth", "Git"], _paths, output: _output);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("DaemonApi not available", _output.ToString());
+        Assert.DoesNotContain("not found", _output.ToString());
+    }
+
+    [Fact]
+    public async Task TwoServersDifferingOnlyByCase_ExactSpellingStillRemovesThatOne()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath,
+            """{"McpServers":{"git":{"Transport":"stdio","Command":"echo","Enabled":true},"Git":{"Transport":"stdio","Command":"echo","Enabled":true}}}""");
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "remove", "Git"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Removed MCP server 'Git'", _output.ToString());
+        Assert.Equal("git", Assert.Single(ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("McpServers").EnumerateObject()).Name);
+    }
+
+    [Fact]
     public async Task Remove_NotFound_ReturnsError()
     {
         var exitCode = await McpCommand.RunAsync(

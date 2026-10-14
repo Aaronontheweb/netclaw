@@ -38,6 +38,8 @@ public sealed partial class DaemonManager
         _commandRunner = commandRunner;
     }
 
+    internal string HomePath => _paths.BasePath;
+
     /// <summary>
     /// Starts the daemon as a detached background process.
     /// </summary>

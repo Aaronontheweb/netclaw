@@ -317,6 +317,84 @@ public sealed class ModelCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Discover_StoredEndpointWithoutScheme_FailsInOneLineWithoutProbing()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["noscheme"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "localhost:8080"
+                }
+            }
+        });
+
+        var exitCode = await ModelCommand.RunAsync(
+            ["model", "discover", "noscheme"],
+            _paths, _fakeProbe, output: _output);
+
+        Assert.Equal(1, exitCode);
+        Assert.Equal(
+            "Error: Provider 'noscheme' has endpoint 'localhost:8080', which is not an absolute http or https URL. "
+            + "Fix it by editing the provider's endpoint in `netclaw provider`.",
+            _output.ToString().Trim());
+        Assert.Equal(0, _fakeProbe.ProbeCallCount);
+    }
+
+    [Fact]
+    public async Task Discover_StoredEndpointWithoutScheme_HintCannotDropTheStoredApiKey()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["keyed"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "openai-compatible",
+                    ["Endpoint"] = "localhost:8080",
+                    ["AuthMethod"] = "ApiKey"
+                }
+            }
+        });
+        File.WriteAllText(_paths.SecretsPath, """{"Providers":{"keyed":{"ApiKey":"sk-keep"}}}""");
+
+        await ModelCommand.RunAsync(["model", "discover", "keyed"], _paths, _fakeProbe, output: _output);
+
+        // `provider add` without --api-key rewrites the entry as unauthenticated and deletes the secret.
+        Assert.DoesNotContain("provider add", _output.ToString(), StringComparison.Ordinal);
+        Assert.Contains("sk-keep", File.ReadAllText(_paths.SecretsPath), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Discover_ProviderNameInOtherCase_ProbesTheConfiguredProvider()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-ollama"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "ollama",
+                    ["Endpoint"] = "http://localhost:11434"
+                }
+            }
+        });
+
+        var exitCode = await ModelCommand.RunAsync(
+            ["model", "discover", "MY-Ollama"],
+            _paths, _fakeProbe, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Discovering models from 'my-ollama'", _output.ToString());
+        Assert.Equal(1, _fakeProbe.ProbeCallCount);
+    }
+
+    [Fact]
     public async Task Discover_NonexistentProvider_ReturnsError()
     {
         var exitCode = await ModelCommand.RunAsync(
@@ -653,6 +731,123 @@ public sealed class ModelCommandTests : IDisposable
         Assert.Contains("Fix the Models section", output);
         Assert.DoesNotContain("could not be parsed", output);
         Assert.DoesNotContain("doctor --fix", output);
+    }
+
+    [Fact]
+    public async Task List_NamedRolesWithLegacyEnvironmentRoles_ReportsTheMixTheDaemonRefuses()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Definitions"] = new Dictionary<string, object>
+                {
+                    ["known"] = new Dictionary<string, object> { ["Provider"] = "my-ollama", ["ModelId"] = "qwen3:30b" }
+                },
+                ["Roles"] = new Dictionary<string, object> { ["Main"] = "known" }
+            }
+        });
+
+        var exitCode = await WithEnvironment(
+            [("NETCLAW_Models__Main__Provider", "stub"), ("NETCLAW_Models__Main__ModelId", "zzz")],
+            () => ModelCommand.RunAsync(["model", "list"], _paths, output: _output));
+
+        var output = _output.ToString();
+        Assert.Equal(1, exitCode);
+        Assert.Contains("Models configuration mixes legacy inline roles", output);
+        Assert.DoesNotContain("qwen3:30b", output);
+    }
+
+    [Fact]
+    public async Task List_RoleOverriddenByEnvironment_ShowsTheModelTheDaemonUses()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Definitions"] = new Dictionary<string, object>
+                {
+                    ["known"] = new Dictionary<string, object> { ["Provider"] = "my-ollama", ["ModelId"] = "qwen3:30b" }
+                },
+                ["Roles"] = new Dictionary<string, object> { ["Main"] = "known" }
+            }
+        });
+
+        var exitCode = await WithEnvironment(
+            [("NETCLAW_Models__Definitions__known__ModelId", "from-env")],
+            () => ModelCommand.RunAsync(["model", "list"], _paths, output: _output));
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("from-env", _output.ToString());
+        Assert.DoesNotContain("qwen3:30b", _output.ToString());
+        Assert.Contains("NETCLAW_Models__Definitions__known__ModelId", _output.ToString());
+    }
+
+    [Fact]
+    public async Task ProviderRemove_GuardReadsTheFileNotTheShellEnvironment()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-ollama"] = new Dictionary<string, object> { ["Type"] = "ollama", ["Endpoint"] = "http://localhost:11434" },
+                ["other"] = new Dictionary<string, object> { ["Type"] = "ollama", ["Endpoint"] = "http://localhost:11435" }
+            },
+            ["Models"] = new Dictionary<string, object>
+            {
+                ["Definitions"] = new Dictionary<string, object>
+                {
+                    ["known"] = new Dictionary<string, object> { ["Provider"] = "my-ollama", ["ModelId"] = "qwen3:30b" }
+                },
+                ["Roles"] = new Dictionary<string, object> { ["Main"] = "known" }
+            }
+        });
+
+        var exitCode = await WithEnvironment(
+            [("NETCLAW_Models__Definitions__known__Provider", "other")],
+            () => Netclaw.Cli.Provider.ProviderCommand.RunAsync(["provider", "remove", "my-ollama"], _paths, output: _output));
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("referenced by model role(s): Main", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Set_ProviderNameInOtherCase_WritesTheConfiguredSpelling()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-ollama"] = new Dictionary<string, object> { ["Type"] = "ollama", ["Endpoint"] = "http://localhost:11434" }
+            }
+        });
+
+        var exitCode = await ModelCommand.RunAsync(
+            ["model", "set", "main", "MY-Ollama", "qwen3:30b", "--context-window", "32768"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Set main model to my-ollama/qwen3:30b", _output.ToString());
+    }
+
+    private static async Task<int> WithEnvironment((string Name, string Value)[] variables, Func<Task<int>> run)
+    {
+        var previous = variables.Select(v => Environment.GetEnvironmentVariable(v.Name)).ToArray();
+        try
+        {
+            foreach (var (name, value) in variables)
+                Environment.SetEnvironmentVariable(name, value);
+
+            return await run();
+        }
+        finally
+        {
+            for (var i = 0; i < variables.Length; i++)
+                Environment.SetEnvironmentVariable(variables[i].Name, previous[i]);
+        }
     }
 
     [Fact]

@@ -63,6 +63,9 @@ internal static class ProviderCredentialWriter
         var (config, secrets) = ConfigFileHelper.LoadConfigFiles(paths);
         var providers = ConfigFileHelper.GetOrCreateSection(config, "Providers");
 
+        // Configuration keys are case-insensitive: "Local" beside "local" fails the next load.
+        providerName = ConfigFileHelper.ResolveName(providers.Keys, providerName);
+
         var providerEntry = new Dictionary<string, object>
         {
             ["Type"] = providerType

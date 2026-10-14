@@ -54,7 +54,13 @@ internal static class ModelCommand
 
     private static int RunList(NetclawPaths paths, TextWriter writer)
     {
-        if (!TryLoadModelSelection(paths, out var models, out var error))
+        // Display only: the daemon layers NETCLAW_* over netclaw.json, so the list shows that view.
+        // Guards and editors keep reading the file, because they change the file.
+        var configuration = new ConfigurationBuilder()
+            .AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false)
+            .AddEnvironmentVariables("NETCLAW_")
+            .Build();
+        if (!TryResolveModelSelection(configuration, out var models, out var error))
         {
             writer.WriteLine($"Error: {error}");
             writer.WriteLine("Fix the Models section in netclaw.json, then rerun `netclaw model list`.");
@@ -81,6 +87,13 @@ internal static class ModelCommand
             WriteModelRow("Compaction", models.Compaction, writer);
         else
             writer.WriteLine($"{"Compaction",-12} {"(not set)",-20}");
+
+        var modelVariables = Environment.GetEnvironmentVariables().Keys.OfType<string>()
+            .Where(name => name.StartsWith("NETCLAW_Models__", StringComparison.OrdinalIgnoreCase))
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (modelVariables.Count > 0)
+            writer.WriteLine($"Note: this shell's environment ({string.Join(", ", modelVariables)}) is applied. The daemon uses its own environment.");
 
         return 0;
     }
@@ -219,6 +232,8 @@ internal static class ModelCommand
 
         // Validate provider exists
         var providers = ProviderCommand.LoadProviders(paths);
+        providerName = ConfigFileHelper.ResolveName(providers.Keys, providerName);
+
         if (!providers.TryGetValue(providerName, out var providerEntry))
         {
             writer.WriteLine($"Error: Provider '{providerName}' not found in configuration.");
@@ -378,10 +393,18 @@ internal static class ModelCommand
 
         var providerName = args[2];
         var providers = ProviderCommand.LoadProviders(paths);
+        providerName = ConfigFileHelper.ResolveName(providers.Keys, providerName);
 
         if (!providers.TryGetValue(providerName, out var entry))
         {
             writer.WriteLine($"Error: Provider '{providerName}' not found in configuration.");
+            return 1;
+        }
+
+        if (!string.IsNullOrWhiteSpace(entry.Endpoint) && !ProviderCommand.IsHttpEndpoint(entry.Endpoint))
+        {
+            writer.WriteLine($"Error: Provider '{providerName}' has endpoint '{entry.Endpoint}', which is not an absolute http or https URL. "
+                + "Fix it by editing the provider's endpoint in `netclaw provider`.");
             return 1;
         }
 

@@ -293,7 +293,7 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
             daemonApi: null,
             navigationState: new ChatNavigationState())
         {
-            SystemdService = new SystemdUserService(unitFilePath: Path.Combine(_dir.Path, "absent.service"), homePath: _dir.Path)
+            SystemdService = new SystemdUserService(_dir.Path, unitFilePath: Path.Combine(_dir.Path, "absent.service"))
         };
         var launched = false;
         step.Navigate = _ => launched = true;
@@ -336,7 +336,7 @@ public sealed class HealthCheckStepViewModelTests : IDisposable
             navigationState: new ChatNavigationState())
         {
             SystemdService = new SystemdUserService(
-                unitPath, runner, enabledOnThisPlatform: true, homePath: SystemdUserService.DefaultHomePath)
+                SystemdUserService.DefaultHomePath, unitPath, runner, enabledOnThisPlatform: true)
         };
         step.Navigate = _ => { };
         using var exposureStep = new ExposureModeStepViewModel { SelectedMode = ExposureMode.Local };
