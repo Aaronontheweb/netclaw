@@ -704,7 +704,7 @@ public sealed class ChatPageTests
     [Fact]
     public async Task ParallelToolCalls_ResultLineReportsTheCallsOwnElapsedTime()
     {
-        // The fake clock advances one second after each replayed output.
+        // The fake clock advances one second before each replayed output but the first.
         var screen = await RenderSessionOutputsAsync(new FakeTimeProvider(), TimeSpan.FromSeconds(1),
             ToolCall("tool_a", "call-1", "{}"),
             ToolCall("tool_b", "call-2", "{}"),
@@ -726,8 +726,7 @@ public sealed class ChatPageTests
             ToolCall("tool_a", "call-1", "{}"),
             ToolCall("tool_b", "call-2", "{}"),
             ToolCall("tool_c", "call-3", "{}"),
-            ToolResult("tool_a", "a", "call-1"),
-            new SessionJoined { SessionId = new SessionId("tui/test"), Title = "later" });
+            ToolResult("tool_a", "a", "call-1"));
 
         var rows = ChatRows(screen);
         // tool_b started at 1s and takes over the spinner at 3s, when tool_a finishes: it counts from its own start.
@@ -1198,10 +1197,15 @@ public sealed class ChatPageTests
 
         protected override Task InitializeSessionAsync()
         {
+            // The clock moves before each output but the first, so after the last output it stays put:
+            // a later tick or redraw (a slow machine can run one) reads the same time the test expects.
+            var first = true;
             foreach (var output in _replay ?? [])
             {
+                if (!first)
+                    _clock?.Advance(_stepPerOutput);
+                first = false;
                 ProcessOutputForTesting(output);
-                _clock?.Advance(_stepPerOutput);
             }
             return Task.CompletedTask;
         }
