@@ -2625,6 +2625,7 @@ public class LlmSessionIntegrationTests : LlmSessionTestBase
         ReceivedAt = _timeProvider.GetUtcNow(),
         ReminderId = new ReminderId(reminderId)
     };
+
 }
 
 internal sealed class DeferredTestTool(string name) : INetclawTool

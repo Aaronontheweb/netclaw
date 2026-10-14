@@ -5,11 +5,13 @@
 // -----------------------------------------------------------------------
 using System.Collections.Concurrent;
 using System.Threading.Channels;
+using Akka;
 using Akka.Actor;
 using Akka.Event;
 using Akka.Hosting;
 using Akka.Reminders;
 using Akka.Streams;
+using Akka.Streams.Dsl;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Netclaw.Actors.Channels;
@@ -30,11 +32,15 @@ public sealed class ReminderExecutionMutationTests : IAsyncLifetime
     private readonly HeldPipeline _pipeline = new();
     private readonly AlertSink _alerts = new();
     private readonly Channel<Guid> _dispatches = Channel.CreateUnbounded<Guid>();
+    private readonly Channel<ReminderExecutionCompleted> _localOutcomes =
+        Channel.CreateUnbounded<ReminderExecutionCompleted>();
+    private readonly Channel<IActorRef> _localTerminations = Channel.CreateUnbounded<IActorRef>();
     private readonly ReminderId _id = new("ownership-probe");
     private readonly DateTimeOffset _now = TimeProvider.System.GetUtcNow();
     private IHost _host = null!;
     private IActorRef _manager = null!;
     private IActorRef _barrier = null!;
+    private IActorRef _localExecutionParent = null!;
     private ReminderDefinitionStore _definitions = null!;
     private ReminderHistoryStore _history = null!;
     private int _occurrence;
@@ -57,6 +63,9 @@ public sealed class ReminderExecutionMutationTests : IAsyncLifetime
                     new SchedulingConfig(), TimeProvider.System, _definitions, _history,
                     _alerts, NullReminderChannelNotifier.Instance)));
                 _barrier = system.ActorOf(Props.Create(() => new QueryBarrier(_manager)));
+                _localExecutionParent = system.ActorOf(
+                    Props.Create(() => new LocalExecutionParent(_localOutcomes.Writer, _localTerminations.Writer)),
+                    "local-execution-parent");
             }));
         _host = builder.Build();
         await _host.StartAsync();
@@ -161,6 +170,62 @@ public sealed class ReminderExecutionMutationTests : IAsyncLifetime
         await DispatchAsync();
     }
 
+    [Fact]
+    public async Task Unrelated_failed_turn_does_not_settle_local_reminder()
+    {
+        // Arrange
+        var dueAt = _now.AddMinutes(1);
+        var expectedKey = new ReminderId($"{_id.Value}:{dueAt.ToUnixTimeMilliseconds()}");
+        var definition = Definition() with
+        {
+            Delivery = new ReminderDelivery
+            {
+                Kind = DeliveryKind.CurrentSession,
+                SessionId = "origin-session",
+                OriginChannelType = ChannelType.Reminder
+            }
+        };
+        var pipeline = new TerminalSequencePipeline(
+        [
+            new TurnCompleted
+            {
+                SessionId = new SessionId("origin-session"),
+                TurnNumber = new TurnNumber(1),
+                Outcome = TurnOutcome.Failed,
+                SourceReminderId = new ReminderId("different-reminder:1")
+            },
+            new TurnCompleted
+            {
+                SessionId = new SessionId("origin-session"),
+                TurnNumber = new TurnNumber(2),
+                Outcome = TurnOutcome.Completed,
+                SourceReminderId = expectedKey
+            }
+        ]);
+        var executionId = Guid.NewGuid();
+        var envelope = new ReminderEnvelope<ReminderPayload>(
+            new ReminderEntity(ReminderManagerActor.ShardRegionName, ReminderManagerActor.EntityId),
+            new ReminderKey(_id.Value), dueAt, ReminderDeadline.Infinite,
+            new ReminderPayload { Id = _id });
+
+        // Act
+        var started = await _localExecutionParent.Ask<LocalExecutionStarted>(
+            new StartLocalExecution(executionId, definition, pipeline, envelope), ReplyTimeout);
+        var outcome = await _localOutcomes.Reader.ReadAsync().AsTask().WaitAsync(ReplyTimeout);
+        var input = await pipeline.InputCaptured.WaitAsync(ReplyTimeout);
+        var terminated = await _localTerminations.Reader.ReadAsync().AsTask().WaitAsync(ReplyTimeout);
+
+        // Assert
+        Assert.Equal(executionId, started.ExecutionId);
+        Assert.Equal(started.Execution, terminated);
+        Assert.Equal(executionId, outcome.ExecutionId);
+        Assert.Equal(_id, outcome.Id);
+        Assert.True(outcome.Success);
+        Assert.Null(outcome.ErrorMessage);
+        Assert.Equal(expectedKey, input.ReminderId);
+        Assert.NotNull(input.AckTarget);
+    }
+
     private async Task<Guid> DispatchAsync()
     {
         _manager.Tell(new ReminderEnvelope<ReminderPayload>(
@@ -263,5 +328,86 @@ public sealed class ReminderExecutionMutationTests : IAsyncLifetime
 
         public Task<ISessionResponse> SendFeedbackAndWaitAsync(IWithSessionId feedback, CancellationToken ct = default) =>
             throw new InvalidOperationException("The held pipeline must not receive feedback.");
+    }
+
+    private sealed record StartLocalExecution(
+        Guid ExecutionId,
+        ReminderDefinition Definition,
+        ISessionPipeline Pipeline,
+        ReminderEnvelope<ReminderPayload> Envelope);
+
+    private sealed record LocalExecutionStarted(Guid ExecutionId, IActorRef Execution);
+
+    private sealed class LocalExecutionParent : ReceiveActor
+    {
+        public LocalExecutionParent(
+            ChannelWriter<ReminderExecutionCompleted> outcomes,
+            ChannelWriter<IActorRef> terminations)
+        {
+            Receive<StartLocalExecution>(start =>
+            {
+                var execution = Context.ActorOf(
+                    ReminderExecutionActor.CreateProps(
+                        start.ExecutionId, start.Definition, start.Pipeline, TimeProvider.System, start.Envelope),
+                    $"execution-{start.ExecutionId:N}");
+                Context.Watch(execution);
+                Sender.Tell(new LocalExecutionStarted(start.ExecutionId, execution));
+            });
+            Receive<ReminderExecutionCompleted>(completed =>
+            {
+                if (!outcomes.TryWrite(completed))
+                    throw new InvalidOperationException("The local outcome channel is closed.");
+
+                Sender.Tell(new ReminderExecutionAccepted(completed.ExecutionId));
+            });
+            Receive<Terminated>(terminated =>
+            {
+                if (!terminations.TryWrite(terminated.ActorRef))
+                    throw new InvalidOperationException("The local termination channel is closed.");
+            });
+        }
+    }
+
+    private sealed class TerminalSequencePipeline(IReadOnlyList<SessionOutput> outputs) : ISessionPipeline
+    {
+        private readonly TaskCompletionSource _inputAccepted =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<ChannelInput> _inputCaptured =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<ChannelInput> InputCaptured => _inputCaptured.Task;
+
+        public Task<MaterializedSession> CreateAsync(
+            SessionId sessionId,
+            SessionPipelineOptions options,
+            IMaterializer? materializer = null,
+            CancellationToken cancellationToken = default)
+        {
+            var killSwitch = KillSwitches.Shared($"terminal-sequence-{sessionId.Value}");
+            var input = Sink.ForEach<ChannelInput>(channelInput =>
+            {
+                _inputCaptured.TrySetResult(channelInput);
+                channelInput.AckTarget?.Tell(CommandAck.For(sessionId), ActorRefs.NoSender);
+                _inputAccepted.TrySetResult();
+            }).ObservingFault();
+            var output = Source.UnfoldAsync<int, SessionOutput>(0, async index =>
+                {
+                    await _inputAccepted.Task.ConfigureAwait(false);
+                    if (index < outputs.Count)
+                        return (index + 1, outputs[index]);
+
+                    return default;
+                })
+                .Concat(Source.Maybe<SessionOutput>().MapMaterializedValue(_ => NotUsed.Instance))
+                .Via(killSwitch.Flow<SessionOutput>());
+
+            return Task.FromResult(new MaterializedSession(input, output, killSwitch));
+        }
+
+        public Task SendFeedbackAsync(IWithSessionId feedback, CancellationToken ct = default) =>
+            Task.CompletedTask;
+
+        public Task<ISessionResponse> SendFeedbackAndWaitAsync(IWithSessionId feedback, CancellationToken ct = default) =>
+            Task.FromResult<ISessionResponse>(CommandAck.For(feedback.SessionId));
     }
 }

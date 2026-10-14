@@ -73,6 +73,18 @@ public sealed class ChatPage : ReactivePage<ChatViewModel>
             .Where(text => !string.IsNullOrWhiteSpace(text))
             .Subscribe(text =>
             {
+                // The input node has already cleared itself before raising Submitted, so on refusal put the
+                // text back. A single line can be edited; a multi-line paste comes back as one paste block
+                // (delete it or append to it) and Enter re-checks it.
+                if (ChatViewModel.CheckMessageSize(text) is { } tooLarge)
+                {
+                    _promptInput.Text = text;
+                    _promptInput.MoveCursorToEnd();
+                    _chatHistory.AppendLine($"  [error] {tooLarge}", Color.Red);
+                    ViewModel.StatusMessage.Value = tooLarge;
+                    return;
+                }
+
                 _promptInput.Clear();
 
                 // Render user message

@@ -147,6 +147,10 @@ public partial class ChatViewModel : ReactiveViewModel
         return _activationTask;
     }
 
+    /// <summary>
+    /// <summary>Returns the size error when <paramref name="text"/> is too large to send, otherwise null.</summary>
+    public static string? CheckMessageSize(string text) => SessionHubFrame.CheckText(text);
+
     /// <summary>Posts user text before the caller can request normal quit.</summary>
     public Task SubmitAsync(string text)
     {
