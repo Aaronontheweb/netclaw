@@ -8,7 +8,6 @@ using Microsoft.Extensions.AI;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Sessions.Pipelines;
 using Netclaw.Actors.SubAgents;
-using Netclaw.Actors.Tools;
 using Netclaw.Tools;
 
 namespace Netclaw.Actors.Sessions;
@@ -64,25 +63,6 @@ internal sealed record LlmResponseDeltaReceived(AIContent Content) : INoSerializ
 internal sealed record LlmCallFailed(Exception Cause) : INoSerializationVerificationNeeded
 {
     public long CallId { get; init; }
-}
-
-/// <summary>
-/// Internal message sent back to the session actor when tool execution completes.
-/// Contains the tool results to feed back into the next LLM call.
-/// </summary>
-internal sealed record ToolExecutionCompleted : INoSerializationVerificationNeeded
-{
-    public required List<Protocol.SerializableChatMessage> ToolResults { get; init; }
-    public List<SerializableMediaReference> ModelInputMediaReferences { get; init; } = [];
-    public List<FileAttachmentInfo> FileAttachments { get; init; } = [];
-    public List<CompletedSubAgentRun> CompletedSubAgentRuns { get; init; } = [];
-    public List<AcceptedSubAgentFinding> AcceptedSubAgentFindings { get; init; } = [];
-    public List<Jobs.ActiveJobInfo> StartedBackgroundJobs { get; init; } = [];
-    public List<ManagedTemporaryCorrectionChange> ManagedTemporaryCorrectionChanges { get; init; } = [];
-    public Dictionary<string, string> ToolFailureCodes { get; init; } = new(StringComparer.Ordinal);
-    public Dictionary<string, ToolInvocationReceipt> ToolReceipts { get; init; } = new(StringComparer.Ordinal);
-    public Dictionary<string, ToolExposureRequest> ToolExposureRequests { get; init; } = new(StringComparer.Ordinal);
-    public Dictionary<string, AuthorizationAttemptId> AuthorizationAttemptIds { get; init; } = new(StringComparer.Ordinal);
 }
 
 internal sealed record ToolExecutionSingleCompleted(ToolCallResult Result) : INoSerializationVerificationNeeded;
