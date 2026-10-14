@@ -440,6 +440,202 @@ public sealed class ChatPageTests
         Assert.Equal(3, rows.Count(r => r.Contains("Netclaw:", StringComparison.Ordinal)));
     }
 
+    [Fact]
+    public async Task ParallelToolCalls_EachShowsItsOwnPendingLine()
+    {
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("shell_execute", "call-1", "{\"command\":\"sleep 4; echo one\"}"),
+            ToolCall("shell_execute", "call-2", "{\"command\":\"echo two\"}"));
+
+        var rows = ChatRows(screen);
+        var first = Assert.Single(rows, r => r.Contains("echo one", StringComparison.Ordinal));
+        var second = Assert.Single(rows, r => r.Contains("echo two", StringComparison.Ordinal));
+        Assert.Contains("shell_execute(", first, StringComparison.Ordinal);
+        Assert.Contains("shell_execute(", second, StringComparison.Ordinal);
+        Assert.True(Array.IndexOf(rows, first) < Array.IndexOf(rows, second));
+    }
+
+    [Fact]
+    public async Task ParallelToolCalls_FirstResultReplacesOnlyItsOwnLine()
+    {
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("shell_execute", "call-1", "{\"command\":\"echo one\"}"),
+            ToolCall("shell_execute", "call-2", "{\"command\":\"echo two\"}"),
+            ToolResult("shell_execute", "Exit code: 0 two", "call-2"));
+
+        var rows = ChatRows(screen);
+        Assert.Single(rows, r => r.Contains("echo one", StringComparison.Ordinal));
+        Assert.DoesNotContain(rows, r => r.Contains("echo two", StringComparison.Ordinal));
+        Assert.Single(rows, r => r.Contains("✓ shell_execute → Exit code: 0 two", StringComparison.Ordinal));
+        Assert.True(
+            Array.FindIndex(rows, r => r.Contains("echo one", StringComparison.Ordinal))
+            < Array.FindIndex(rows, r => r.Contains("✓", StringComparison.Ordinal)));
+    }
+
+    [Theory]
+    [InlineData("call-1", "call-2", "call-3")]
+    [InlineData("call-3", "call-2", "call-1")]
+    [InlineData("call-2", "call-3", "call-1")]
+    public async Task ParallelToolCalls_ResultsKeepCallOrderWhateverTheCompletionOrder(string done1, string done2, string done3)
+    {
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("tool_a", "call-1", "{}"),
+            ToolCall("tool_b", "call-2", "{}"),
+            ToolCall("tool_c", "call-3", "{}"),
+            ToolResult(ToolFor(done1), $"result of {done1}", done1),
+            ToolResult(ToolFor(done2), $"result of {done2}", done2),
+            ToolResult(ToolFor(done3), $"result of {done3}", done3));
+
+        var rows = ChatRows(screen).Where(r => r.Contains("tool_", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(3, rows.Length);
+        Assert.StartsWith("  ✓ tool_a → result of call-1 (", rows[0], StringComparison.Ordinal);
+        Assert.StartsWith("  ✓ tool_b → result of call-2 (", rows[1], StringComparison.Ordinal);
+        Assert.StartsWith("  ✓ tool_c → result of call-3 (", rows[2], StringComparison.Ordinal);
+
+        static string ToolFor(string callId) => callId switch
+        {
+            "call-1" => "tool_a",
+            "call-2" => "tool_b",
+            _ => "tool_c"
+        };
+    }
+
+    [Fact]
+    public async Task ParallelToolCalls_ErroringCallDoesNotDisturbItsSibling()
+    {
+        var failed = ToolResult("shell_execute", "Error: command not found", "call-1") with { FailureCode = "preflight_rejected" };
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("shell_execute", "call-1", "{\"command\":\"nope\"}"),
+            ToolCall("shell_execute", "call-2", "{\"command\":\"echo two\"}"),
+            failed,
+            ToolResult("shell_execute", "Exit code: 0 two", "call-2"));
+
+        var rows = ChatRows(screen);
+        Assert.Single(rows, r => r.Contains("✓ shell_execute → Error: command not found", StringComparison.Ordinal));
+        Assert.Single(rows, r => r.Contains("✓ shell_execute → Exit code: 0 two", StringComparison.Ordinal));
+        Assert.DoesNotContain(rows, r => r.Contains("shell_execute(", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ParallelToolCalls_ApprovalPromptForOneCallLeavesTheOtherLineAlone()
+    {
+        var approval = BuildApproval("rm -rf build") with { CallId = new Netclaw.Tools.ToolCallId("call-2") };
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("file_read", "call-1", "{\"path\":\"a.txt\"}"),
+            ToolCall("shell_execute", "call-2", "{\"command\":\"rm -rf build\"}"),
+            approval,
+            ToolResult("file_read", "contents of a", "call-1"));
+
+        var rows = ChatRows(screen);
+        Assert.Single(rows, r => r.Contains("✓ file_read → contents of a", StringComparison.Ordinal));
+        // The approval prompt replaces the pending line of the call it gates.
+        Assert.DoesNotContain(rows, r => r.Contains("shell_execute(", StringComparison.Ordinal));
+        Assert.Single(rows, r => r.Contains("System: Approval required for shell_execute", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task ParallelToolCalls_ReplayedAcrossARejoinRendersEveryResult()
+    {
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("tool_a", "call-1", "{}"),
+            ToolCall("tool_b", "call-2", "{}"),
+            new SessionJoined { SessionId = new SessionId("tui/test"), Title = "rejoined" },
+            ToolResult("tool_b", "result of two", "call-2"),
+            ToolResult("tool_a", "result of one", "call-1"),
+            new TurnCompleted { SessionId = new SessionId("tui/test"), TurnNumber = new TurnNumber(1) });
+
+        var rows = ChatRows(screen);
+        var a = Array.FindIndex(rows, r => r.Contains("✓ tool_a → result of one", StringComparison.Ordinal));
+        var b = Array.FindIndex(rows, r => r.Contains("✓ tool_b → result of two", StringComparison.Ordinal));
+        Assert.True(a >= 0 && b > a, "both results render, in call order");
+    }
+
+    [Fact]
+    public async Task ParallelToolCalls_EachGetsItsOwnTimerAndAllAreDisposedWithThePage()
+    {
+        ChatPage? page = null;
+        var (terminal, app, _) = CreateHeadlessApp(null, out var input, replay:
+        [
+            ToolCall("tool_a", "call-1", "{}"),
+            ToolCall("tool_b", "call-2", "{}"),
+            ToolCall("tool_c", "call-3", "{}"),
+            ToolResult("tool_c", "done", "call-3")
+        ], onPage: p => page = p);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        // call-3 finished and was released; call-1 and call-2 were still pending at shutdown.
+        var timers = page!.PendingToolTimers;
+        Assert.Equal(2, timers.Count);
+        Assert.Equal(2, timers.Distinct().Count());
+        page.Dispose();
+        Assert.All(timers, t => Assert.False(t.IsAnimating, "page disposal stops every pending timer"));
+    }
+
+    [Fact]
+    public async Task ParallelToolCalls_NothingStaysPendingOnceTheLastCallFinishes()
+    {
+        ChatPage? page = null;
+        var (_, app, _) = CreateHeadlessApp(null, out var input, replay:
+        [
+            ToolCall("tool_a", "call-1", "{}"),
+            ToolCall("tool_b", "call-2", "{}"),
+            ToolResult("tool_a", "one", "call-1"),
+            ToolResult("tool_b", "two", "call-2")
+        ], onPage: p => page = p);
+        input.EnqueueKey(ConsoleKey.Q, false, false, true);
+
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.RunAsync(cts.Token);
+
+        Assert.Empty(page!.PendingToolTimers);
+    }
+
+    [Fact]
+    public async Task ToolPreview_NeverSplitsASurrogatePair()
+    {
+        // 76 narrow characters leave one column of the 77-column budget; the
+        // emoji needs two, so it must be dropped whole rather than cut in half.
+        var result = new string('x', 76) + "\U0001F600 and more text after it";
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch"),
+            ToolResult("web_fetch", result));
+
+        var row = Assert.Single(ChatRows(screen), r => r.Contains("✓ web_fetch", StringComparison.Ordinal));
+        Assert.Contains("→ " + new string('x', 76) + "... (", row, StringComparison.Ordinal);
+        Assert.DoesNotContain('\uFFFD', row);
+    }
+
+    [Fact]
+    public async Task ToolPreview_CutsWideCharactersByDisplayWidth()
+    {
+        // Each ideograph is two columns: 38 of them fill 76 of the 77 columns.
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch"),
+            ToolResult("web_fetch", new string('\u4E2D', 50)));
+
+        var row = Assert.Single(ChatRows(screen), r => r.Contains("✓ web_fetch", StringComparison.Ordinal));
+        Assert.Contains("→ " + new string('\u4E2D', 38) + "...", row, StringComparison.Ordinal);
+        Assert.DoesNotContain(new string('\u4E2D', 39), row, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ToolPreview_StripsEscapeSequencesBeforeCutting()
+    {
+        // The old 77-character cut landed inside the second escape sequence and
+        // left "ESC [" dangling, which swallowed the " (0.0s" after it.
+        var result = "\u001b[31m" + new string('a', 70) + "\u001b[1;32m" + new string('b', 30) + "\u001b[0m";
+        var screen = await RenderSessionOutputsAsync(
+            ToolCall("web_fetch"),
+            ToolResult("web_fetch", result));
+
+        var row = Assert.Single(ChatRows(screen), r => r.Contains("✓ web_fetch", StringComparison.Ordinal));
+        Assert.DoesNotContain('\u001b', row);
+        Assert.Matches(@"→ a{70}b{7}\.\.\. \(\d+\.\ds\)$", row);
+    }
+
     private static ToolCallOutput ToolCall(
         string toolName, string callId = "call-1", string argumentsJson = "{\"url\":\"http://example.test/weather\"}") => new()
     {
@@ -772,7 +968,8 @@ public sealed class ChatPageTests
             int width = 120, int height = 40,
             IReadOnlyList<ToolInteractionOption>? options = null,
             bool startGenerating = false,
-            IReadOnlyList<SessionOutput>? replay = null)
+            IReadOnlyList<SessionOutput>? replay = null,
+            Action<ChatPage>? onPage = null)
     {
         var terminal = new VirtualTerminal(width, height);
         var virtualInput = new VirtualInputSource();
@@ -787,7 +984,12 @@ public sealed class ChatPageTests
         {
             builder.RegisterRoute<ChatPage, ChatViewModel>(
                 "/chat",
-                sp => new ChatPage(sp.GetRequiredService<IAnsiTerminal>()),
+                sp =>
+                {
+                    var page = new ChatPage(sp.GetRequiredService<IAnsiTerminal>());
+                    onPage?.Invoke(page);
+                    return page;
+                },
                 _ =>
                 {
                     var effectiveSeed = seed is null
