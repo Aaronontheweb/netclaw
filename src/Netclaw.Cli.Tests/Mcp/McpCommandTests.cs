@@ -712,22 +712,89 @@ public sealed class McpCommandTests : IDisposable
         Assert.Equal("echo", loaded["McpServers:git:Command"]);
     }
 
-    [Theory]
-    [InlineData("get")]
-    [InlineData("remove")]
-    [InlineData("enable")]
-    [InlineData("disable")]
-    [InlineData("auth")]
-    public async Task ExistingServerCommands_NameTheConfiguredSpellingWhenOnlyTheCaseDiffers(string subcommand)
+    [Fact]
+    public async Task Remove_WrongCase_RemovesTheConfiguredServer()
     {
         await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
         _output.GetStringBuilder().Clear();
 
-        var exitCode = await McpCommand.RunAsync(["mcp", subcommand, "Git"], _paths, output: _output);
+        var exitCode = await McpCommand.RunAsync(["mcp", "remove", "GIT"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Removed MCP server 'git'", _output.ToString());
+        Assert.Empty(ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("McpServers").EnumerateObject());
+    }
+
+    [Fact]
+    public async Task Disable_WrongCase_TogglesTheConfiguredServer()
+    {
+        await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
+        _output.GetStringBuilder().Clear();
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "disable", "Git"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Disabled MCP server 'git'", _output.ToString());
+        var servers = ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("McpServers");
+        Assert.False(Assert.Single(servers.EnumerateObject()).Value.GetProperty("Enabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task Get_WrongCase_ShowsTheConfiguredServer()
+    {
+        await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
+        _output.GetStringBuilder().Clear();
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "get", "GIT"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Name:       git", _output.ToString());
+    }
+
+    [Fact]
+    public async Task Auth_WrongCase_ResolvesTheNameBeforeNeedingTheDaemon()
+    {
+        await McpCommand.RunAsync(["mcp", "add", "git", "--", "echo", "hi"], _paths, output: _output);
+        _output.GetStringBuilder().Clear();
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "auth", "Git"], _paths, output: _output);
 
         Assert.Equal(1, exitCode);
-        Assert.Contains("The configured server is 'git'", _output.ToString());
-        Assert.Contains("git", ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("McpServers").EnumerateObject().Select(p => p.Name));
+        Assert.Contains("DaemonApi not available", _output.ToString());
+        Assert.DoesNotContain("not found", _output.ToString());
+    }
+
+    [Theory]
+    [InlineData("add")]
+    [InlineData("get")]
+    [InlineData("remove")]
+    [InlineData("disable")]
+    public async Task TwoServersDifferingOnlyByCase_RefuseAWrongCaseNameNamingBothSpellings(string subcommand)
+    {
+        var json = """{"McpServers":{"git":{"Transport":"stdio","Command":"echo","Enabled":true},"Git":{"Transport":"stdio","Command":"echo","Enabled":true}}}""";
+        File.WriteAllText(_paths.NetclawConfigPath, json);
+
+        var args = subcommand == "add"
+            ? new[] { "mcp", "add", "GIT", "--", "echo", "x" }
+            : ["mcp", subcommand, "GIT"];
+        var exitCode = await McpCommand.RunAsync(args, _paths, output: _output);
+
+        Assert.Equal(1, exitCode);
+        Assert.Contains("'git' and 'Git' differ only by case, so 'GIT' is ambiguous", _output.ToString());
+        Assert.Equal(json, File.ReadAllText(_paths.NetclawConfigPath));
+    }
+
+    [Fact]
+    public async Task TwoServersDifferingOnlyByCase_ExactSpellingStillRemovesThatOne()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath,
+            """{"McpServers":{"git":{"Transport":"stdio","Command":"echo","Enabled":true},"Git":{"Transport":"stdio","Command":"echo","Enabled":true}}}""");
+
+        var exitCode = await McpCommand.RunAsync(["mcp", "remove", "Git"], _paths, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Removed MCP server 'Git'", _output.ToString());
+        Assert.Equal("git", Assert.Single(ReadConfigFile(_paths.NetclawConfigPath).RootElement.GetProperty("McpServers").EnumerateObject()).Name);
     }
 
     [Fact]

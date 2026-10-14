@@ -163,19 +163,21 @@ public sealed class McpServerLifecycleTests : IDisposable
     }
 
     [Fact]
-    public async Task Remove_NameDifferingOnlyByCase_IsRefusedAndChangesNothing()
+    public async Task Remove_NameDifferingOnlyByCase_RemovesTheConfiguredServerAndLeavesTheOthers()
     {
         WriteServers("github", "git", "git__x");
         ConfigureOperatorState("github");
         ConfigureOperatorState("git__x");
         SeedApprovals("github/search", "git__x/fetch");
-        var before = SnapshotState();
 
-        Assert.Equal(1, await McpCommand.RunAsync(["mcp", "remove", "GITHUB"], _paths, output: _output));
+        Assert.Equal(0, await McpCommand.RunAsync(["mcp", "remove", "GITHUB"], _paths, output: _output));
 
-        Assert.Contains("configured server is 'github'", _output.ToString(), StringComparison.Ordinal);
-        Assert.DoesNotContain("Removed", _output.ToString(), StringComparison.Ordinal);
-        Assert.Equal(before, SnapshotState());
+        Assert.Contains("Removed MCP server 'github'", _output.ToString(), StringComparison.Ordinal);
+        var servers = ReadConfig()["McpServers"]!.AsObject().Select(pair => pair.Key).Order().ToArray();
+        Assert.Equal(["git", "git__x"], servers);
+        var approvals = new ToolApprovalStore(_paths.ToolApprovalsPath).Snapshot();
+        Assert.Contains(approvals.Values.SelectMany(tools => tools.Keys), tool => tool == "git__x/fetch");
+        Assert.DoesNotContain(approvals.Values.SelectMany(tools => tools.Keys), tool => tool.StartsWith("github/", StringComparison.Ordinal));
     }
 
     [Fact]

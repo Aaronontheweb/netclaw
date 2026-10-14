@@ -345,6 +345,31 @@ public sealed class ModelCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Discover_ProviderNameInOtherCase_ProbesTheConfiguredProvider()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-ollama"] = new Dictionary<string, object>
+                {
+                    ["Type"] = "ollama",
+                    ["Endpoint"] = "http://localhost:11434"
+                }
+            }
+        });
+
+        var exitCode = await ModelCommand.RunAsync(
+            ["model", "discover", "MY-Ollama"],
+            _paths, _fakeProbe, output: _output);
+
+        Assert.Equal(0, exitCode);
+        Assert.Contains("Discovering models from 'my-ollama'", _output.ToString());
+        Assert.Equal(1, _fakeProbe.ProbeCallCount);
+    }
+
+    [Fact]
     public async Task Discover_NonexistentProvider_ReturnsError()
     {
         var exitCode = await ModelCommand.RunAsync(

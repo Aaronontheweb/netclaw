@@ -219,6 +219,12 @@ internal static class ModelCommand
 
         // Validate provider exists
         var providers = ProviderCommand.LoadProviders(paths);
+        if (!ConfigFileHelper.TryResolveName(providers.Keys, providerName, "Provider", out providerName, out var nameError))
+        {
+            writer.WriteLine(nameError);
+            return 1;
+        }
+
         if (!providers.TryGetValue(providerName, out var providerEntry))
         {
             writer.WriteLine($"Error: Provider '{providerName}' not found in configuration.");
@@ -378,6 +384,11 @@ internal static class ModelCommand
 
         var providerName = args[2];
         var providers = ProviderCommand.LoadProviders(paths);
+        if (!ConfigFileHelper.TryResolveName(providers.Keys, providerName, "Provider", out providerName, out var nameError))
+        {
+            writer.WriteLine(nameError);
+            return 1;
+        }
 
         if (!providers.TryGetValue(providerName, out var entry))
         {

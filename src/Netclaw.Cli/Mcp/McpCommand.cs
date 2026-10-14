@@ -253,7 +253,13 @@ internal static class McpCommand
 
         // Configuration keys are case-insensitive, so "Git" beside "git" would make the next
         // load fail on a duplicate key. A name that differs only by case is the same server.
-        serverName = new McpServerName(ExistingKey(mcpServers, serverName.Value));
+        if (!ConfigFileHelper.TryResolveName(mcpServers.Keys, serverName.Value, "MCP server", out var storedName, out var nameError))
+        {
+            writer.WriteLine(nameError);
+            return 1;
+        }
+
+        serverName = new McpServerName(storedName);
 
         // Re-running add on an existing name replaces the connection definition only. The
         // audience grants, approval modes and allow-lists belong to the operator, so only a
@@ -1100,14 +1106,13 @@ internal static class McpCommand
             return false;
         }
 
-        if (!exists && configuredServers.FirstOrDefault(name => name.Equals(args[nameIndex], StringComparison.OrdinalIgnoreCase)) is { } configuredName)
+        if (!ConfigFileHelper.TryResolveName(configuredServers, args[nameIndex], "MCP server", out var storedName, out var nameError))
         {
-            writer.WriteLine($"Error: There is no MCP server named '{args[nameIndex]}'. The configured server is '{configuredName}' "
-                + "(names are case-sensitive). Nothing was changed.");
+            writer.WriteLine(nameError);
             return false;
         }
 
-        serverName = new McpServerName(args[nameIndex]);
+        serverName = new McpServerName(storedName);
         return true;
     }
 

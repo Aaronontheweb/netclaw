@@ -56,6 +56,14 @@ internal static class ProviderCommand
         var oldName = args[2];
         var newName = args[3];
 
+        var (storedConfig, _) = ConfigFileHelper.LoadConfigFiles(paths);
+        if (!ConfigFileHelper.TryResolveName(
+                ConfigFileHelper.GetSectionOrNull(storedConfig, "Providers")?.Keys.AsEnumerable() ?? [], oldName, "Provider", out oldName, out var nameError))
+        {
+            writer.WriteLine(nameError);
+            return 1;
+        }
+
         var result = ProviderRenamer.Rename(paths, oldName, newName);
         if (!result.Success)
         {
@@ -110,6 +118,15 @@ internal static class ProviderCommand
 
         var name = args[2];
         var type = args[3].ToLowerInvariant();
+
+        // Provider names are configuration keys, read without case: "Local" is the provider "local".
+        var (storedConfig, _) = ConfigFileHelper.LoadConfigFiles(paths);
+        if (!ConfigFileHelper.TryResolveName(
+                ConfigFileHelper.GetSectionOrNull(storedConfig, "Providers")?.Keys.AsEnumerable() ?? [], name, "Provider", out name, out var nameError))
+        {
+            writer.WriteLine(nameError);
+            return 1;
+        }
 
         if (!registry.TryGet(type, out var descriptor))
         {
@@ -467,6 +484,13 @@ internal static class ProviderCommand
         var (config, secrets) = ConfigFileHelper.LoadConfigFiles(paths);
         var providers = ConfigFileHelper.GetSectionOrNull(config, "Providers");
         var secretProviders = ConfigFileHelper.GetSectionOrNull(secrets, "Providers");
+        if (!ConfigFileHelper.TryResolveName(
+                (providers?.Keys.AsEnumerable() ?? []).Concat(secretProviders?.Keys.AsEnumerable() ?? []), name, "Provider", out name, out var nameError))
+        {
+            writer.WriteLine(nameError);
+            return 1;
+        }
+
         if (providers?.ContainsKey(name) != true && secretProviders?.ContainsKey(name) != true)
         {
             writer.WriteLine($"Provider '{name}' not found.");

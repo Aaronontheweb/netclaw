@@ -87,6 +87,35 @@ internal static class ConfigFileHelper
     }
 
     /// <summary>
+    /// Resolves a name typed by the operator to the spelling the file already has. Configuration
+    /// keys are read without case, so "Git" is the server "git". An exact match wins; a name that
+    /// matches nothing comes back unchanged. When two stored names differ only by case (a file
+    /// written before names were resolved) and neither is exact, the lookup is ambiguous and
+    /// <paramref name="error"/> names both spellings.
+    /// </summary>
+    internal static bool TryResolveName(
+        IEnumerable<string> storedNames, string name, string kind, out string resolved, out string? error)
+    {
+        resolved = name;
+        error = null;
+        var matches = storedNames.Distinct(StringComparer.Ordinal)
+            .Where(stored => string.Equals(stored, name, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (matches.Contains(name, StringComparer.Ordinal) || matches.Count == 0)
+            return true;
+
+        if (matches.Count == 1)
+        {
+            resolved = matches[0];
+            return true;
+        }
+
+        error = $"Error: {kind} names {string.Join(" and ", matches.Select(m => $"'{m}'"))} differ only by case, so '{name}' is ambiguous. "
+            + "Use the exact spelling. Nothing was changed.";
+        return false;
+    }
+
+    /// <summary>
     /// Load a JSON file as a mutable dictionary. Returns a default skeleton if the file doesn't exist.
     /// </summary>
     internal static Dictionary<string, object> LoadJsonDict(string path)
