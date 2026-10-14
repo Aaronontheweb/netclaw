@@ -7,22 +7,38 @@ namespace Netclaw.Cli.Doctor;
 
 public sealed class DoctorRunner(IEnumerable<IDoctorCheck> checks)
 {
-    public async Task<DoctorRunResult> RunAsync(CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Runs every check. When <paramref name="configLoad"/> is set, the config cannot be loaded:
+    /// it leads the report as the one failure, the checks that do not read it still run, and the
+    /// rest are counted once as skipped instead of each reporting the same unreadable file.
+    /// </summary>
+    public async Task<DoctorRunResult> RunAsync(DoctorCheckResult? configLoad = null, CancellationToken cancellationToken = default)
     {
         var results = new List<DoctorCheckResult>();
+        var skipped = 0;
+        if (configLoad is not null)
+            results.Add(configLoad);
+
         foreach (var check in checks)
         {
+            if (configLoad is not null && check is not (ImageProcessingDoctorCheck or SqliteProvisioningDoctorCheck or SystemdUnitPathDoctorCheck))
+            {
+                skipped++;
+                continue;
+            }
+
             try
             {
                 results.Add(await check.RunAsync(cancellationToken));
             }
             catch (Exception ex) when (ex is not OperationCanceledException)
             {
-                // A check that cannot read the files it inspects (unreadable, invalid, duplicate keys)
-                // has found a problem; it must not take the whole report down with it.
                 results.Add(DoctorCheckResult.Error(check.GetType().Name, ex.Message.ReplaceLineEndings(" ")));
             }
         }
+
+        if (skipped > 0)
+            results.Add(DoctorCheckResult.Warning("Skipped checks", $"{skipped} check(s) skipped: the config could not be read."));
 
         var hasErrors = results.Any(r => r.Severity == DoctorSeverity.Error);
         var hasWarnings = results.Any(r => r.Severity == DoctorSeverity.Warning);

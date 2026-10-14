@@ -55,6 +55,8 @@ public sealed class DoctorFixService
         {
             original = File.ReadAllText(_paths.NetclawConfigPath);
             obj = JsonNode.Parse(original) as JsonObject;
+            // JsonObject finds a duplicate key on its first lookup, not at parse: look now, inside the try.
+            _ = obj?.ContainsKey("configVersion");
         }
         catch
         {

@@ -34,8 +34,8 @@ public sealed class StartupConfigurationFailureProcessTests : IDisposable
         { "{\"Providers\":{\"p\":{\"Type\":\"openai\"}},\"Models\":{" + Definitions + ",\"Roles\":{\"Main\":\"d\"}}}", "requires authentication" },
         { "{\"Providers\":{\"p\":{\"Type\":\"ollama\",\"AuthMethod\":\"banana\"}},\"Models\":{" + Definitions + ",\"Roles\":{\"Main\":\"d\"}}}", "Providers:p is invalid" },
         // The configuration source cannot read the file
-        { "{\"Models\":{\"Roles\":{\"Main\":\"a\"}},\"models\":{\"Roles\":{\"Main\":\"b\"}}}", "Cannot read netclaw.json or secrets.json" },
-        { "{ broken json", "Cannot read netclaw.json or secrets.json" },
+        { "{\"Models\":{\"Roles\":{\"Main\":\"a\"}},\"models\":{\"Roles\":{\"Main\":\"b\"}}}", "Couldn't read netclaw.json:" },
+        { "{ broken json", "Couldn't read netclaw.json:" },
     };
 
     [Theory]

@@ -66,9 +66,9 @@ internal static class DaemonClientFactory
 
     internal static DaemonConfig LoadDaemonConfig(NetclawPaths paths)
     {
-        var config = CliConfigPreflight.AddConfigFiles(new ConfigurationBuilder(), paths)
-            .AddEnvironmentVariables("NETCLAW_")
-            .Build();
+        // Lenient: status and doctor still need an endpoint when the files cannot be loaded.
+        // Every other command has already stopped at the config load that precedes this.
+        var config = CliConfigPreflight.AddConfigSources(new ConfigurationBuilder(), paths, lenient: true).Build();
 
         return DaemonConfig.BindFromConfiguration(config.GetSection("Daemon"));
     }
@@ -99,7 +99,7 @@ internal static class DaemonClientFactory
         if (!File.Exists(paths.SecretsPath))
             return null;
 
-        var dict = ConfigFileHelper.LoadJsonDict(paths.SecretsPath);
+        var dict = ConfigFileHelper.LoadJsonDict(paths.SecretsPath, readOnly: true);
         if (!dict.TryGetValue("DeviceToken", out var val))
             return null;
 

@@ -4,6 +4,10 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Diagnostics;
+using System.Net;
+using System.Net.Sockets;
+using System.Text;
+using System.Runtime.Versioning;
 using Netclaw.Tests.Utilities;
 using Xunit;
 
@@ -31,14 +35,18 @@ public sealed class BrokenConfigCliTests : IDisposable
     public void Dispose() => _dir.Dispose();
 
     [Theory]
-    [InlineData("duplicate key", "{\"configVersion\":1,\"configVersion\":1}", "netclaw.json")]
-    [InlineData("empty", "", "netclaw.json")]
-    [InlineData("truncated", "{\"configVersion\":1,\"Daemon\":{", "netclaw.json")]
-    [InlineData("truncated secrets", "{\"Providers\":{", "secrets.json")]
-    public async Task Invalid_file_is_reported_by_each_command_instead_of_crashing(string _, string content, string brokenFile)
+    [InlineData("duplicate key", "{\"configVersion\":1,\"configVersion\":1}", "netclaw.json", "A duplicate key 'configVersion' was found.")]
+    [InlineData("empty", "", "netclaw.json", "The input does not contain any JSON tokens.")]
+    [InlineData("truncated", "{\"configVersion\":1,\"Daemon\":{", "netclaw.json", "Expected depth to be zero")]
+    [InlineData("truncated secrets", "{\"Providers\":{", "secrets.json", "Expected depth to be zero")]
+    public async Task Invalid_file_is_reported_by_each_command_instead_of_crashing(string _, string content, string brokenFile, string reason)
     {
         WriteValidConfig();
         File.WriteAllText(brokenFile == "secrets.json" ? SecretsPath : ConfigPath, content);
+
+        // The reason is the parser's own message, not the provider's "Failed to load configuration" wrapper.
+        var model = await RunAsync("model", "list");
+        Assert.StartsWith($"Couldn't read {brokenFile}: {reason}", model.Output.Trim());
 
         await AssertReportedAsync(brokenFile);
     }
@@ -47,8 +55,7 @@ public sealed class BrokenConfigCliTests : IDisposable
     public async Task Dangling_symlink_is_reported_by_each_command_instead_of_crashing()
     {
         // Creating a symbolic link needs a privilege on Windows.
-        if (OperatingSystem.IsWindows())
-            return;
+        Assert.SkipWhen(OperatingSystem.IsWindows(), "Creating a symbolic link needs a privilege on Windows.");
 
         File.CreateSymbolicLink(ConfigPath, Path.Combine(_dir.Path, "no-such-target.json"));
 
@@ -56,14 +63,12 @@ public sealed class BrokenConfigCliTests : IDisposable
     }
 
     [Fact]
+    [UnsupportedOSPlatform("windows")]
     public async Task Unreadable_file_is_reported_by_each_command_instead_of_crashing()
     {
-        // Mode 000 means nothing on Windows, and root reads the file anyway.
-        if (OperatingSystem.IsWindows() || Environment.UserName == "root")
-            return;
+        Assert.SkipWhen(OperatingSystem.IsWindows() || Environment.UserName == "root", "Mode 000 means nothing on Windows, and root reads the file anyway.");
 
         WriteValidConfig();
-
         File.SetUnixFileMode(ConfigPath, UnixFileMode.None);
         try
         {
@@ -77,17 +82,159 @@ public sealed class BrokenConfigCliTests : IDisposable
     }
 
     [Fact]
+    public async Task Config_that_is_a_directory_is_reported_instead_of_crashing()
+    {
+        Directory.CreateDirectory(ConfigPath);
+
+        var add = await RunAsync("mcp", "add", "x", "--command", "echo");
+        var doctor = await RunAsync("doctor");
+
+        Assert.Equal(1, add.ExitCode);
+        Assert.Equal("Couldn't read netclaw.json: it is a directory.", add.Output.Trim());
+        Assert.Contains("[FAIL] Config Load: Couldn't read netclaw.json: it is a directory.", doctor.Output);
+        AssertNoCrashLog();
+    }
+
+    [Fact]
+    [UnsupportedOSPlatform("windows")]
+    public async Task Unreadable_config_directory_is_reported_instead_of_crashing()
+    {
+        Assert.SkipWhen(OperatingSystem.IsWindows() || Environment.UserName == "root", "Mode 000 means nothing on Windows, and root reads the directory anyway.");
+
+        WriteValidConfig();
+        var configDirectory = Path.GetDirectoryName(ConfigPath)!;
+        File.SetUnixFileMode(configDirectory, UnixFileMode.None);
+        try
+        {
+            foreach (var args in new[] { new[] { "doctor" }, ["status"], ["model", "list"], ["config", "--help"] })
+            {
+                var result = await RunAsync(args);
+                Assert.Equal(1, result.ExitCode);
+                Assert.StartsWith("Couldn't read ", Assert.Single(result.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries)));
+            }
+        }
+        finally
+        {
+            File.SetUnixFileMode(configDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        AssertNoCrashLog();
+    }
+
+    [Fact]
     public async Task Comments_and_trailing_commas_load_as_they_do_for_the_daemon()
     {
         File.WriteAllText(ConfigPath, "{\n// a comment\n\"configVersion\":1,\n\"McpServers\":{},\n}\n");
+        File.WriteAllText(SecretsPath, "{\n// a comment\n\"Foo\":{\"Bar\":\"x\"},\n}\n");
 
         var mcp = await RunAsync("mcp", "list");
+        var provider = await RunAsync("provider", "list");
         var doctor = await RunAsync("doctor");
 
         Assert.Equal(0, mcp.ExitCode);
+        Assert.DoesNotContain("Couldn't read", provider.Output);
+        Assert.DoesNotContain("DoctorCheck", doctor.Output);
         Assert.DoesNotContain("Couldn't read", mcp.Output);
         Assert.DoesNotContain("Config Load", doctor.Output);
+        Assert.DoesNotContain("[FAIL] Inbound Webhook", doctor.Output);
+        Assert.DoesNotContain("[FAIL] exposure-mode", doctor.Output);
         Assert.Contains("[PASS] Config Schema", doctor.Output);
+        AssertNoCrashLog();
+    }
+
+    [Theory]
+    [InlineData("netclaw.json")]
+    [InlineData("secrets.json")]
+    public async Task Writers_refuse_a_file_with_comments_in_one_line_instead_of_dropping_them(string commented)
+    {
+        WriteValidConfig();
+        var content = "{\n// keep me\n\"configVersion\":1}\n";
+        File.WriteAllText(commented == "netclaw.json" ? ConfigPath : SecretsPath, content);
+
+        var fix = await RunAsync("doctor", "--fix", "--yes");
+        var add = await RunAsync("mcp", "add", "x", "--command", "echo");
+
+        Assert.Contains($"Nothing was fixed. Couldn't read {commented}: it has comments", fix.Output);
+        Assert.Equal(1, add.ExitCode);
+        Assert.StartsWith($"Couldn't read {commented}: it has comments", Assert.Single(add.Output.Split('\n', StringSplitOptions.RemoveEmptyEntries)));
+        Assert.Equal(content, File.ReadAllText(commented == "netclaw.json" ? ConfigPath : SecretsPath));
+        AssertNoCrashLog();
+    }
+
+    [Fact]
+    public async Task Commands_that_do_not_need_the_config_work_when_netclaw_json_cannot_be_read()
+    {
+        File.WriteAllText(ConfigPath, "{\"configVersion\":1,\"configVersion\":1}");
+
+        var secrets = await RunAsync("secrets", "set", "Foo.Bar", "baz");
+        var bareSecrets = await RunAsync("secrets");
+        var daemonStatus = await RunAsync("daemon", "status");
+        var daemonStop = await RunAsync("daemon", "stop");
+
+        Assert.Equal(0, secrets.ExitCode);
+        Assert.True(File.Exists(SecretsPath));
+        Assert.Contains("Usage:", bareSecrets.Output);
+        Assert.DoesNotContain("Couldn't read", daemonStatus.Output);
+        Assert.DoesNotContain("Couldn't read", daemonStop.Output);
+        AssertNoCrashLog();
+    }
+
+    [Fact]
+    public async Task Doctor_reports_one_config_failure_and_skips_the_checks_that_need_it()
+    {
+        File.WriteAllText(ConfigPath, "{\"a\":1,\"a\":2}");
+
+        var doctor = await RunAsync("doctor");
+        var fix = await RunAsync("doctor", "--fix", "--yes");
+
+        Assert.Equal(1, doctor.ExitCode);
+        Assert.Single(doctor.Output.Split('\n'), line => line.StartsWith("[FAIL]", StringComparison.Ordinal));
+        Assert.Contains("[FAIL] Config Load: Couldn't read netclaw.json: A duplicate key 'a' was found.", doctor.Output);
+        Assert.Contains("check(s) skipped: the config could not be read.", doctor.Output);
+        Assert.DoesNotContain("DoctorCheck", doctor.Output);
+        Assert.Contains("Nothing was fixed.", fix.Output);
+        AssertNoCrashLog();
+    }
+
+    [Fact]
+    public async Task Status_exits_non_zero_when_the_config_cannot_be_read_even_if_the_daemon_is_healthy()
+    {
+        File.WriteAllText(ConfigPath, "{\"configVersion\":1,\"configVersion\":1}");
+        using var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        var server = Task.Run(async () =>
+        {
+            using var client = await listener.AcceptTcpClientAsync();
+            var stream = client.GetStream();
+            var buffer = new byte[4096];
+            _ = await stream.ReadAsync(buffer);
+            var body = "{\"overall\":\"healthy\",\"build\":{\"version\":\"0\",\"commitHash\":\"x\",\"buildTimestamp\":\"x\"},"
+                + "\"process\":{},\"connectors\":[],\"persistence\":{\"provider\":\"sqlite\"},\"telemetry\":{}}";
+            var head = $"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {Encoding.UTF8.GetByteCount(body)}\r\nConnection: close\r\n\r\n";
+            await stream.WriteAsync(Encoding.UTF8.GetBytes(head + body));
+        }, TestContext.Current.CancellationToken);
+
+        var status = await RunAsync(["status"], new Dictionary<string, string> { ["NETCLAW_DAEMON_ENDPOINT"] = $"http://127.0.0.1:{port}" });
+
+        Assert.Contains("Couldn't read netclaw.json", status.Output);
+        Assert.Equal(1, status.ExitCode);
+        listener.Stop();
+        await server.WaitAsync(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+    }
+
+    [Fact]
+    public async Task Doctor_fix_leaves_a_loadable_netclaw_json_alone_when_secrets_json_cannot_be_read()
+    {
+        // Missing configVersion is something --fix would normally write.
+        const string config = "{\"Daemon\":{}}";
+        File.WriteAllText(ConfigPath, config);
+        File.WriteAllText(SecretsPath, "{\"Providers\":{");
+
+        var fix = await RunAsync("doctor", "--fix", "--yes");
+
+        Assert.Contains("Nothing was fixed. Couldn't read secrets.json", fix.Output);
+        Assert.Equal(config, File.ReadAllText(ConfigPath));
         AssertNoCrashLog();
     }
 
@@ -126,7 +273,7 @@ public sealed class BrokenConfigCliTests : IDisposable
     {
         var expectedPrefix = $"Couldn't read {brokenFile}:";
 
-        foreach (var args in new[] { new[] { "mcp", "list" }, ["model", "list"], ["config", "set", "Daemon.Port", "5200"] })
+        foreach (var args in new[] { new[] { "mcp", "list" }, ["model", "list"], ["mcp", "add", "x", "--command", "echo"], ["config", "set", "Daemon.Port", "5200"] })
         {
             var blocked = await RunAsync(args);
             Assert.Equal(1, blocked.ExitCode);
@@ -137,10 +284,14 @@ public sealed class BrokenConfigCliTests : IDisposable
         var doctor = await RunAsync("doctor");
         Assert.Equal(1, doctor.ExitCode);
         Assert.Contains($"[FAIL] Config Load: {expectedPrefix}", doctor.Output);
+        Assert.Single(doctor.Output.Split('\n'), line => line.StartsWith("[FAIL]", StringComparison.Ordinal));
 
+        // A daemon on the default port can make status exit 0 or 2; with the config unreadable it must not.
         var status = await RunAsync("status");
-        Assert.Equal(1, status.ExitCode);
+        Assert.NotEqual(0, status.ExitCode);
         Assert.Contains(expectedPrefix, status.Output);
+        Assert.Contains("could not be read from the config", status.Output);
+        Assert.DoesNotContain("netclaw daemon start", status.Output);
 
         AssertNoCrashLog();
     }
@@ -155,7 +306,9 @@ public sealed class BrokenConfigCliTests : IDisposable
         Assert.Empty(crashLogs);
     }
 
-    private async Task<(int ExitCode, string Output)> RunAsync(params string[] args)
+    private Task<(int ExitCode, string Output)> RunAsync(params string[] args) => RunAsync(args, null);
+
+    private async Task<(int ExitCode, string Output)> RunAsync(string[] args, Dictionary<string, string>? environment)
     {
         var psi = new ProcessStartInfo(Environment.GetEnvironmentVariable("DOTNET_HOST_PATH") ?? "dotnet")
         {
@@ -173,6 +326,8 @@ public sealed class BrokenConfigCliTests : IDisposable
         psi.Environment["HOME"] = _dir.Path;
         psi.Environment["NETCLAW_HOME"] = _home;
         psi.Environment["NETCLAW_Daemon__DisableSelfUpdate"] = "true";
+        foreach (var (key, value) in environment ?? [])
+            psi.Environment[key] = value;
 
         using var process = Process.Start(psi)!;
         var stdout = process.StandardOutput.ReadToEndAsync(TestContext.Current.CancellationToken);
