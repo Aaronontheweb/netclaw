@@ -473,7 +473,7 @@ public sealed class ApprovalContractBoundaryTests(ShellApprovalMatrixFixture fix
             {
                 ["url"] = "https://operator:password@example.com/reports/q3.pdf?signature=opaque-secret&expires=123#access-token",
                 ["access_token"] = "plain-access-token",
-                ["reference"] = "sk-" + "1234567890abcdef1234567890abcdef12345678",
+                ["reference"] = "sk-1234567890abcdef",
                 ["safe\n```\u202E**Approve**"] = "value`spoof",
             },
             Ct);
@@ -482,7 +482,7 @@ public sealed class ApprovalContractBoundaryTests(ShellApprovalMatrixFixture fix
         var display = observed.Prompt!.DisplayText;
         Assert.Contains("https://example.com/reports/q3.pdf", display);
         Assert.Contains("REDACTED", display);
-        foreach (var secret in new[] { "operator", "password", "opaque-secret", "access-token", "plain-access-token", "sk-" + "1234567890abcdef1234567890abcdef12345678" })
+        foreach (var secret in new[] { "operator", "password", "opaque-secret", "access-token", "plain-access-token", "sk-1234567890abcdef" })
             Assert.DoesNotContain(secret, display, StringComparison.Ordinal);
         Assert.DoesNotContain("\n", display, StringComparison.Ordinal);
         Assert.DoesNotContain("`", display, StringComparison.Ordinal);

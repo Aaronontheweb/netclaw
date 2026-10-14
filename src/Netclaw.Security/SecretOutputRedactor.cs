@@ -197,11 +197,7 @@ public static partial class SecretOutputRedactor
     //    entry ends where its own class stops: (?![class]).
     [GeneratedRegex("\\b(?:" +
         // OpenAI (sk-, sk-proj-, sk-svcacct-) and Anthropic (sk-ant-): https://platform.openai.com/docs/api-reference/authentication , https://docs.anthropic.com/en/api/getting-started
-        // A real key is either 20+ letters and digits straight after "sk-" (classic keys), or a short
-        // family word ("proj", "svcacct", "ant", "or") and then 40+ more characters. Words joined by
-        // hyphens ("sk-learn-contrib", CSS classes like "sk-toggleable__label-arrow") are neither.
-        // A key glued after a '-' ("prod-sk-<key>") is still a key, so no boundary beyond \b.
-        "sk-(?:[A-Za-z0-9]{20}|[A-Za-z0-9]{1,16}-[A-Za-z0-9_-]{40})[A-Za-z0-9_-]*(?![A-Za-z0-9_-])" +
+        "sk-[A-Za-z0-9_-]{8,}(?![A-Za-z0-9_-])" +
         // Slack bot/user/app/config tokens (letters, digits, '-'): https://api.slack.com/authentication/token-types
         "|(?:xox[abeprs]|xapp)-[A-Za-z0-9-]{8,}(?![A-Za-z0-9-])" +
         // GitHub ghp_/gho_/ghu_/ghs_/ghr_ (letters and digits): https://github.blog/engineering/platform-security/behind-githubs-new-authentication-token-formats/

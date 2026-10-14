@@ -2568,7 +2568,7 @@ public sealed class McpApprovalMatcherTests
     {
         using var json = JsonDocument.Parse(
             """{"password":"nested-password","safe":"visible"}""");
-        const string providerToken = "sk-" + "1234567890abcdef1234567890abcdef12345678";
+        const string providerToken = "sk-1234567890abcdef";
 
         var display = _matcher.FormatForDisplay(
             new ToolName("service/create"),

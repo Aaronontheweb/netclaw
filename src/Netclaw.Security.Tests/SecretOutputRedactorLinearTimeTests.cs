@@ -3,25 +3,23 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Diagnostics;
-using System.Text.RegularExpressions;
 using Xunit;
 
 namespace Netclaw.Security.Tests;
 
 /// <summary>
 /// The redactor runs on every tool result, more than once, on inputs up to megabytes. It must
-/// stay linear on repetitive and adversarial input, and the rewrite that made it linear must not
-/// have stopped masking anything the previous patterns masked.
+/// stay linear on repetitive and adversarial input, and the change that made it linear must not
+/// have moved a single match: the output is compared byte for byte with the previous redactor.
 /// </summary>
+[Collection(RedactorTimingCollection.Name)]
 public sealed class SecretOutputRedactorLinearTimeTests
 {
-    // 8x the input. Linear work lands near 8 (less while the small run is still warming up);
-    // a quadratic pattern lands near 64. The 24 limit leaves room for a noisy machine, and the
-    // measurement is repeated before a failure counts.
-    private const int SmallChars = 64 * 1024;
-    private const int LargeChars = 8 * SmallChars;
-    private const double MaxGrowth = 24;
+    // The quadratic patterns needed seconds per megabyte (minutes for a private key); linear
+    // work needs well under a second per 4 MB even on a loaded machine. The budget is generous
+    // so scheduling noise cannot trip it, and far below what any quadratic shape can reach.
+    private const int AdversarialChars = 4 * 1024 * 1024;
+    private static readonly TimeSpan Budget = TimeSpan.FromSeconds(4);
 
     public static TheoryData<string> ShapeNames()
     {
@@ -31,30 +29,19 @@ public sealed class SecretOutputRedactorLinearTimeTests
         return data;
     }
 
-    private static double Milliseconds(string input)
-    {
-        var sw = Stopwatch.StartNew();
-        SecretOutputRedactor.Redact(input);
-        return sw.Elapsed.TotalMilliseconds;
-    }
-
     [Theory]
     [MemberData(nameof(ShapeNames))]
-    public void Redact_time_grows_linearly_with_input_size(string shape)
+    public void Redact_finishes_adversarial_input_within_budget(string shape)
     {
-        var build = RedactorComparisonInputs.Shapes().Single(s => s.Name == shape).Build;
-        var small = build(SmallChars);
-        var large = build(LargeChars);
-        Milliseconds(small); // warm up: regex construction and JIT must not count against the small run
+        var input = RedactorComparisonInputs.Shapes().Single(s => s.Name == shape).Build(AdversarialChars);
+        SecretOutputRedactor.Redact(input[..1024]); // regex construction is a one-off cost, not the subject here
 
-        var growth = double.MaxValue;
-        for (var attempt = 0; attempt < 3 && growth > MaxGrowth; attempt++)
-        {
-            // Floor the denominator so a sub-millisecond small run cannot inflate the ratio.
-            growth = Milliseconds(large) / Math.Max(Milliseconds(small), 1.0);
-        }
+        // A quadratic pattern cannot be interrupted, so run it on a background thread and stop waiting.
+        var worker = new Thread(() => SecretOutputRedactor.Redact(input)) { IsBackground = true };
+        worker.Start();
+        var finished = worker.Join(Budget);
 
-        Assert.True(growth <= MaxGrowth, $"{shape}: 8x the input took {growth:F1}x as long (linear is about 8, quadratic about 64)");
+        Assert.True(finished, $"{shape}: {AdversarialChars / 1024 / 1024} MB did not finish within {Budget.TotalSeconds} s");
     }
 
     [Fact]
@@ -69,8 +56,7 @@ public sealed class SecretOutputRedactorLinearTimeTests
         Assert.EndsWith("***REDACTED***\ntail", redacted, StringComparison.Ordinal);
     }
 
-    // The shapes at a size the old, quadratic patterns can still handle: the output has to be
-    // identical to the old redactor's, which also proves the engine change did not move a match.
+    // The shapes at a size the old, quadratic patterns can still handle.
     [Theory]
     [MemberData(nameof(ShapeNames))]
     public void Redact_gives_the_old_output_on_repetitive_shapes(string shape)
@@ -80,24 +66,11 @@ public sealed class SecretOutputRedactorLinearTimeTests
         AssertSameAsOldRedactor(input);
     }
 
-    // The shape the narrowed sk- rule requires, stated independently of the production pattern.
-    private static readonly Regex RealSkKey = new(@"^sk-(?:[A-Za-z0-9]{20}|[A-Za-z0-9]{1,16}-[A-Za-z0-9_-]{40})", RegexOptions.None);
-
-    // The one intended difference: the sk- rule no longer masks "sk-" words. Every sk- whose
-    // text from there on is not key-shaped is neutralised in the input (sk- becomes Sk-), in
-    // whatever run or token it sits; after that the old and new redactors must agree exactly. An
-    // input with no such sk- is compared as it stands.
-    private static string NeutraliseOrdinarySkWords(string input) =>
-        AnySk.Replace(input, m => RealSkKey.IsMatch(input.AsSpan(m.Index).ToString()) ? m.Value : "Sk-");
-
-    private static readonly Regex AnySk = new("sk-", RegexOptions.None);
-
     private static void AssertSameAsOldRedactor(string input)
     {
-        var comparable = NeutraliseOrdinarySkWords(input);
-        var old = PreLinearSecretOutputRedactor.Redact(comparable);
-        var current = SecretOutputRedactor.Redact(comparable);
-        Assert.True(old == current, $"input [{Shorten(comparable)}]\nold     [{Shorten(old)}]\ncurrent [{Shorten(current)}]");
+        var old = PreLinearSecretOutputRedactor.Redact(input);
+        var current = SecretOutputRedactor.Redact(input);
+        Assert.True(old == current, $"input [{Shorten(input)}]\nold     [{Shorten(old)}]\ncurrent [{Shorten(current)}]");
     }
 
     private static string Shorten(string s) => (s.Length > 300 ? s[..300] + "..." : s).Replace("\n", "\\n");
@@ -119,4 +92,11 @@ public sealed class SecretOutputRedactorLinearTimeTests
         Assert.Equal(120_000, checkedInputs);
         Assert.True(masked > 20_000, $"only {masked} generated inputs contained anything to mask");
     }
+}
+
+/// <summary>Timing tests must not share the machine with other test classes running in parallel.</summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class RedactorTimingCollection
+{
+    public const string Name = "RedactorTiming";
 }
