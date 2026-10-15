@@ -657,6 +657,53 @@ public class SkillToolTests : IDisposable
         Assert.Contains("read-only", result);
     }
 
+    [Theory]
+    [InlineData("")]
+    [InlineData(" ")]
+    [InlineData("\n")]
+    public async Task SkillManage_Patch_AcceptsBlankNewString_AsDeletion(string newString)
+    {
+        WriteSkill("blank-patch", """
+            ---
+            name: blank-patch
+            description: Test blank patch.
+            ---
+
+            # Blank Patch
+
+            Remove REMOVEME now.
+            """);
+        ScanSkills();
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "patch", "Name", "blank-patch", "OldString", "REMOVEME", "NewString", newString), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.StartsWith("Patch applied.", result);
+        var content = File.ReadAllText(Path.Combine(_paths.SkillsDirectory, "blank-patch", "SKILL.md"));
+        Assert.DoesNotContain("REMOVEME", content);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("\n")]
+    public async Task SkillManage_WriteFile_AcceptsBlankFileContent(string fileContent)
+    {
+        WriteSkill("blank-file", """
+            ---
+            name: blank-file
+            description: Test blank file.
+            ---
+            # Blank File
+            """);
+        ScanSkills();
+
+        var result = await CreateManageTool().ExecuteAsync(ToolInput.Create(
+            "Action", "write_file", "Name", "blank-file", "FilePath", "references/empty.md", "FileContent", fileContent), PersonalCtx, TestContext.Current.CancellationToken);
+
+        Assert.Contains("File written: references/empty.md", result);
+        Assert.Equal(fileContent, File.ReadAllText(Path.Combine(_paths.SkillsDirectory, "blank-file", "references", "empty.md")));
+    }
+
     [Fact]
     public async Task SkillManage_Patch_ReplacesUniqueMatch()
     {

@@ -366,6 +366,28 @@ public static class ToolArgumentHelper
         return rendered.Length > maxLength ? rendered[..maxLength] + "…" : rendered;
     }
 
+    /// <summary>
+    /// Counts the keys that normalize to <paramref name="parameter"/> and carry a value. Null
+    /// never counts. A blank string does not count either unless <paramref name="blankIsAbsent"/>
+    /// is false, so a model that sends <c>""</c> for an unused optional field is treated as
+    /// having left it out. A discriminator is counted strictly.
+    /// </summary>
+    public static int CountSupplied(IDictionary<string, object?> arguments, string parameter, bool blankIsAbsent = true)
+    {
+        var normalized = NormalizeKey(parameter);
+        return arguments.Count(pair =>
+            string.Equals(NormalizeKey(pair.Key), normalized, StringComparison.OrdinalIgnoreCase)
+            && pair.Value is not null and not JsonElement { ValueKind: JsonValueKind.Null }
+            && !(blankIsAbsent && IsBlankString(pair.Value)));
+    }
+
+    private static bool IsBlankString(object value) => value switch
+    {
+        string s => string.IsNullOrWhiteSpace(s),
+        JsonElement { ValueKind: JsonValueKind.String } je => string.IsNullOrWhiteSpace(je.GetString()),
+        _ => false
+    };
+
     private static ArgumentException InvalidValue(string key, object value, string expectedType)
         => new($"Parameter '{key}' value '{RenderValue(value)}' is not a valid {expectedType}. The tool was NOT executed.");
 }

@@ -375,6 +375,12 @@ public sealed class NetclawToolGenerator : IIncrementalGenerator
                 sb.AppendLine("                    \"additionalProperties\": { \"type\": \"string\" },");
             if (p.JsonType == "array")
                 sb.AppendLine("                    \"items\": { \"type\": \"string\" },");
+            // Providers that flatten oneOf still honour a property-level enum on the discriminator.
+            if (model.Variants.Length > 0 && model.Variants[0].DiscriminatorParameter == p.Name)
+            {
+                var discriminatorValues = model.Variants.Select(static variant => $"\"{EscapeJson(variant.DiscriminatorValue)}\"");
+                sb.AppendLine($"                    \"enum\": [{string.Join(", ", discriminatorValues)}],");
+            }
             sb.AppendLine($"                    \"description\": \"{EscapeJson(p.Description)}\"");
             sb.AppendLine("                },");
         }
@@ -534,29 +540,15 @@ public sealed class NetclawToolGenerator : IIncrementalGenerator
         if (model.Variants.Length > 0)
         {
             sb.AppendLine();
-            sb.AppendLine("        static int __ArgumentValueCount(System.Collections.Generic.IDictionary<string, object?> source, string parameter)");
-            sb.AppendLine("        {");
-            sb.AppendLine("            var normalized = Netclaw.Tools.ToolArgumentHelper.NormalizeKey(parameter);");
-            sb.AppendLine("            var count = 0;");
-            sb.AppendLine("            foreach (var pair in source)");
-            sb.AppendLine("            {");
-            sb.AppendLine("                if (!string.Equals(Netclaw.Tools.ToolArgumentHelper.NormalizeKey(pair.Key), normalized, System.StringComparison.OrdinalIgnoreCase))");
-            sb.AppendLine("                    continue;");
-            sb.AppendLine("                if (pair.Value is not null and not JsonElement { ValueKind: JsonValueKind.Null })");
-            sb.AppendLine("                    count++;");
-            sb.AppendLine("            }");
-            sb.AppendLine("            return count;");
-            sb.AppendLine("        }");
-            sb.AppendLine();
             sb.AppendLine("        var __variantMatches = 0;");
             foreach (var variant in model.Variants)
             {
-                sb.AppendLine($"        if (__ArgumentValueCount(arguments, \"{variant.DiscriminatorParameter}\") == 1");
+                sb.AppendLine($"        if (Netclaw.Tools.ToolArgumentHelper.CountSupplied(arguments, \"{variant.DiscriminatorParameter}\", blankIsAbsent: false) == 1");
                 sb.AppendLine($"            && string.Equals(__{variant.DiscriminatorParameter}, \"{EscapeJson(variant.DiscriminatorValue)}\", System.StringComparison.OrdinalIgnoreCase)");
                 foreach (var requiredParameter in variant.Required)
-                    sb.AppendLine($"            && __ArgumentValueCount(arguments, \"{requiredParameter}\") == 1");
+                    sb.AppendLine($"            && Netclaw.Tools.ToolArgumentHelper.CountSupplied(arguments, \"{requiredParameter}\", blankIsAbsent: false) == 1");
                 foreach (var forbiddenParameter in variant.Forbidden)
-                    sb.AppendLine($"            && __ArgumentValueCount(arguments, \"{forbiddenParameter}\") == 0");
+                    sb.AppendLine($"            && Netclaw.Tools.ToolArgumentHelper.CountSupplied(arguments, \"{forbiddenParameter}\") == 0");
                 sb.AppendLine("           )");
                 sb.AppendLine("            __variantMatches++;");
             }
