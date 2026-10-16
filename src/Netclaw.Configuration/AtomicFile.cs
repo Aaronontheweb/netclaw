@@ -44,8 +44,8 @@ public static class AtomicFile
                 Share = FileShare.None,
             };
 
-            // The mode is part of the create call. A chmod after the write would leave a window in
-            // which another user can read the plain text. The async overload does the same.
+            // The mode is part of the create call: a chmod after the write leaves a window in which
+            // another user can read the plain text.
             if (hardenTempPermissions is not null && !OperatingSystem.IsWindows())
                 streamOptions.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
 

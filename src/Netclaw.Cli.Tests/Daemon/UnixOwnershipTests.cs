@@ -19,7 +19,6 @@ public sealed class UnixOwnershipTests : IDisposable
 
     public void Dispose() => _dir.Dispose();
 
-    // `id -u` is the oracle, so the test does not trust the code under test to find the user id.
     [SlopwatchSuppress("SW001", "The owner lookup is Linux-only.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "The owner lookup is Linux-only.")]
     public void CurrentUserId_is_the_user_id_that_the_id_command_reports()

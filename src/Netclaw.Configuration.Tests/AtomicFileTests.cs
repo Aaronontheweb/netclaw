@@ -75,8 +75,6 @@ public sealed class AtomicFileTests : IDisposable
         Assert.False(File.Exists(hardenedPath)); // the temp was renamed away afterward
     }
 
-    // A write with a permission callback holds plain text such as daemon.env. The temp file must be
-    // 0600 from its first byte. A chmod after the write leaves a window in which another user can read it.
     [SlopwatchSuppress("SW001", "Unix file modes mean nothing on Windows.")]
     [Fact(SkipUnless = nameof(IsUnix), Skip = "Unix file modes mean nothing on Windows.")]
     [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
@@ -98,8 +96,6 @@ public sealed class AtomicFileTests : IDisposable
         Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
     }
 
-    // The callback may give the final file a wider mode, as the config writers do when they copy the
-    // mode of the file that they replace. The temp starts narrow, so the file never gets wider than the copy.
     [SlopwatchSuppress("SW001", "Unix file modes mean nothing on Windows.")]
     [Fact(SkipUnless = nameof(IsUnix), Skip = "Unix file modes mean nothing on Windows.")]
     [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]

@@ -286,7 +286,6 @@ static async Task RunAsync(string[] args)
                             foreach (var backup in applied.Backups)
                                 Console.WriteLine($"Backed up the original to {backup}");
 
-                            // The other fixes already ran. The checks below show what is still wrong.
                             foreach (var failure in applied.Failures)
                                 Console.Error.WriteLine($"Error: could not apply the fix for {failure.FilePath}: {failure.Message}");
 

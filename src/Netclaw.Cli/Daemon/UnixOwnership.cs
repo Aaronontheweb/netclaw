@@ -10,7 +10,7 @@ namespace Netclaw.Cli.Daemon;
 /// <summary>
 /// Reads the user id of a file owner on Linux. .NET has no public API for it. The call is
 /// <c>statx(2)</c>, because its result layout is the same on every CPU architecture, unlike
-/// <c>stat(2)</c>. The daemon service runs under systemd, so the check is Linux-only.
+/// <c>stat(2)</c>.
 /// </summary>
 internal static partial class UnixOwnership
 {
@@ -21,7 +21,6 @@ internal static partial class UnixOwnership
 
     internal static uint CurrentUserId() => GetEffectiveUserId();
 
-    /// <summary>Gets the owner of the file that <paramref name="path"/> names. A symbolic link resolves to its target.</summary>
     internal static bool TryGetOwnerId(string path, out uint ownerId)
     {
         ownerId = 0;

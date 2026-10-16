@@ -332,7 +332,6 @@ public sealed class DaemonManagerInstallTests : IDisposable
         }
     }
 
-    // A fleet tool can link daemon.env to a path with a relative name.
     [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
     public async Task Install_writes_through_a_relative_symlink()
@@ -376,8 +375,6 @@ public sealed class DaemonManagerInstallTests : IDisposable
         Assert.False(File.Exists(_unitPath));
     }
 
-    // A link whose target does not exist gives the operator no file to read. The message names the
-    // link and the missing target, and nothing is created at the target.
     [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
     public async Task Install_over_a_dangling_symlink_names_the_link_and_the_missing_target()
@@ -397,8 +394,6 @@ public sealed class DaemonManagerInstallTests : IDisposable
         Assert.False(File.Exists(_unitPath));
     }
 
-    // Replacing a file that another user owns would take it over, even in a directory that this user
-    // owns. /etc/passwd is a file that root owns on every Linux host.
     [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
     public async Task Install_refuses_a_symlink_to_a_file_that_another_user_owns()
@@ -418,8 +413,6 @@ public sealed class DaemonManagerInstallTests : IDisposable
         Assert.Empty(Directory.GetFiles("/etc", "passwd.tmp-*"));
     }
 
-    // Uninstall still removes the unit, runs daemon-reload, and reports the file that it could not
-    // secure. The exit code is not zero.
     [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
     public async Task Uninstall_keeps_going_and_fails_when_the_kept_file_belongs_to_another_user()

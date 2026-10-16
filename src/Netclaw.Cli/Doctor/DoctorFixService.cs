@@ -430,7 +430,6 @@ public sealed class DoctorFixService
 
     private void ApplyFix(DoctorFileFix fix, CancellationToken cancellationToken)
     {
-        // The grant store has its own lock. The write fails when the store changed after the plan.
         if (string.Equals(fix.FilePath, _paths.ToolApprovalsPath, StringComparison.Ordinal))
         {
             var change = ToolApprovalHygieneDoctorCheck.CreateStore(_paths).TryApplyHygiene(
@@ -444,8 +443,6 @@ public sealed class DoctorFixService
             return;
         }
 
-        // daemon.env holds plain-text values, so the file is owner-only. A fix with equal texts
-        // changes the mode and nothing else. Any other fix writes through a symbolic link.
         if (string.Equals(fix.FilePath, _paths.DaemonEnvironmentFilePath, StringComparison.Ordinal))
         {
             if (string.Equals(fix.OriginalText, fix.UpdatedText, StringComparison.Ordinal))
@@ -456,16 +453,11 @@ public sealed class DoctorFixService
             return;
         }
 
-        // Ensure the parent directory exists before writing. The daemon-PATH fix can
-        // target ~/.netclaw/config even after that directory has been removed, so a bare
-        // File.WriteAllTextAsync would throw DirectoryNotFoundException and abort the run.
         var dir = Path.GetDirectoryName(fix.FilePath);
         if (!string.IsNullOrEmpty(dir))
             Directory.CreateDirectory(dir);
 
         cancellationToken.ThrowIfCancellationRequested();
-        // The rewrite keeps the file's mode: a netclaw.json that holds a token and is
-        // owner-only must not come back readable by others.
         AtomicFile.WriteAllText(fix.FilePath, fix.UpdatedText, temp => CopyFileMode(fix.FilePath, temp));
     }
 }
@@ -539,7 +531,6 @@ public sealed record DoctorFixPlan(IReadOnlyList<DoctorFileFix> Fixes)
     public bool HasChanges => Fixes.Count > 0;
 }
 
-/// <summary>The backups that an apply wrote and the fixes that it could not write.</summary>
 public sealed record DoctorFixApplyResult(IReadOnlyList<string> Backups, IReadOnlyList<DoctorFixFailure> Failures);
 
 public sealed record DoctorFixFailure(string FilePath, string Description, string Message);

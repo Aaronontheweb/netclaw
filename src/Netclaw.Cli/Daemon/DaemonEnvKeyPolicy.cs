@@ -9,33 +9,15 @@ using Netclaw.Configuration;
 
 namespace Netclaw.Cli.Daemon;
 
-/// <summary>
-/// Decides which <c>NETCLAW_*</c> keys <c>netclaw daemon install --env</c> may write to the plain-text
-/// <c>daemon.env</c>. The embedded config schema is the allow-list. A key passes only when its path
-/// names a property that the schema declares. The rule never judges a name that the operator chooses,
-/// because it cannot tell a credential from a setting there.
-/// </summary>
-/// <remarks>
-/// Positive: <c>NETCLAW_Providers__main__Type</c> passes. <c>main</c> is a provider name and matches as
-/// a wildcard, and <c>Type</c> is declared. Negative: <c>NETCLAW_McpServers__db__EnvironmentVariables__SMTP_PASS</c>
-/// fails. <c>EnvironmentVariables</c> is a free-form map, so the schema gives no meaning to <c>SMTP_PASS</c>.
-/// A declared property that holds a credential, such as <c>ApiKey</c>, fails by the same rule that
-/// <c>doctor --fix</c> uses to keep a credential out of a backup.
-/// </remarks>
 internal static class DaemonEnvKeyPolicy
 {
     private const string KeyPrefix = "NETCLAW_";
 
-    // Two variables that the process reads by name, outside the config schema. Both hold a path or a URL.
     private static readonly HashSet<string> ProcessSettings =
         new(["NETCLAW_HOME", "NETCLAW_DAEMON_ENDPOINT"], StringComparer.Ordinal);
 
     private static readonly Lazy<JsonObject> Schema = new(LoadSchema);
 
-    /// <summary>
-    /// Returns false and a reason when <paramref name="key"/> or <paramref name="value"/> must not go to
-    /// daemon.env. The reason names the key and never holds the value.
-    /// </summary>
     internal static bool TryAccept(string key, string value, out string reason)
     {
         reason = string.Empty;
@@ -77,7 +59,6 @@ internal static class DaemonEnvKeyPolicy
         return AcceptUnlessUrlHoldsCredentials(key, value, out reason);
     }
 
-    // A URL with a user name or a password is a credential whatever the property is called.
     private static bool AcceptUnlessUrlHoldsCredentials(string key, string value, out string reason)
     {
         if (SchemaFixResolver.HasUrlUserInfo(value))
@@ -113,12 +94,10 @@ internal static class DaemonEnvKeyPolicy
         internal static Resolution FreeFormIn(string section) => new(Outcome.FreeForm, [], section);
     }
 
-    /// <summary>Walks the path through the schema. Names match without case, as the configuration binder does.</summary>
     private static Resolution Resolve(JsonObject root, JsonObject node, ReadOnlySpan<string> segments, string section)
     {
         node = Follow(root, node);
 
-        // Models accepts two shapes. A key passes when any shape declares it.
         if (Alternatives(node) is { } alternatives)
         {
             var best = Resolution.Undeclared;
@@ -157,11 +136,9 @@ internal static class DaemonEnvKeyPolicy
         {
             var entry = Follow(root, entrySchema);
 
-            // A keyed map of records (providers, MCP servers): the name is a wildcard and a declared property follows.
             if (entry["properties"] is JsonObject || Alternatives(entry) is not null)
                 return Resolve(root, entry, rest, section);
 
-            // A keyed map of a fixed choice (a channel id mapped to an audience) holds a setting under a wildcard name.
             if (rest.IsEmpty && IsFixedChoice(entry))
                 return Resolution.Declared;
 
@@ -180,7 +157,6 @@ internal static class DaemonEnvKeyPolicy
     private static JsonArray? Alternatives(JsonObject node)
         => node["oneOf"] as JsonArray ?? node["anyOf"] as JsonArray;
 
-    // A property that has members is a section. A leaf is a scalar or a list of scalars.
     private static bool IsSection(JsonObject node)
         => node["properties"] is JsonObject
            || node["additionalProperties"] is JsonObject

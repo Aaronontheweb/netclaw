@@ -340,8 +340,6 @@ public sealed class DoctorFixServiceTests : IDisposable
             File.GetUnixFileMode(paths.DaemonEnvironmentFilePath));
     }
 
-    // The mode fix on a link to a file that another user owns cannot work. The other planned fixes
-    // still apply, the failed fix is reported with its path, and no fix aborts the run.
     [SlopwatchSuppress("SW001", "The owner lookup is Linux-only.")]
     [Fact(SkipUnless = nameof(IsLinux), Skip = "The owner lookup is Linux-only.")]
     public async Task Apply_reports_a_failed_fix_and_still_applies_the_other_fixes()

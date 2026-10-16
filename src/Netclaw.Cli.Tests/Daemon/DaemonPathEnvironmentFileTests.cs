@@ -293,10 +293,6 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
         => Assert.False(DaemonEnvAssignment.TryParseAll(
             ["NETCLAW_HOME=/a", "NETCLAW_HOME=/b"], out _, out _));
 
-    // ── --env key allow-list: the embedded schema decides which keys daemon.env may hold ──
-
-    // The thirteen non-secret keys that docs/spec/configuration.md names, and the keys a Docker or
-    // systemd operator sets first: a provider, a model definition, a model role.
     [Theory]
     [InlineData("NETCLAW_Models__Definitions__claude__ModelId=anthropic/claude-sonnet-4")]
     [InlineData("NETCLAW_Models__Definitions__claude__Provider=openrouter")]
@@ -327,7 +323,6 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
     public void TryParseAll_accepts_a_key_that_the_schema_declares(string entry)
         => Assert.True(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), error);
 
-    // A declared property that holds a credential, by the doctor's credential rule on its name.
     [Theory]
     [InlineData("NETCLAW_Providers__main__ApiKey=abc-secret-value")]
     [InlineData("NETCLAW_providers__main__apikey=abc-secret-value")]
@@ -354,8 +349,6 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
         Assert.DoesNotContain("secret-value", error, StringComparison.Ordinal);
     }
 
-    // A name that the schema does not declare is refused whatever the name looks like. The message
-    // says why and points to the two places that hold a setting.
     [Theory]
     [InlineData("NETCLAW_Slack__BotToken=probe-value")]
     [InlineData("NETCLAW_Slack__AppToken=probe-value")]
@@ -386,8 +379,6 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
         Assert.DoesNotContain("probe-value", error, StringComparison.Ordinal);
     }
 
-    // A keyed map of free text (EnvironmentVariables, Headers) and a free-form object (VendorOptions)
-    // let the operator choose the key. The name carries no schema meaning, so the rule cannot judge it.
     [Theory]
     [InlineData("NETCLAW_McpServers__db__EnvironmentVariables__SMTP_PASS=probe-value")]
     [InlineData("NETCLAW_McpServers__db__EnvironmentVariables__DB_PASSWD=probe-value")]
@@ -410,7 +401,6 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
         Assert.DoesNotContain("probe-value", error, StringComparison.Ordinal);
     }
 
-    // The name after a keyed map must be a declared property, and a section is not a setting.
     [Theory]
     [InlineData("NETCLAW_Providers=x")]
     [InlineData("NETCLAW_Providers__main=x")]
@@ -423,7 +413,6 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
         Assert.Contains("netclaw.json", error, StringComparison.Ordinal);
     }
 
-    // An entry name in a keyed map is a wildcard, so any provider, model, or server name works.
     [Theory]
     [InlineData("NETCLAW_Providers__a_b_c__Type=ollama")]
     [InlineData("NETCLAW_Models__Definitions__a_b__ModelId=m")]

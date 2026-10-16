@@ -166,12 +166,6 @@ internal static class DaemonPathEnvironmentFile
         return text.ToString();
     }
 
-    /// <summary>
-    /// Writes the file atomically with owner-only access, because the values are plain text. A
-    /// symbolic link stays a link: the write goes to the file that the link names, so a fleet tool
-    /// that links <c>daemon.env</c> keeps its link. A link to a missing file, a link to a file that
-    /// another user owns, and a target that cannot be written all throw.
-    /// </summary>
     internal static void Write(string envFilePath, string text)
     {
         EnsureLinkIsSafe(envFilePath);
@@ -187,11 +181,6 @@ internal static class DaemonPathEnvironmentFile
             : file.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? envFilePath;
     }
 
-    /// <summary>
-    /// Throws <see cref="UnsafeEnvFileLinkException"/> when <paramref name="envFilePath"/> is a symbolic link
-    /// that a write or a mode change must not follow. A rename over a file that another user owns takes
-    /// that file over, and a chmod on it fails. A link to a missing file has nothing to read or secure.
-    /// </summary>
     internal static void EnsureLinkIsSafe(string envFilePath)
     {
         var link = new FileInfo(envFilePath);
@@ -235,7 +224,6 @@ internal static class DaemonPathEnvironmentFile
         return (File.GetUnixFileMode(envFilePath) & groupAndOthers) != 0;
     }
 
-    /// <summary>Sets mode 0600 on the file and changes nothing else. A link to a file that another user owns throws. A no-op on Windows.</summary>
     internal static void RestrictToOwner(string envFilePath)
     {
         if (OperatingSystem.IsWindows())
@@ -395,9 +383,6 @@ internal static class DaemonPathEnvironmentFile
     }
 }
 
-/// <summary>
-/// A <c>daemon.env</c> symbolic link that netclaw must not write through. The message names the link and its target.
-/// </summary>
 internal sealed class UnsafeEnvFileLinkException(string message) : IOException(message);
 
 /// <summary>
