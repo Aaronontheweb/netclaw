@@ -101,8 +101,40 @@ keys used by model references.
 | `Type` | string | `"ollama"` | Provider SDK to use. Supported: `ollama`, `openai-compatible`, `openrouter`, `openai`, `anthropic`, `github-copilot`, `veniceai`. |
 | `Endpoint` | string | `"http://localhost:11434"` | Base URL for the provider API. |
 | `ApiKey` | string? | `null` | API key. Should go in `secrets.json` or an environment variable. |
-| `OAuthTokenExpiry` | string? | `null` | Retired in `netclaw.json`. Netclaw keeps this value in `oauth-state.json`, because the daemon restarts on each write to `netclaw.json`. Netclaw reads an old `netclaw.json` value only while `oauth-state.json` has no entry for the provider. |
+| `OAuthTokenExpiry` | string? | `null` | Retired in `netclaw.json`. Netclaw keeps this value in `oauth-state.json`, because the daemon restarts on each write to `netclaw.json`. Netclaw reads an old `netclaw.json` value only while `oauth-state.json` has no entry for the provider. See [OAuth state file](#oauth-state-file). |
 | `VendorOptions` | object? | `null` | Provider-owned non-secret options. For `github-copilot`, `GitHubHost` and `GitHubApiBase` select the GitHub Enterprise host used for OAuth and Copilot token exchange; the Copilot API base remains `Endpoint`. |
+
+### OAuth state file
+
+`oauth-state.json` holds the token expiry of each OAuth provider. Netclaw writes it on each OAuth
+token refresh. The daemon does not watch it, so a refresh does not restart the daemon. The refresh
+token and the access token stay in `secrets.json`, and the daemon reads both files before it spends
+a refresh token. A refresh that the CLI does (`netclaw provider` probes each provider) reaches a
+running daemon through those two files.
+
+```json
+{ "Providers": { "my-codex": { "OAuthTokenExpiry": "2026-06-01T01:00:00.0000000+00:00" } } }
+```
+
+- The file is a configuration source that comes after `secrets.json`. It holds only
+  `Providers:<name>:OAuthTokenExpiry`. Any other key stops the load with a message that names the
+  file and the key, for example `Couldn't read oauth-state.json: key 'Providers:p:Endpoint' is not allowed.`
+- A value is an ISO 8601 date, `null`, or an empty string. An empty string means no expiry. A value
+  that is not a date stops the load with a message that names the file and the key.
+- The file accepts comments and trailing commas, as `netclaw.json` and `secrets.json` do. Netclaw
+  drops them when it writes the file. Do not edit the file by hand.
+- `netclaw provider remove` and `netclaw provider rename` keep the file in step with the provider.
+  `netclaw provider rename` refuses a new name that the file already holds.
+- `netclaw provider add` replaces the provider entry in `netclaw.json`. When the old entry had the
+  retired `OAuthTokenExpiry` key, the command first copies `netclaw.json` to
+  `netclaw.json.retired-oauth-expiry.bak`, or to the next free `netclaw.json.retired-oauth-expiry.N.bak`,
+  and then writes the entry without the key.
+- `netclaw doctor` reports each retired `Providers.<name>.OAuthTokenExpiry` key in `netclaw.json` as
+  information. The report does not change the exit code. `netclaw doctor --fix` copies `netclaw.json`
+  to the same `.retired-oauth-expiry.bak` name. Then it copies each date to `oauth-state.json` when
+  that file has no entry for the provider, and it deletes the keys from `netclaw.json`. The rest of
+  `netclaw.json` stays. When `netclaw.json` has comments, `doctor --fix` changes nothing, because the CLI
+  would drop the comments. Remove the key by hand in that case.
 
 ### Models
 

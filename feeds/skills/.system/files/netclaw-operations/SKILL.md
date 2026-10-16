@@ -929,7 +929,8 @@ add to it. This applies to `AllowedTools`, `ReadFiles`/`WriteFiles`/`AttachFiles
   variables. Netclaw writes the OAuth token expiry of each provider to `oauth-state.json`.
   An OAuth token refresh does not change `netclaw.json` and does not restart the daemon.
   A `Providers.<name>.OAuthTokenExpiry` key in `netclaw.json` is retired. Netclaw reads it
-  only while `oauth-state.json` has no entry for the provider. Remove it from `netclaw.json`.
+  only while `oauth-state.json` has no entry for the provider. `netclaw doctor` reports the key, and
+  `netclaw doctor --fix` moves the date to `oauth-state.json` and removes the key after a backup.
   `netclaw doctor`, `netclaw mcp permissions`, `netclaw mcp tools`, and the
   `netclaw config` screens read only `netclaw.json`, so they can show a different value.
 - `netclaw init` writes only the posture (`Security.DeploymentPosture`,
