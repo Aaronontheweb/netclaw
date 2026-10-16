@@ -43,25 +43,8 @@ public sealed class SessionKeysSchemaTests : IDisposable
                   "Type": "openai-compatible",
                   "Endpoint": null,
                   "AuthMethod": "ApiKey",
-                  "OAuthTokenExpiry": "2026-01-01T00:00:00Z",
                   "VendorOptions": { "Anything": "goes" }
                 }
-              }
-            }
-            """;
-
-        await AssertPassesAndUnchangedAsync(config);
-    }
-
-    [Fact]
-    public async Task Retired_OAuthTokenExpiry_key_passes_the_schema_and_survives_fix()
-    {
-        // Providers entries stay open, so the schema no longer names the key and --fix does not delete it.
-        const string config = """
-            {
-              "configVersion": 1,
-              "Providers": {
-                "copilot": { "Type": "github-copilot", "AuthMethod": "OAuthDevice", "OAuthTokenExpiry": "2026-01-01T00:00:00Z" }
               }
             }
             """;
