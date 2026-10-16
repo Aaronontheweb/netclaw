@@ -583,7 +583,6 @@ internal static class ProviderCommand
             }
         }
 
-        // oauth-state.json overrides any expiry from the two files above, as the daemon sources do.
         foreach (var (name, entry) in result)
         {
             if (OAuthStateStore.TryGetExpiry(paths, name, out var storedExpiry))

@@ -20,10 +20,7 @@ namespace Netclaw.Cli.Config;
 /// <remarks>
 /// <para>
 /// <b>OAuthTokenExpiry</b> goes in <c>oauth-state.json</c> through
-/// <see cref="OAuthTokenPersistence"/>. It cannot go in <c>secrets.json</c>, because encrypted
-/// <see cref="DateTimeOffset"/> values break <c>IConfiguration</c> binding — the binder
-/// silently drops the entire provider entry. It cannot go in <c>netclaw.json</c>, because the
-/// daemon restarts on each write to that file.
+/// <see cref="OAuthTokenPersistence"/>. See <see cref="OAuthStateStore"/>.
 /// </para>
 /// </remarks>
 internal static class ProviderCredentialWriter
@@ -88,8 +85,6 @@ internal static class ProviderCredentialWriter
         if (vendorOptions is not null && vendorOptions.Count > 0)
             providerEntry["VendorOptions"] = vendorOptions;
 
-        // The new entry replaces the old one, so an OAuthTokenExpiry key that an older release
-        // wrote here is dropped. Copy the file first, as the legacy Models rewrite does.
         PreserveRetiredExpiryBackup(paths, providers, providerName);
         providers[providerName] = providerEntry;
         ConfigFileHelper.WriteConfigFile(paths.NetclawConfigPath, config);

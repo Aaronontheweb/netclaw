@@ -136,5 +136,50 @@ public sealed class OAuthStateStoreTests : IDisposable
         Assert.Equal(["a"], OAuthStateStore.FindRetiredExpiryInUse(_paths));
     }
 
+    [Fact]
+    public void An_empty_expiry_means_no_expiry_for_the_store_and_for_the_binder()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "Providers": { "copilot": { "Type": "github-copilot", "OAuthTokenExpiry": "2026-01-01T00:00:00+00:00" } } }""");
+        File.WriteAllText(_paths.OAuthStatePath, """{ "Providers": { "copilot": { "OAuthTokenExpiry": "" } } }""");
+
+        Assert.True(OAuthStateStore.TryGetExpiry(_paths, "copilot", out var stored));
+        Assert.Null(stored);
+
+        var configuration = new ConfigurationBuilder().AddNetclawDaemonSources(_paths).Build();
+        var providers = ProviderConfigurationLoader.Load(configuration.GetSection("Providers"));
+        Assert.Null(providers["copilot"].OAuthTokenExpiry);
+    }
+
+    [Fact]
+    public void An_expiry_that_is_not_a_date_stops_the_load_and_names_oauth_state_json()
+    {
+        File.WriteAllText(_paths.OAuthStatePath, """{ "Providers": { "copilot": { "OAuthTokenExpiry": "garbage" } } }""");
+
+        var daemon = Assert.Throws<InvalidDataException>(() => new ConfigurationBuilder().AddNetclawDaemonSources(_paths).Build());
+
+        var message = DaemonConfigurationSources.DescribeLoadFailure(daemon);
+        Assert.StartsWith("Couldn't read oauth-state.json:", message);
+        Assert.Contains("Providers:copilot:OAuthTokenExpiry", message);
+    }
+
+    [Fact]
+    public void Comments_and_trailing_commas_are_read_by_the_store_and_by_the_configuration_source()
+    {
+        File.WriteAllText(_paths.OAuthStatePath, """
+            // An operator comment.
+            { "Providers": { "copilot": { "OAuthTokenExpiry": "2026-06-01T01:00:00+00:00", }, }, }
+            """);
+
+        Assert.True(OAuthStateStore.TryGetExpiry(_paths, "copilot", out var stored));
+        Assert.Equal(Expiry, stored);
+        var configuration = new ConfigurationBuilder().AddNetclawDaemonSources(_paths).Build();
+        Assert.Equal(Expiry, ProviderConfigurationLoader.Load(configuration.GetSection("Providers"))["copilot"].OAuthTokenExpiry);
+
+        OAuthStateStore.SetExpiry(_paths, "copilot", Expiry.AddHours(1));
+
+        Assert.True(OAuthStateStore.TryGetExpiry(_paths, "copilot", out var updated));
+        Assert.Equal(Expiry.AddHours(1), updated);
+    }
+
     public void Dispose() => _dir.Dispose();
 }

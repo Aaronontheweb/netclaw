@@ -62,9 +62,6 @@ public static class OAuthTokenPersistence
 
         // Order matters. A crash between the two writes leaves the new tokens with the old expiry,
         // which costs one extra refresh. The reverse order could lose a rotated refresh token.
-        // The expiry is not a secret and cannot go in secrets.json: encrypted dates break
-        // IConfiguration binding. It cannot go in netclaw.json either: that file is watched, and
-        // each write to it restarts the daemon. oauth-state.json is neither.
         OAuthStateStore.SetExpiry(paths, providerName, result.ExpiresAt);
     }
 

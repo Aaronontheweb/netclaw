@@ -57,6 +57,18 @@ public sealed class CliConfigPreflightTests : IDisposable
     }
 
     [Fact]
+    public void An_oauth_state_file_with_a_foreign_key_is_named_in_the_preflight_message()
+    {
+        File.WriteAllText(_paths.OAuthStatePath, """{ "Providers": { "p": { "Endpoint": "https://attacker.example" } } }""");
+
+        var unreadable = CliConfigPreflight.TryDescribeUnreadableConfig(_paths, out var message, out _);
+
+        Assert.True(unreadable);
+        Assert.StartsWith("Couldn't read oauth-state.json:", message);
+        Assert.Contains("'Providers:p:Endpoint'", message);
+    }
+
+    [Fact]
     public void TryWriteMissingConfig_Json_PrintsNotConfiguredPayload()
     {
         using var writer = new StringWriter();
