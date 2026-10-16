@@ -627,6 +627,38 @@ else
   echo "$dry_out" | indent
 fi
 
+# 8m. An install that already sits in $NETCLAW_HOME/bin is upgraded there, even when a stale
+# install also sits in $HOME/.netclaw/bin. The legacy directory is not touched, and the env
+# script of NETCLAW_HOME puts the upgraded binary on PATH.
+BOTH_FAKE="$WORK/both-user"
+BOTH_HOME="$WORK/both-nc-home"
+for bin_dir in "$BOTH_FAKE/.netclaw/bin" "$BOTH_HOME/bin"; do
+  mkdir -p "$bin_dir"
+  for name in netclaw netclawd; do
+    printf '#!/usr/bin/env sh\necho "%s old"\n' "$name" > "$bin_dir/$name"
+    chmod +x "$bin_dir/$name"
+  done
+done
+set +e
+both_out=$(INSTALL_SHELL="$(command -v bash)" run_home_install "$BOTH_FAKE" "$BOTH_HOME" --channel beta)
+both_rc=$?
+set -e
+both_bin_physical="$(cd "$BOTH_HOME/bin" && pwd -P)"
+both_on_path=$(HOME="$BOTH_FAKE" PATH="/usr/bin:/bin" sh -c ". '$BOTH_HOME/env'; command -v netclaw" 2>/dev/null || true)
+if [ "$both_rc" -eq 0 ] \
+    && [ "$("$BOTH_HOME/bin/netclaw")" = "netclaw $VERSION-smoke" ] \
+    && [ "$("$BOTH_HOME/bin/netclawd")" = "netclawd $VERSION-smoke" ] \
+    && [ "$("$BOTH_FAKE/.netclaw/bin/netclaw")" = "netclaw old" ] \
+    && [ "$("$BOTH_FAKE/.netclaw/bin/netclawd")" = "netclawd old" ] \
+    && [ "$both_on_path" = "$both_bin_physical/netclaw" ] \
+    && [ ! -e "$BOTH_FAKE/.netclaw/env" ] \
+    && echo "$both_out" | grep -qF "Install dir: $BOTH_HOME/bin"; then
+  pass "home: an install in NETCLAW_HOME/bin is upgraded there and a stale legacy install stays untouched"
+else
+  fail "home: an install in NETCLAW_HOME/bin was not upgraded in place (exit=$both_rc, on PATH: '$both_on_path')"
+  echo "$both_out" | indent
+fi
+
 # ── 9. Shell integration (PATH automation) ───────────────────────────────────
 echo ""
 echo "=== shell integration ==="

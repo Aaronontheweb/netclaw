@@ -20,9 +20,10 @@
 #   NETCLAW_HOME    — Netclaw home (default: ~/.netclaw). Holds config/, bin/, and env.
 #                     The CLI and the daemon read the same variable. config/ always
 #                     follows it. A fresh install also puts bin/ and env under it.
-#   INSTALL_DIR     — Install directory (default: $NETCLAW_HOME/bin). When ~/.netclaw/bin
-#                     already holds netclaw or netclawd and INSTALL_DIR is not set, the
-#                     installer upgrades there and keeps the env script at ~/.netclaw/env.
+#   INSTALL_DIR     — Install directory (default: $NETCLAW_HOME/bin). When INSTALL_DIR is
+#                     not set, the installer upgrades an install that already sits in
+#                     $NETCLAW_HOME/bin. Else it upgrades one in ~/.netclaw/bin and keeps the
+#                     env script at ~/.netclaw/env.
 #   NETCLAW_VERSION — Specific version to install (overrides --channel; e.g. 0.19.0-beta.1)
 #   FEED_BASE_URL   — Release feed URL (default: https://releases.netclaw.dev)
 
@@ -200,16 +201,21 @@ check_deps
 RID=$(detect_platform)
 NETCLAW_HOME_DIR="$(resolve_netclaw_home)"
 
-# An upgrade must not move an existing install. Releases before NETCLAW_HOME support put the
-# binaries in ~/.netclaw/bin and the env script in ~/.netclaw/env, and the operator's shell
-# profile sources that env script. A new location would leave the old binary first on PATH.
-# So an install that exists there stays there unless INSTALL_DIR names another directory.
-# Only a fresh install follows NETCLAW_HOME for bin/ and env.
+# An upgrade must not move an existing install. The order of the rules:
+#   1. INSTALL_DIR names the directory: use it.
+#   2. $NETCLAW_HOME/bin holds netclaw or netclawd: upgrade there.
+#   3. Releases before NETCLAW_HOME support put the binaries in ~/.netclaw/bin and the env script
+#      in ~/.netclaw/env, and the operator's shell profile sources that env script. When that
+#      directory holds netclaw or netclawd, upgrade there. A new location would leave the old
+#      binary first on PATH.
+#   4. Otherwise it is a fresh install: bin/ and env go under $NETCLAW_HOME.
 LEGACY_HOME_DIR="$HOME/.netclaw"
 ENV_HOME_DIR="$NETCLAW_HOME_DIR"
 IN_PLACE_NOTE=""
 if [ -n "${INSTALL_DIR:-}" ]; then
     :
+elif [ -f "$NETCLAW_HOME_DIR/bin/netclaw" ] || [ -f "$NETCLAW_HOME_DIR/bin/netclawd" ]; then
+    INSTALL_DIR="$NETCLAW_HOME_DIR/bin"
 elif [ -f "$LEGACY_HOME_DIR/bin/netclaw" ] || [ -f "$LEGACY_HOME_DIR/bin/netclawd" ]; then
     INSTALL_DIR="$LEGACY_HOME_DIR/bin"
     ENV_HOME_DIR="$LEGACY_HOME_DIR"
