@@ -64,6 +64,7 @@ public sealed class ProviderOAuthTokenRefreshService(
         await refreshGate.WaitAsync(ct);
         try
         {
+            AdoptStoredTokens(providerName, entry);
             accessToken = entry.OAuthAccessToken.RequireValid(
                 $"OAuth access token for provider '{providerName}'");
 
@@ -114,6 +115,27 @@ public sealed class ProviderOAuthTokenRefreshService(
         finally
         {
             refreshGate.Release();
+        }
+    }
+
+    // Another process, such as `netclaw provider`, can refresh the same provider. The token server
+    // rotates the refresh token, so the in-memory copy can be spent already.
+    private void AdoptStoredTokens(string providerName, ProviderEntry entry)
+    {
+        if (OAuthTokenPersistence.LoadTokens(paths, providerName) is not { } stored)
+            return;
+
+        if (!stored.RefreshToken.IsNullOrEmpty()
+            && !string.Equals(stored.RefreshToken.Value, entry.OAuthRefreshToken?.Value, StringComparison.Ordinal))
+        {
+            entry.OAuthRefreshToken = stored.RefreshToken;
+        }
+
+        if (stored.ExpiresAt is { } storedExpiry && (entry.OAuthTokenExpiry is not { } expiry || storedExpiry > expiry))
+        {
+            entry.OAuthAccessToken = stored.AccessToken;
+            entry.OAuthTokenExpiry = storedExpiry;
+            entry.OAuthAccountId = stored.AccountId ?? entry.OAuthAccountId;
         }
     }
 
