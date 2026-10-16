@@ -9,19 +9,23 @@ if [[ "$output_path" != /* ]]; then
   output_path="$repo_root/$output_path"
 fi
 
-read -r span_start span_end first_line last_line < <(
+read -r enforce_start enforce_end enforce_first enforce_last \
+  rule_start rule_end rule_first rule_last < <(
   perl -Mopen=:std,:encoding\(UTF-8\) -0777 -ne '
-    $start_marker = "public static string? FindRefusal";
-    $end_marker = "private static bool IsEmptyOrPortSuffix";
-    $start = index($_, $start_marker);
-    die "The Host and Origin start marker is missing or duplicated.\n"
-      if $start < 0 || index($_, $start_marker, $start + 1) >= 0;
-    $end = index($_, $end_marker, $start);
-    die "The Host and Origin end marker is missing or duplicated.\n"
-      if $end < 0 || index($_, $end_marker, $end + 1) >= 0;
-    $first = 1 + (substr($_, 0, $start) =~ tr/\n//);
-    $last = 1 + (substr($_, 0, $end) =~ tr/\n//);
-    print "$start $end $first $last\n";
+    sub span {
+      my ($text, $start_marker, $end_marker) = @_;
+      my $start = index($text, $start_marker);
+      die "The marker \"$start_marker\" is missing or duplicated.\n"
+        if $start < 0 || index($text, $start_marker, $start + 1) >= 0;
+      my $end = defined $end_marker ? index($text, $end_marker, $start) : length($text);
+      die "The marker \"$end_marker\" is missing or duplicated.\n"
+        if defined $end_marker && ($end < 0 || index($text, $end_marker, $end + 1) >= 0);
+      my $first = 1 + (substr($text, 0, $start) =~ tr/\n//);
+      my $last = 1 + (substr($text, 0, $end) =~ tr/\n//);
+      return "$start $end $first $last";
+    }
+    print span($_, "var refusal = LoopbackHostOriginPolicy.FindRefusal(", "var claims = new[]"), " ",
+          span($_, "public static string? FindRefusal", undef), "\n";
   ' "$source_file"
 )
 
@@ -30,22 +34,25 @@ read -r span_start span_end first_line last_line < <(
   dotnet stryker \
     --config-file stryker-config.json \
     --project Netclaw.Daemon.csproj \
-    --mutate "Security/LoopbackAuthenticationHandler.cs{$span_start..$span_end}" \
+    --mutate "Security/LoopbackAuthenticationHandler.cs{$enforce_start..$enforce_end}" \
+    --mutate "Security/LoopbackAuthenticationHandler.cs{$rule_start..$rule_end}" \
     --output "$output_path" \
     --skip-version-check
 )
 
 report="$output_path/reports/mutation-report.json"
-expected_count=16
+expected_count=42
 tested_count="$(
   jq '[.files[].mutants[] | select(.status != "Ignored" and .status != "CompileError")] | length' "$report"
 )"
 killed_count="$(jq '[.files[].mutants[] | select(.status == "Killed")] | length' "$report")"
 span_mutants="$(
   jq --arg source "$source_file" \
-    --argjson first "$first_line" --argjson last "$last_line" \
+    --argjson enforce_first "$enforce_first" --argjson enforce_last "$enforce_last" \
+    --argjson rule_first "$rule_first" --argjson rule_last "$rule_last" \
     '[(.files[$source].mutants // [])[] | select(.status != "Ignored" and .status != "CompileError")
-      | select(.location.start.line >= $first and .location.start.line < $last)] | length' \
+      | select((.location.start.line >= $enforce_first and .location.start.line < $enforce_last)
+               or .location.start.line >= $rule_first)] | length' \
     "$report"
 )"
 

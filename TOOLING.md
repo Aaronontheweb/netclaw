@@ -64,7 +64,7 @@ coverage. They do not replace positive and negative behavior tests.
 | `BashLiteralTwinSlices.Apply` and the denial check of `ToolAccessPolicy.ScreenScopedSlices` | Decision F1: the strictest literal twin result decides a call. The candidates of every twin replace the candidates of their source command, an unresolved source keeps its exact answer, twins without their source command fail loudly, and one denied twin denies the call | 9 killed | `./scripts/run-literal-twin-mutations.sh` |
 | `SessionInputFlow.DrainBufferedBatch` (turn owner choice), `SessionInputFlow.JoinsTurn`, and the automation check of `SessionToolWorkflow.PlanNewInputAbandonment` | A turn has one requester: a drain after a turn adopts the authority of the first buffered input, a drain inside a turn keeps the turn's authority, and only inputs of that requester join the batch; automated input waits behind an open approval, and only input from a person closes it | 10 killed | `./scripts/run-input-one-authority-mutations.sh` |
 | `StreamCommitGate` | An attempt commits only at its first real output; id-bearing lifecycle updates are held, role-only keepalives pass through, and held updates are released on commit or clean completion | 8 killed | `./scripts/run-stream-commit-gate-mutations.sh` |
-| `LoopbackHostOriginPolicy.FindRefusal` | Loopback operator trust needs a loopback Host name, and an `Origin` header must equal `http://` plus the Host: a foreign page cannot reach the daemon by DNS rebinding or a cross-site request | 16 killed | `./scripts/run-loopback-host-origin-mutations.sh` |
+| `LoopbackHostOriginPolicy` (the Host and Origin rule and `IsEmptyOrPortSuffix`) and the refusal call in `LoopbackAuthenticationHandler.HandleAuthenticateAsync` | Loopback operator trust needs a loopback Host name, and an `Origin` header must equal `http://` plus the Host: a foreign page cannot reach the daemon by DNS rebinding or a cross-site request | 42 killed | `./scripts/run-loopback-host-origin-mutations.sh` |
 | `ActiveToolBatchTracker.CanComplete`, `SessionToolWorkflow.ValidateResponse`, `SessionModelContext.IsCurrentInspection`, `SessionState.Apply(TurnRecorded, bool)`, `SessionExecutionLifetime.AcceptModelStop`, and `SessionExecutionLifetime.ObserveReapReply` | A batch waits for every result and task completion; another sender cannot approve a call; an old inspection cannot change a later call; terminal history adds the user exactly once; an old model stop cannot settle a new call; one accepted reap reply requests only one journal commit | 7 killed | `./scripts/run-tool-batch-readiness-mutations.sh` |
 
 Run the path-access check locally:
@@ -170,23 +170,35 @@ Run the loopback Host and Origin gate:
 ./scripts/run-loopback-host-origin-mutations.sh
 ```
 
-The script selects `LoopbackHostOriginPolicy.FindRefusal` and the loopback
-name test in `LoopbackAuthenticationHandler.cs`. A loopback source address does
-not prove that the operator made the request. A web page in the operator's
-browser sends a foreign `Host` (DNS rebinding) or a foreign `Origin`
-(cross-site request). The gate requires 16 killed mutants. They cover these
-cases:
+The script selects two spans of `LoopbackAuthenticationHandler.cs`:
 
+- the call in `HandleAuthenticateAsync` that fails authentication when the policy returns a refusal
+- all of `LoopbackHostOriginPolicy`: `FindRefusal`, the loopback name test, the canonical form test, and `IsEmptyOrPortSuffix`
+
+A loopback source address does not prove that the operator made the request. A web
+page in the operator's browser sends a foreign `Host` (DNS rebinding) or a foreign
+`Origin` (cross-site request). The gate requires 42 killed mutants. They cover
+these cases:
+
+- the handler fails authentication for a refusal and grants the Operator identity for an admitted request
 - a foreign Host name is refused even when the Origin matches it
+- an IP literal of `127.0.0.0/8` or `[::1]`, and `localhost`, are admitted
+- a legacy IP spelling (`127.1`, `0x7f.1`, `2130706433`), an IPv4-mapped IPv6 literal, `0.0.0.0`, and a half-bracketed or whitespace name are refused
+- a port suffix has one to five digits
 - a loopback Host with a foreign, `null`, `https://`, other-port, or repeated Origin is refused
 - a loopback Host with no Origin, or an Origin equal to `http://` plus the Host, is admitted
 - the refusal reason names the failed header
 
-The source selector rejects a missing or duplicate boundary before Stryker
-starts. The gate also rejects a changed mutant count, a survivor, or a compile
-error in the selected span.
+The log write in `HandleChallengeAsync` is outside this gate. A deterministic
+test covers it (`LoopbackRefusalLogTests`), and a mutant there cannot admit a request.
 
-The local run took 1 minute 40 seconds after package restore. CI runs it in the
+The selector rejects a missing or repeated source marker before Stryker starts.
+The gate fails for a survivor or a changed mutant count. A mutant that becomes a
+compile error changes the count. Stryker makes 4 such mutants in the selected
+spans (the `origin.Count` comparisons and `Sum` replacements in `FindRefusal`).
+The count of 42 excludes them.
+
+The local run took 1 minute 21 seconds after package restore. CI runs it in the
 `session-reliability` group of the `mutation-gates` job. Its report directory is
 `artifacts/stryker/loopback-host-origin`.
 
