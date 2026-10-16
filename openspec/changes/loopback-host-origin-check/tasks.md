@@ -20,3 +20,9 @@
 - [x] 4.2 Write the refusal warning in `HandleChallengeAsync` only, with a red test for an anonymous route
 - [x] 4.3 Extend the focused mutation gate to the enforcing call and `IsEmptyOrPortSuffix`, and update the mutant count in `TOOLING.md`
 - [x] 4.4 Link the glossary, state the call-local data, and add the check order to the design
+
+## 5. Coupling fix
+
+- [x] 5.1 Add `LoopbackHostName.IsStrictLoopback` below the validator and the policy, and call it from both
+- [x] 5.2 Add `LoopbackHostCouplingGuardTests` to the mutation project, and add the strict name test to the focused mutation gate
+- [x] 5.3 State in the policy doc, the proposal, and the spec that a `Daemon.Host` value admits after URI canonicalization

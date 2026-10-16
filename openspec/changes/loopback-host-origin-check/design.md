@@ -2,7 +2,7 @@
 
 `LoopbackAuthenticationHandler` grants `Operator` and `LocalProcess` to each request whose source address is loopback in `local` mode. A browser on the same host can send such a request. DNS rebinding gives the attacker page a foreign `Host` name. A cross-site form or fetch gives a foreign `Origin`. A probe at `dev` confirmed both: `/api/health/status` returned 200, and a foreign-origin WebSocket upgrade to `/hub/session` returned 101.
 
-Terms: [Operator, loopback request, and device token](../../../docs/spec/GLOSSARY.md) have the glossary meaning.
+Terms: [Operator, Operator principal, loopback request, and device token](../../../docs/spec/GLOSSARY.md) have the glossary meaning.
 
 ## Goals / Non-Goals
 
@@ -19,7 +19,8 @@ Terms: [Operator, loopback request, and device token](../../../docs/spec/GLOSSAR
 ## Decisions
 
 - **Put the check in `LoopbackAuthenticationHandler.HandleAuthenticateAsync`.** It runs after the exposure-mode guard and the loopback address test, and before the claims. No route can skip it there. Alternative: the ASP.NET `AllowedHosts` filter or a middleware. Both cover bearer and anonymous routes, and the host filter does not test `Origin`.
-- **Reuse the shared loopback rule.** `LoopbackHostOriginPolicy` calls `DaemonExposureValidator.IsLoopbackHost` and does not keep a second list of loopback names. The CLI connects to the `Daemon.Host` literal, and the validator accepts all of `127.0.0.0/8`, so a narrower list would refuse a valid local bind. An IP literal is safe: a rebinding page controls a DNS name and not an IP literal. The validator also parses legacy spellings (`127.1`, `0x7f.1`, `2130706433`, `::ffff:127.0.0.1`). The policy admits an address only when its canonical text equals the `Host` name, and it refuses `localhost.` and `0.0.0.0`.
+- **Share one strict name test below the validator and the policy.** `LoopbackHostName.IsStrictLoopback` in `Netclaw.Configuration` accepts `localhost` (no case, no trailing dot, no trimming) and the canonical text of an IP literal of `127.0.0.0/8` or `::1`. It never resolves DNS. `LoopbackHostOriginPolicy` calls it directly and does not call the bind validator. `DaemonExposureValidator.IsLoopbackHost` calls it first and adds bind-only leniency (legacy spellings such as `127.1`). Request admission therefore depends on the strict test only, and a widening of the validator, for example a DNS alias, cannot admit a request. A widening of the strict test is a security change, and the mutation gate and `LoopbackHostCouplingGuardTests` cover it.
+- **Admit a short `Daemon.Host` after URI canonicalization.** The CLI connects with a `Uri`, which rewrites `127.1` to `127.0.0.1`. The `Host` header then carries canonical text. A client that sends the short form as `Host` text gets 401. An IP literal is safe: a rebinding page controls a DNS name and not an IP literal.
 - **Keep the rule in one static policy type.** `LoopbackHostOriginPolicy` takes the `HostString` and the `Origin` values and returns a refusal reason or none. The unit tests and the mutation gate call it directly.
 - **Fixed rule, no knob.** A knob would copy data that the request already holds.
 - **Return `AuthenticateResult.Fail`.** A failed result leaves the user anonymous. A protected route then challenges and answers 401. An anonymous route still answers.
@@ -28,7 +29,7 @@ Terms: [Operator, loopback request, and device token](../../../docs/spec/GLOSSAR
 
 ## Data and decision owner
 
-`LoopbackAuthenticationHandler` owns the decision. The policy data is call-local: the `Host` and `Origin` values come from the request, live for one call, and no actor or store keeps them. The loopback rule is code in `DaemonExposureValidator`. The only durable input is `Daemon.Host`, and the policy does not read it.
+`LoopbackAuthenticationHandler` owns the decision. The policy data is call-local: the `Host` and `Origin` values come from the request, live for one call, and no actor or store keeps them. The loopback name rule is code in `LoopbackHostName`. The only durable input is `Daemon.Host`, and the policy does not read it.
 
 Schematic order of checks. The sketch omits the bearer selector and the logger plumbing.
 

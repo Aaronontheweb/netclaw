@@ -120,9 +120,16 @@ Processes share this authority only when they use the same Netclaw home and key 
 ### Operator
 
 The Operator is the person who runs a Netclaw host and answers its consent
-requests. A request has Operator authority when a local-trust scheme or a paired
-device authenticates it. The daemon gives the Operator identity to a loopback
-request in `local` exposure mode only after the Host and Origin test passes.
+requests. This entry defines the person. The [Operator principal](#operator-principal)
+entry defines the value that the daemon gives to a request.
+
+### Operator principal
+
+The Operator principal is the `PrincipalClassification.Operator` value in the
+claims of an authenticated request. It states that the request has the authority
+of the [Operator](#operator). A local-trust scheme or a paired device gives the
+value. The daemon gives it to a [loopback request](#loopback-request) in `local`
+exposure mode only after the Host and Origin test passes.
 
 **Code anchor:** `PrincipalClassification.Operator`
 
