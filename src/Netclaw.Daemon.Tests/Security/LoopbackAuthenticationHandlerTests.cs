@@ -84,6 +84,8 @@ public sealed class LoopbackAuthenticationHandlerTests
     [InlineData("127.0.0.1")]
     [InlineData("[::1]:5199")]
     [InlineData("[::1]")]
+    [InlineData("127.0.0.2:5199")]
+    [InlineData("127.255.255.254")]
     public async Task Allowed_host_names_receive_operator_claims(string host)
     {
         var (sp, authService) = BuildAuthService();
@@ -105,6 +107,16 @@ public sealed class LoopbackAuthenticationHandlerTests
     [InlineData("localhost:abc")]
     [InlineData("localhost:")]
     [InlineData("localhost:1234567")]
+    [InlineData("127.1:5199")]
+    [InlineData("0x7f.1:5199")]
+    [InlineData("2130706433:5199")]
+    [InlineData("0.0.0.0:5199")]
+    [InlineData("[::ffff:127.0.0.1]:5199")]
+    [InlineData("[localhost]:5199")]
+    [InlineData("::1")]
+    [InlineData(" localhost")]
+    [InlineData("[127.0.0.1]:5199")]
+    [InlineData("127.0.0.1 ")]
     [InlineData("")]
     public async Task Foreign_or_missing_host_is_refused(string host)
     {
@@ -115,6 +127,24 @@ public sealed class LoopbackAuthenticationHandlerTests
 
         Assert.False(result.Succeeded);
         Assert.NotNull(result.Failure);
+    }
+
+    [Theory]
+    [InlineData("127.0.0.2")]
+    [InlineData("127.10.20.30")]
+    [InlineData("::1")]
+    [InlineData("0:0:0:0:0:0:0:1")]
+    public async Task Cli_request_to_a_config_valid_local_bind_is_admitted(string bindHost)
+    {
+        var config = new DaemonConfig { ExposureMode = ExposureMode.Local, Host = bindHost, Port = 5199 };
+        Assert.Null(DaemonExposureValidator.GetLoopbackViolationIssue(config));
+        var cliHost = new Uri(DaemonControlPlaneEndpointResolver.ResolveFallbackEndpoint(config)).Authority;
+        var (sp, authService) = BuildAuthService(config);
+        var ctx = BuildContext(IPAddress.Loopback, sp, cliHost);
+
+        var result = await authService.AuthenticateAsync(ctx, LoopbackAuthenticationHandler.SchemeName);
+
+        Assert.True(result.Succeeded, $"Host {cliHost} was refused: {result.Failure?.Message}");
     }
 
     [Fact]
