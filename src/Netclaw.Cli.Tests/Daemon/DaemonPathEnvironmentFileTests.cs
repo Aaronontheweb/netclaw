@@ -259,7 +259,7 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
     public void TryParseAll_accepts_netclaw_keys_and_keeps_the_value_verbatim()
     {
         var ok = DaemonEnvAssignment.TryParseAll(
-            ["NETCLAW_DAEMON__PORT=56114", "NETCLAW_HOME=/x/a=b c", "NETCLAW_EMPTY="],
+            ["NETCLAW_DAEMON__PORT=56114", "NETCLAW_HOME=/x/a=b c", "NETCLAW_Daemon__Host="],
             out var assignments,
             out var error);
 
@@ -268,7 +268,7 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
             [
                 new DaemonEnvAssignment("NETCLAW_DAEMON__PORT", "56114"),
                 new DaemonEnvAssignment("NETCLAW_HOME", "/x/a=b c"),
-                new DaemonEnvAssignment("NETCLAW_EMPTY", string.Empty),
+                new DaemonEnvAssignment("NETCLAW_Daemon__Host", string.Empty),
             ],
             assignments);
     }
@@ -293,59 +293,142 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
         => Assert.False(DaemonEnvAssignment.TryParseAll(
             ["NETCLAW_HOME=/a", "NETCLAW_HOME=/b"], out _, out _));
 
+    // ── --env key allow-list: the embedded schema decides which keys daemon.env may hold ──
+
+    // The thirteen non-secret keys that docs/spec/configuration.md names, and the keys a Docker or
+    // systemd operator sets first: a provider, a model definition, a model role.
+    [Theory]
+    [InlineData("NETCLAW_Models__Definitions__claude__ModelId=anthropic/claude-sonnet-4")]
+    [InlineData("NETCLAW_Models__Definitions__claude__Provider=openrouter")]
+    [InlineData("NETCLAW_Models__Roles__Main=claude")]
+    [InlineData("NETCLAW_Retention__Logs__Days=14")]
+    [InlineData("NETCLAW_Session__MaxToolIterationsPerTurn=60")]
+    [InlineData("NETCLAW_Telemetry__Enabled=true")]
+    [InlineData("NETCLAW_Telemetry__Otlp__Endpoint=http://127.0.0.1:4317")]
+    [InlineData("NETCLAW_Tools__WebFetch__HttpAllowList__0=example.com")]
+    [InlineData("NETCLAW_Daemon__ExposureMode=local")]
+    [InlineData("NETCLAW_Daemon__Host=127.0.0.1")]
+    [InlineData("NETCLAW_Daemon__TrustedProxies__0=10.0.0.1")]
+    [InlineData("NETCLAW_HOME=/x/home")]
+    [InlineData("NETCLAW_DAEMON_ENDPOINT=http://127.0.0.1:5199")]
+    [InlineData("NETCLAW_DAEMON__PORT=56113")]
+    [InlineData("NETCLAW_Providers__main__Type=openrouter")]
+    [InlineData("NETCLAW_Providers__local__Type=ollama")]
+    [InlineData("NETCLAW_Providers__local__Endpoint=http://host.docker.internal:11434")]
+    [InlineData("NETCLAW_Providers__main__AuthMethod=ApiKey")]
+    [InlineData("NETCLAW_Models__Definitions__local__ModelId=llama3.1")]
+    [InlineData("NETCLAW_Models__Roles__Fallback=local")]
+    [InlineData("NETCLAW_Session__FirstTokenTimeoutSeconds=30")]
+    [InlineData("NETCLAW_Memory__Curation__LlmMaxOutputTokens=512")]
+    [InlineData("NETCLAW_Mattermost__ServerUrl=https://chat.example")]
+    [InlineData("NETCLAW_McpServers__gh__OAuthClientId=abc")]
+    [InlineData("NETCLAW_McpServers__gh__Url=https://mcp.example/sse")]
+    [InlineData("NETCLAW_Slack__ChannelAudiences__C0123=team")]
+    public void TryParseAll_accepts_a_key_that_the_schema_declares(string entry)
+        => Assert.True(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), error);
+
+    // A declared property that holds a credential, by the doctor's credential rule on its name.
     [Theory]
     [InlineData("NETCLAW_Providers__main__ApiKey=abc-secret-value")]
-    [InlineData("NETCLAW_Slack__BotToken=xoxb-secret-value")]
-    [InlineData("NETCLAW_Memory__ServerUrl=https://user:pw-secret-value@host.example/db")]
-    public void TryParseAll_refuses_credentials_names_secrets_set_and_never_prints_the_value(string entry)
+    [InlineData("NETCLAW_providers__main__apikey=abc-secret-value")]
+    [InlineData("NETCLAW_Providers__o__OAuthRefreshToken=abc-secret-value")]
+    [InlineData("NETCLAW_Providers__o__OAuthAccessToken=abc-secret-value")]
+    [InlineData("NETCLAW_Search__BraveApiKey=abc-secret-value")]
+    [InlineData("NETCLAW_McpServers__gh__OAuthClientSecret=abc-secret-value")]
+    [InlineData("NETCLAW_Mattermost__ServerUrl=https://user:pw-secret-value@chat.example")]
+    [InlineData("NETCLAW_Providers__main__Endpoint=https://user:pw-secret-value@llm.example")]
+    [InlineData("NETCLAW_Providers__main__Endpoint=HTTPS://U:secret-value@H")]
+    [InlineData("NETCLAW_Providers__main__Endpoint=https://secret-value@llm.example")]
+    [InlineData("NETCLAW_Providers__main__Endpoint=postgres://u%3Asecret-value@h/db")]
+    [InlineData("NETCLAW_Providers__main__Endpoint=ftp://u:secret-value@h/x")]
+    [InlineData("NETCLAW_Search__SearXngEndpoint=https://u:secret-value@searx.example")]
+    [InlineData("NETCLAW_Webhooks__x__CallbackUrl=https://discord.com/api/webhooks/1/secret-value")]
+    public void TryParseAll_refuses_a_credential_and_names_secrets_set_and_never_prints_the_value(string entry)
     {
         var value = entry[(entry.IndexOf('=') + 1)..];
 
-        Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out var error));
+        Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), entry);
         Assert.Contains("netclaw secrets set", error, StringComparison.Ordinal);
+        Assert.Contains("credential", error, StringComparison.Ordinal);
         Assert.DoesNotContain(value, error, StringComparison.Ordinal);
         Assert.DoesNotContain("secret-value", error, StringComparison.Ordinal);
     }
 
-    // The doctor decides by the leaf name, but an --env key carries the NETCLAW_ prefix and the
-    // __ path. The refusal must look at each path segment and at the name of a dictionary entry.
+    // A name that the schema does not declare is refused whatever the name looks like. The message
+    // says why and points to the two places that hold a setting.
     [Theory]
-    [InlineData("NETCLAW_McpServers__gh__EnvironmentVariables__GITHUB_PAT=ghp_probevalue")]
-    [InlineData("NETCLAW_X__Pat=probevalue")]
-    [InlineData("NETCLAW_X__Passphrase=probevalue")]
-    [InlineData("NETCLAW_X__Pwd=probevalue")]
-    [InlineData("NETCLAW_X__Cookie=probevalue")]
-    [InlineData("NETCLAW_McpServers__x__Headers__Bearer=probevalue")]
-    [InlineData("NETCLAW_McpServers__x__Headers__X_Session_Cookie=probevalue")]
-    [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__OPENAI_KEY=probevalue")]
-    [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__STRIPE_API_KEY=probevalue")]
-    [InlineData("NETCLAW_Search__SearXngEndpoint=https://u:probevalue@searx.example")]
-    [InlineData("NETCLAW_Providers__main__Endpoint=https://u:probevalue@llm.example")]
-    [InlineData("NETCLAW_Providers__main__Endpoint=https://probevalue@llm.example")]
-    [InlineData("NETCLAW_Anything__Else=ssh://probevalue@host.example/repo")]
-    [InlineData("NETCLAW_Providers__main__ApiKey=probevalue")]
-    [InlineData("NETCLAW_Slack__SigningSecret=probevalue")]
-    [InlineData("NETCLAW_Webhooks__x__Url=https://hooks.slack.com/services/T/B/probevalue")]
-    [InlineData("NETCLAW_Sentry__Dsn=https://probevalue@o.ingest.sentry.io/1")]
-    public void TryParseAll_refuses_every_credential_shape_and_never_prints_the_value(string entry)
+    [InlineData("NETCLAW_Slack__BotToken=probe-value")]
+    [InlineData("NETCLAW_Slack__AppToken=probe-value")]
+    [InlineData("NETCLAW_Slack__SigningSecret=probe-value")]
+    [InlineData("NETCLAW_PROVIDERS__MAIN__API_KEY=probe-value")]
+    [InlineData("NETCLAW_Providers__main__Api__Key=probe-value")]
+    [InlineData("NETCLAW_netclaw_x__apikey=probe-value")]
+    [InlineData("NETCLAW_X__ClientSecret=probe-value")]
+    [InlineData("NETCLAW_X__Password=probe-value")]
+    [InlineData("NETCLAW_X__Passwd=probe-value")]
+    [InlineData("NETCLAW_X__Pat=probe-value")]
+    [InlineData("NETCLAW_X__Pwd=probe-value")]
+    [InlineData("NETCLAW_X__Cookie=probe-value")]
+    [InlineData("NETCLAW_X__Passphrase=probe-value")]
+    [InlineData("NETCLAW_X__DeviceToken=probe-value")]
+    [InlineData("NETCLAW_Webhooks__x__Secret=probe-value")]
+    [InlineData("NETCLAW_Sentry__Dsn=https://probe-value@o.ingest.sentry.io/1")]
+    [InlineData("NETCLAW_Contact__Email=ops@example.com")]
+    [InlineData("NETCLAW_LOG_DIR=/var/log/netclaw")]
+    [InlineData("NETCLAW_Daemon__Hots=127.0.0.1")]
+    [InlineData("NETCLAW_Providers__main__Typo=x")]
+    [InlineData("NETCLAW_Tools__WebFetch__HttpAllowList__first=example.com")]
+    public void TryParseAll_refuses_a_key_that_the_schema_does_not_declare(string entry)
     {
         Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), entry);
+        Assert.Contains("netclaw.json", error, StringComparison.Ordinal);
         Assert.Contains("netclaw secrets set", error, StringComparison.Ordinal);
-        Assert.DoesNotContain("probevalue", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("probe-value", error, StringComparison.Ordinal);
     }
 
+    // A keyed map of free text (EnvironmentVariables, Headers) and a free-form object (VendorOptions)
+    // let the operator choose the key. The name carries no schema meaning, so the rule cannot judge it.
     [Theory]
-    [InlineData("NETCLAW_HOME=/x/home")]
-    [InlineData("NETCLAW_DAEMON__PORT=56113")]
-    [InlineData("NETCLAW_Memory__ServerUrl=https://host.example/db")]
-    [InlineData("NETCLAW_Providers__main__Endpoint=https://llm.example:8443/v1")]
+    [InlineData("NETCLAW_McpServers__db__EnvironmentVariables__SMTP_PASS=probe-value")]
+    [InlineData("NETCLAW_McpServers__db__EnvironmentVariables__DB_PASSWD=probe-value")]
+    [InlineData("NETCLAW_McpServers__gh__EnvironmentVariables__GITHUB_PAT=probe-value")]
+    [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__OPENAI_KEY=probe-value")]
+    [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__openai_key=probe-value")]
+    [InlineData("NETCLAW_MCPSERVERS__X__ENVIRONMENTVARIABLES__GITHUB_PAT=probe-value")]
     [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__LOG_LEVEL=debug")]
-    [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__KEYBOARD_LAYOUT=us")]
+    [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__MONKEY=banana")]
+    [InlineData("NETCLAW_McpServers__x__Headers__Bearer=probe-value")]
     [InlineData("NETCLAW_McpServers__x__Headers__Accept=application/json")]
-    [InlineData("NETCLAW_Search__MaxKeywordCount=3")]
-    [InlineData("NETCLAW_LOG_DIR=/var/log/netclaw")]
-    [InlineData("NETCLAW_Contact__Email=ops@example.com")]
-    public void TryParseAll_accepts_settings_that_are_not_credentials(string entry)
+    [InlineData("NETCLAW_Providers__x__VendorOptions__ORG_KEY=probe-value")]
+    [InlineData("NETCLAW_Providers__x__VendorOptions__GitHubHost=github.example")]
+    public void TryParseAll_refuses_a_key_under_a_free_form_section_and_points_to_netclaw_json(string entry)
+    {
+        Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), entry);
+        Assert.Contains("free-form", error, StringComparison.Ordinal);
+        Assert.Contains("netclaw.json", error, StringComparison.Ordinal);
+        Assert.Contains("netclaw secrets set", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("probe-value", error, StringComparison.Ordinal);
+    }
+
+    // The name after a keyed map must be a declared property, and a section is not a setting.
+    [Theory]
+    [InlineData("NETCLAW_Providers=x")]
+    [InlineData("NETCLAW_Providers__main=x")]
+    [InlineData("NETCLAW_Daemon=x")]
+    [InlineData("NETCLAW_Models__Definitions__claude=x")]
+    [InlineData("NETCLAW_McpServers__gh=x")]
+    public void TryParseAll_refuses_a_key_that_names_a_section_and_not_a_setting(string entry)
+    {
+        Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), entry);
+        Assert.Contains("netclaw.json", error, StringComparison.Ordinal);
+    }
+
+    // An entry name in a keyed map is a wildcard, so any provider, model, or server name works.
+    [Theory]
+    [InlineData("NETCLAW_Providers__a_b_c__Type=ollama")]
+    [InlineData("NETCLAW_Models__Definitions__a_b__ModelId=m")]
+    [InlineData("NETCLAW_McpServers__apikey__Url=https://mcp.example/sse")]
+    public void TryParseAll_treats_a_keyed_map_entry_name_as_a_wildcard(string entry)
         => Assert.True(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), error);
 
     // systemd EnvironmentFile= reads a trailing backslash as a line continuation, a leading quote
@@ -355,9 +438,10 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
     [InlineData("NETCLAW_HOME=/x/home\\")]
     [InlineData("NETCLAW_HOME='/x/home")]
     [InlineData("NETCLAW_HOME=\"/x/home")]
-    [InlineData("NETCLAW_LOG_DIR=C:\\logs\\netclaw")]
-    [InlineData("NETCLAW_Contact__Name=it's")]
-    [InlineData("NETCLAW_Contact__Name=say \"hi\"")]
+    [InlineData("NETCLAW_Daemon__Host=C:\\logs\\netclaw")]
+    [InlineData("NETCLAW_Daemon__Host=it's")]
+    [InlineData("NETCLAW_Daemon__Host=say \"hi\"")]
+    [InlineData("NETCLAW_Daemon__Host= padded ")]
     public void TryParseAll_refuses_values_that_systemd_reads_differently(string entry)
     {
         Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), entry);

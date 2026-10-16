@@ -4,9 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Text;
-using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
-using Netclaw.Cli.Doctor;
 using Netclaw.Configuration;
 
 namespace Netclaw.Cli.Daemon;
@@ -171,10 +169,14 @@ internal static class DaemonPathEnvironmentFile
     /// <summary>
     /// Writes the file atomically with owner-only access, because the values are plain text. A
     /// symbolic link stays a link: the write goes to the file that the link names, so a fleet tool
-    /// that links <c>daemon.env</c> keeps its link. A target that cannot be written throws.
+    /// that links <c>daemon.env</c> keeps its link. A link to a missing file, a link to a file that
+    /// another user owns, and a target that cannot be written all throw.
     /// </summary>
     internal static void Write(string envFilePath, string text)
-        => AtomicFile.WriteAllText(ResolveTarget(envFilePath), text, AtomicFile.HardenOwnerOnly);
+    {
+        EnsureLinkIsSafe(envFilePath);
+        AtomicFile.WriteAllText(ResolveTarget(envFilePath), text, AtomicFile.HardenOwnerOnly);
+    }
 
     /// <summary>The file that a write to <paramref name="envFilePath"/> changes. A symbolic link chain resolves to its end.</summary>
     internal static string ResolveTarget(string envFilePath)
@@ -183,6 +185,43 @@ internal static class DaemonPathEnvironmentFile
         return file.LinkTarget is null
             ? envFilePath
             : file.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? envFilePath;
+    }
+
+    /// <summary>
+    /// Throws <see cref="UnsafeEnvFileLinkException"/> when <paramref name="envFilePath"/> is a symbolic link
+    /// that a write or a mode change must not follow. A rename over a file that another user owns takes
+    /// that file over, and a chmod on it fails. A link to a missing file has nothing to read or secure.
+    /// </summary>
+    internal static void EnsureLinkIsSafe(string envFilePath)
+    {
+        var link = new FileInfo(envFilePath);
+        if (link.LinkTarget is null)
+            return;
+
+        var target = link.ResolveLinkTarget(returnFinalTarget: true);
+        if (target is null || !target.Exists)
+        {
+            throw new UnsafeEnvFileLinkException(
+                $"{envFilePath} is a link that points to a missing file, {target?.FullName ?? link.LinkTarget}. "
+                + "Create that file or remove the link, then run the command again.");
+        }
+
+        if (!UnixOwnership.IsSupported)
+            return;
+
+        if (!UnixOwnership.TryGetOwnerId(envFilePath, out var ownerId))
+        {
+            throw new UnsafeEnvFileLinkException(
+                $"{envFilePath} is a link to {target.FullName}, and netclaw cannot read the owner of that file. "
+                + "Netclaw does not write to a file when it cannot check who owns it.");
+        }
+
+        if (ownerId != UnixOwnership.CurrentUserId())
+        {
+            throw new UnsafeEnvFileLinkException(
+                $"{envFilePath} is a link to {target.FullName}, which another user owns (user id {ownerId}). "
+                + "Netclaw does not change a file that another user owns. Replace the link with your own file, or ask the owner of the file to make the change.");
+        }
     }
 
     /// <summary>True when group or others have any access to the file. Always false on Windows.</summary>
@@ -196,11 +235,14 @@ internal static class DaemonPathEnvironmentFile
         return (File.GetUnixFileMode(envFilePath) & groupAndOthers) != 0;
     }
 
-    /// <summary>Sets mode 0600 on the file and changes nothing else. A no-op on Windows.</summary>
+    /// <summary>Sets mode 0600 on the file and changes nothing else. A link to a file that another user owns throws. A no-op on Windows.</summary>
     internal static void RestrictToOwner(string envFilePath)
     {
-        if (!OperatingSystem.IsWindows())
-            File.SetUnixFileMode(envFilePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        if (OperatingSystem.IsWindows())
+            return;
+
+        EnsureLinkIsSafe(envFilePath);
+        File.SetUnixFileMode(envFilePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
     }
 
     private static string? KeyOf(string trimmedLine)
@@ -354,16 +396,17 @@ internal static class DaemonPathEnvironmentFile
 }
 
 /// <summary>
+/// A <c>daemon.env</c> symbolic link that netclaw must not write through. The message names the link and its target.
+/// </summary>
+internal sealed class UnsafeEnvFileLinkException(string message) : IOException(message);
+
+/// <summary>
 /// One <c>KEY=VALUE</c> line that <c>netclaw daemon install --env</c> writes to the daemon
 /// environment file. The daemon reads each <c>NETCLAW_*</c> line through its environment
 /// configuration source, so a key uses the <c>__</c> section separator.
 /// </summary>
 internal readonly partial record struct DaemonEnvAssignment(string Key, string Value)
 {
-    private const string KeyPrefix = "NETCLAW_";
-
-    private static readonly string[] FreeNameSections = ["EnvironmentVariables", "Headers"];
-
     [GeneratedRegex(@"^NETCLAW_[A-Za-z0-9_]+\z")]
     private static partial Regex KeyPattern();
 
@@ -417,13 +460,9 @@ internal readonly partial record struct DaemonEnvAssignment(string Key, string V
                 return false;
             }
 
-            // The credential rule has one owner: the schema fixer decides which key names and
-            // URL shapes hold a credential. It works on names and shapes and cannot prove that
-            // a value is free of secrets.
-            if (HoldsCredential(key, value))
+            if (!DaemonEnvKeyPolicy.TryAccept(key, value, out var refusal))
             {
-                error = $"Refusing to write '{key}' to daemon.env. The key or the value looks like a credential, "
-                    + "and daemon.env is plain text. Store the credential with `netclaw secrets set`.";
+                error = refusal;
                 return false;
             }
 
@@ -432,41 +471,5 @@ internal readonly partial record struct DaemonEnvAssignment(string Key, string V
 
         error = string.Empty;
         return true;
-    }
-
-    // The schema fixer decides by the name of the config property. An --env key holds the whole
-    // path (NETCLAW_McpServers__gh__EnvironmentVariables__GITHUB_PAT), so the rule runs on every
-    // segment. A name inside EnvironmentVariables or Headers is free text, so its last word counts.
-    // A URL with user info is a credential whatever the key says.
-    private static bool HoldsCredential(string key, string value)
-    {
-        if (SchemaFixResolver.HasUrlUserInfo(value))
-            return true;
-
-        var node = JsonValue.Create(value);
-        if (SchemaFixResolver.HoldsCredential(key, node))
-            return true;
-
-        var segments = key[KeyPrefix.Length..].Split("__");
-        for (var i = 0; i < segments.Length; i++)
-        {
-            if (SchemaFixResolver.HoldsCredential(segments[i], node))
-                return true;
-
-            if (i > 0 && FreeNameSections.Contains(segments[i - 1], StringComparer.OrdinalIgnoreCase)
-                && HoldsCredentialInFreeName(segments[i], node))
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    private static bool HoldsCredentialInFreeName(string name, JsonNode? value)
-    {
-        var lastWord = name.Split('_', '-')[^1];
-        return lastWord.Equals("KEY", StringComparison.OrdinalIgnoreCase)
-            || SchemaFixResolver.HoldsCredential(lastWord, value);
     }
 }

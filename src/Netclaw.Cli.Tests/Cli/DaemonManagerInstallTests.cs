@@ -176,7 +176,7 @@ public sealed class DaemonManagerInstallTests : IDisposable
     [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
     [Theory(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
     [InlineData("NETCLAW_Providers__main__ApiKey=sk-test-value")]
-    [InlineData("NETCLAW_Memory__ServerUrl=https://user:pw-test-value@host.example/db")]
+    [InlineData("NETCLAW_Mattermost__ServerUrl=https://user:pw-test-value@chat.example")]
     public async Task Install_with_env_refuses_credential_keys_and_writes_nothing(string entry)
     {
         const string seeded = "HTTP_PROXY=http://proxy.example:3128\nPATH=/old\n";
@@ -330,6 +330,115 @@ public sealed class DaemonManagerInstallTests : IDisposable
         {
             File.SetUnixFileMode(targetDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
         }
+    }
+
+    // A fleet tool can link daemon.env to a path with a relative name.
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Install_writes_through_a_relative_symlink()
+    {
+        var managed = Path.Combine(Path.GetDirectoryName(_paths.DaemonEnvironmentFilePath)!, "managed");
+        Directory.CreateDirectory(managed);
+        var target = Path.Combine(managed, "real.env");
+        File.WriteAllText(target, "HTTP_PROXY=http://proxy.example:3128\nPATH=/old\n");
+        File.CreateSymbolicLink(_paths.DaemonEnvironmentFilePath, Path.Combine("managed", "real.env"));
+
+        var result = await CreateManager(new FakeSystemCommandRunner()).InstallAsync([]);
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(new FileInfo(_paths.DaemonEnvironmentFilePath).LinkTarget);
+        Assert.StartsWith("HTTP_PROXY=http://proxy.example:3128\n", File.ReadAllText(target), StringComparison.Ordinal);
+    }
+
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Install_over_a_symlink_loop_and_over_a_symlink_to_a_directory_fails_and_writes_nothing()
+    {
+        var env = _paths.DaemonEnvironmentFilePath;
+        File.CreateSymbolicLink(env, env + ".b");
+        File.CreateSymbolicLink(env + ".b", env);
+
+        var loop = await CreateManager(new FakeSystemCommandRunner()).InstallAsync([]);
+
+        Assert.False(loop.Success);
+        Assert.False(File.Exists(_unitPath));
+
+        File.Delete(env);
+        File.Delete(env + ".b");
+        var targetDir = Path.Combine(_dir.Path, "adir");
+        Directory.CreateDirectory(targetDir);
+        File.CreateSymbolicLink(env, targetDir);
+
+        var directory = await CreateManager(new FakeSystemCommandRunner()).InstallAsync([]);
+
+        Assert.False(directory.Success);
+        Assert.Empty(Directory.GetFileSystemEntries(targetDir));
+        Assert.False(File.Exists(_unitPath));
+    }
+
+    // A link whose target does not exist gives the operator no file to read. The message names the
+    // link and the missing target, and nothing is created at the target.
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Install_over_a_dangling_symlink_names_the_link_and_the_missing_target()
+    {
+        var target = Path.Combine(_dir.Path, "later", "daemon.env");
+        File.CreateSymbolicLink(_paths.DaemonEnvironmentFilePath, target);
+
+        var result = await CreateManager(new FakeSystemCommandRunner()).InstallAsync([]);
+
+        Assert.False(result.Success);
+        Assert.Contains(_paths.DaemonEnvironmentFilePath, result.Message, StringComparison.Ordinal);
+        Assert.Contains(target, result.Message, StringComparison.Ordinal);
+        Assert.Contains("missing", result.Message, StringComparison.Ordinal);
+        Assert.NotNull(new FileInfo(_paths.DaemonEnvironmentFilePath).LinkTarget);
+        Assert.False(File.Exists(target));
+        Assert.False(Directory.Exists(Path.GetDirectoryName(target)));
+        Assert.False(File.Exists(_unitPath));
+    }
+
+    // Replacing a file that another user owns would take it over, even in a directory that this user
+    // owns. /etc/passwd is a file that root owns on every Linux host.
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Install_refuses_a_symlink_to_a_file_that_another_user_owns()
+    {
+        Assert.SkipWhen(UnixOwnership.CurrentUserId() == 0, "Root owns the target, so the target is not foreign.");
+        const string foreign = "/etc/passwd";
+        File.CreateSymbolicLink(_paths.DaemonEnvironmentFilePath, foreign);
+
+        var result = await CreateManager(new FakeSystemCommandRunner()).InstallAsync([]);
+
+        Assert.False(result.Success);
+        Assert.Contains(_paths.DaemonEnvironmentFilePath, result.Message, StringComparison.Ordinal);
+        Assert.Contains(foreign, result.Message, StringComparison.Ordinal);
+        Assert.Contains("another user", result.Message, StringComparison.Ordinal);
+        Assert.Equal(foreign, new FileInfo(_paths.DaemonEnvironmentFilePath).LinkTarget);
+        Assert.False(File.Exists(_unitPath));
+        Assert.Empty(Directory.GetFiles("/etc", "passwd.tmp-*"));
+    }
+
+    // Uninstall still removes the unit, runs daemon-reload, and reports the file that it could not
+    // secure. The exit code is not zero.
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Uninstall_keeps_going_and_fails_when_the_kept_file_belongs_to_another_user()
+    {
+        Assert.SkipWhen(UnixOwnership.CurrentUserId() == 0, "Root owns the target, so the target is not foreign.");
+        const string foreign = "/etc/passwd";
+        File.CreateSymbolicLink(_paths.DaemonEnvironmentFilePath, foreign);
+        Directory.CreateDirectory(DaemonManager.SystemdUserUnitDirectory);
+        File.WriteAllText(_unitPath, "[Service]\n");
+        var runner = new FakeSystemCommandRunner();
+
+        var result = await CreateManager(runner).UninstallAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains(_paths.DaemonEnvironmentFilePath, result.Message, StringComparison.Ordinal);
+        Assert.Contains("another user", result.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(_unitPath));
+        Assert.Contains(("systemctl", "--user daemon-reload"), runner.Commands);
+        Assert.Equal(foreign, new FileInfo(_paths.DaemonEnvironmentFilePath).LinkTarget);
     }
 
     private DaemonManager CreateManager(FakeSystemCommandRunner runner)

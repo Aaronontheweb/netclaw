@@ -395,9 +395,10 @@ public sealed class DoctorFixService
     /// <summary>
     /// Writes every fix in the plan. A fix that deletes user data first copies the original file
     /// to a backup. All backups are written before the first file changes, so a failed backup
-    /// leaves every file as it was. Returns the backup paths.
+    /// leaves every file as it was. A fix that cannot be written does not stop the others: the result
+    /// lists it with the reason. Returns the backup paths and the failed fixes.
     /// </summary>
-    public Task<IReadOnlyList<string>> ApplyAsync(DoctorFixPlan plan, CancellationToken cancellationToken = default)
+    public Task<DoctorFixApplyResult> ApplyAsync(DoctorFixPlan plan, CancellationToken cancellationToken = default)
     {
         var backups = new List<string>();
         foreach (var fix in plan.Fixes)
@@ -411,50 +412,62 @@ public sealed class DoctorFixService
             }
         }
 
+        var failures = new List<DoctorFixFailure>();
         foreach (var fix in plan.Fixes)
         {
-            // The grant store has its own lock. The write fails when the store changed after the plan.
-            if (string.Equals(fix.FilePath, _paths.ToolApprovalsPath, StringComparison.Ordinal))
+            try
             {
-                var change = ToolApprovalHygieneDoctorCheck.CreateStore(_paths).TryApplyHygiene(
-                    new ApprovalHygieneReport([], fix.OriginalText, fix.UpdatedText));
-                if (change is ApprovalStoreChangeResult.Unavailable unavailable)
-                {
-                    throw new InvalidOperationException(
-                        $"The grant store changed or is unavailable ({unavailable.Failure}). Run `netclaw doctor --fix` again.");
-                }
-
-                continue;
+                ApplyFix(fix, cancellationToken);
             }
-
-            // daemon.env holds plain-text values, so the file is owner-only. A fix with equal texts
-            // changes the mode and nothing else. Any other fix writes through a symbolic link.
-            if (string.Equals(fix.FilePath, _paths.DaemonEnvironmentFilePath, StringComparison.Ordinal))
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                if (string.Equals(fix.OriginalText, fix.UpdatedText, StringComparison.Ordinal))
-                    DaemonPathEnvironmentFile.RestrictToOwner(fix.FilePath);
-                else
-                    DaemonPathEnvironmentFile.Write(fix.FilePath, fix.UpdatedText);
-
-                continue;
+                failures.Add(new DoctorFixFailure(fix.FilePath, fix.Description, ex.Message));
             }
-
-            // Ensure the parent directory exists before writing. The daemon-PATH fix can
-            // target ~/.netclaw/config even after that directory has been removed, so a bare
-            // File.WriteAllTextAsync would throw DirectoryNotFoundException and abort the run.
-            var dir = Path.GetDirectoryName(fix.FilePath);
-            if (!string.IsNullOrEmpty(dir))
-                Directory.CreateDirectory(dir);
-
-            cancellationToken.ThrowIfCancellationRequested();
-            // The rewrite keeps the file's mode: a netclaw.json that holds a token and is
-            // owner-only must not come back readable by others.
-            AtomicFile.WriteAllText(fix.FilePath, fix.UpdatedText, temp => CopyFileMode(fix.FilePath, temp));
         }
 
-        return Task.FromResult<IReadOnlyList<string>>(backups);
+        return Task.FromResult(new DoctorFixApplyResult(backups, failures));
     }
 
+    private void ApplyFix(DoctorFileFix fix, CancellationToken cancellationToken)
+    {
+        // The grant store has its own lock. The write fails when the store changed after the plan.
+        if (string.Equals(fix.FilePath, _paths.ToolApprovalsPath, StringComparison.Ordinal))
+        {
+            var change = ToolApprovalHygieneDoctorCheck.CreateStore(_paths).TryApplyHygiene(
+                new ApprovalHygieneReport([], fix.OriginalText, fix.UpdatedText));
+            if (change is ApprovalStoreChangeResult.Unavailable unavailable)
+            {
+                throw new InvalidOperationException(
+                    $"The grant store changed or is unavailable ({unavailable.Failure}). Run `netclaw doctor --fix` again.");
+            }
+
+            return;
+        }
+
+        // daemon.env holds plain-text values, so the file is owner-only. A fix with equal texts
+        // changes the mode and nothing else. Any other fix writes through a symbolic link.
+        if (string.Equals(fix.FilePath, _paths.DaemonEnvironmentFilePath, StringComparison.Ordinal))
+        {
+            if (string.Equals(fix.OriginalText, fix.UpdatedText, StringComparison.Ordinal))
+                DaemonPathEnvironmentFile.RestrictToOwner(fix.FilePath);
+            else
+                DaemonPathEnvironmentFile.Write(fix.FilePath, fix.UpdatedText);
+
+            return;
+        }
+
+        // Ensure the parent directory exists before writing. The daemon-PATH fix can
+        // target ~/.netclaw/config even after that directory has been removed, so a bare
+        // File.WriteAllTextAsync would throw DirectoryNotFoundException and abort the run.
+        var dir = Path.GetDirectoryName(fix.FilePath);
+        if (!string.IsNullOrEmpty(dir))
+            Directory.CreateDirectory(dir);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        // The rewrite keeps the file's mode: a netclaw.json that holds a token and is
+        // owner-only must not come back readable by others.
+        AtomicFile.WriteAllText(fix.FilePath, fix.UpdatedText, temp => CopyFileMode(fix.FilePath, temp));
+    }
 }
 
 /// <summary>
@@ -525,6 +538,11 @@ public sealed record DoctorFixPlan(IReadOnlyList<DoctorFileFix> Fixes)
 {
     public bool HasChanges => Fixes.Count > 0;
 }
+
+/// <summary>The backups that an apply wrote and the fixes that it could not write.</summary>
+public sealed record DoctorFixApplyResult(IReadOnlyList<string> Backups, IReadOnlyList<DoctorFixFailure> Failures);
+
+public sealed record DoctorFixFailure(string FilePath, string Description, string Message);
 
 public sealed record DoctorFileFix(
     string FilePath,

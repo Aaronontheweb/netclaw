@@ -966,11 +966,18 @@ the file that the link names, and the link stays. `netclaw doctor` reports a fil
 can read, and `netclaw doctor --fix` sets mode 0600 and changes nothing else.
 
 Add a line with `netclaw daemon install --env KEY=VALUE`. A key starts with `NETCLAW_` and uses
-`__` as the section separator. Repeat `--env` for more lines. The command refuses a value that
-holds a backslash, a quote, or a space at its start or end, because systemd reads these in a
-different way. It refuses a key or a URL that looks like a credential, and a URL with user info
-under any key. Store a credential with `netclaw secrets set`. `netclaw daemon install` refuses an
-argument that it does not know.
+`__` as the section separator. Repeat `--env` for more lines. The command accepts a key only when the
+`netclaw.json` schema declares the property. The name of a provider, a model, or an MCP server can be
+any name. A key under `EnvironmentVariables`, `Headers`, or `VendorOptions` is refused, because the
+command cannot tell a credential from a setting there. A property that holds a credential, for example
+`ApiKey`, is refused too, and so is a URL with user info under any key. Set such a value in
+`netclaw.json`, and store a credential with `netclaw secrets set`. The command also refuses a value
+that holds a backslash, a quote, or a space at its start or end, because systemd reads these in a
+different way. `netclaw daemon install` refuses an argument that it does not know.
+
+If `daemon.env` is a link to a file that another user owns, or to a file that does not exist, install,
+`doctor --fix`, and uninstall stop and print both paths. When one fix of `doctor --fix` fails, the other
+fixes still apply, and the command exits with a non-zero code.
 
 `netclaw daemon uninstall` deletes `daemon.env` only when every line is one of these: a blank
 line, a comment line that starts with `#` or `;`, or a line that starts with `PATH=`. Leading
@@ -978,10 +985,10 @@ spaces do not count. Any other line, for example `export PATH=...` or `NETCLAW_H
 file. The command then prints the path and sets mode 0600.
 
 The install scripts (`install.sh` and `install.ps1`) read `NETCLAW_HOME` for the config directory.
-`install.sh` uses `<home>/bin` and `<home>/env` for a fresh install. If `~/.netclaw/bin` already
-holds `netclaw` or `netclawd` and `INSTALL_DIR` is not set, `install.sh` upgrades there, keeps the
-env script at `~/.netclaw/env`, and prints that directory. `CONFIG_DIR` and `NETCLAW_CONFIG_DIR` no
-longer work.
+`install.sh` uses `<home>/bin` and `<home>/env` for a fresh install. When `INSTALL_DIR` is not set, it
+upgrades an install that sits in `<home>/bin`. Else, if `~/.netclaw/bin` holds `netclaw` or
+`netclawd`, it upgrades there, keeps the env script at `~/.netclaw/env`, and prints that directory.
+`CONFIG_DIR` and `NETCLAW_CONFIG_DIR` no longer work.
 
 ## Identity
 

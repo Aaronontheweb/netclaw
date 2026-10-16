@@ -374,30 +374,52 @@ must match `NETCLAW_[A-Za-z0-9_]+`, a value must stay on one line, and the same 
 once. A value must not hold `\`, `'`, or `"`, and it must not start or end with a space. systemd
 reads these characters in an `EnvironmentFile=` as a line continuation, a quote, an escape, or a
 trim, so the daemon would see another value. Install refuses the value and does not change it.
-Install refuses a key or a URL value that `SchemaFixResolver.HoldsCredential` marks as a
-credential. The check runs on the whole key, on each `__` segment, and on the last word of a name
-under `EnvironmentVariables` or `Headers`. It also refuses a URL with user info under any key. The
-message names `netclaw secrets set`. That check works on key names and URL shapes. It does not
-prove that a value holds no secret. Install checks every entry before it runs `systemctl` or
+The embedded config schema is the allow-list for the key. Install accepts `NETCLAW_<path>` only when
+`<path>` names a property that `netclaw-config.v1.schema.json` declares. The match ignores case. The
+name of an entry in a keyed map (a provider, a model definition, an MCP server, a channel id)
+matches as a wildcard, and the property after it must be declared. `NETCLAW_Providers__main__Type`
+passes. `NETCLAW_Providers__main__Typo` fails. A key under a free-form section (`EnvironmentVariables`,
+`Headers`, `VendorOptions`, or a map of free text) fails, because the schema gives no meaning to a name
+there and netclaw cannot tell a credential from a setting. `NETCLAW_McpServers__db__EnvironmentVariables__SMTP_PASS`
+fails for that reason. A key that names a section and not a property fails. `NETCLAW_HOME` and
+`NETCLAW_DAEMON_ENDPOINT` are process settings that no schema describes, and both pass. A declared
+property that holds a credential fails: `SchemaFixResolver.HoldsCredential` decides by the property name,
+for example `ApiKey`, `OAuthRefreshToken`, or `OAuthClientSecret`. That rule skips a property that cannot
+hold text, so `Session__FirstTokenTimeoutSeconds` passes. A URL with user info fails under any key. Each
+refusal names the key and says why. It points to `netclaw secrets set` for a credential and to
+`netclaw.json` for any other setting. No message holds a value. The check works on key paths and URL
+shapes. It does not prove that a value holds no secret. Install checks every entry before it runs `systemctl` or
 writes a file. `daemon install` refuses an argument other than `--env KEY=VALUE`.
 
-If `daemon.env` is a symbolic link, install and `doctor --fix` write to the file that the link
-names, atomically, and the link stays. A target that cannot be written stops the command with the
-path. `netclaw doctor` reports a `daemon.env` that group or others can access. `doctor --fix` sets
-mode 0600 on it and changes nothing else.
+If `daemon.env` is a symbolic link, install and `doctor --fix` write through the link to the file that
+it names, atomically, and the link stays. Three cases stop the command with the path of the link and the
+path of the target. The target does not exist. Another user owns the target: install, `doctor --fix`,
+and uninstall compare the owner of the target with the current user and do not change the file. Or the
+target cannot be written. The Linux kernel call `statx` gives the owner, so the check runs on Linux
+only. `netclaw doctor` reports a `daemon.env` that group or others can access. `doctor --fix` sets
+mode 0600 on it and changes nothing else. When one fix cannot be written, `doctor --fix` applies the
+other fixes, prints the path and the reason of the failed fix, and exits with a non-zero code.
+
+A write to `daemon.env` creates the temporary file with mode 0600, so the plain text is never readable by
+group or others, not even before the rename. `AtomicFile.WriteAllText` does this for every write that
+passes a permission callback. `secrets.json` and `devices.json` use the same path. A `netclaw.json`
+that netclaw creates new is therefore mode 0600, and a rewrite copies the mode of the file that it replaces.
 
 `netclaw daemon uninstall` stops the service and removes the unit file. It removes `daemon.env`
 only when every line is blank, is a comment that starts with `#` or `;`, or starts with `PATH=`.
 Leading spaces do not count. Any other line keeps the file, for example `export PATH=/a`. Uninstall
-then prints the path and sets mode 0600. Uninstall leaves `secrets.json` and `netclaw.json` in
+then prints the path and sets mode 0600. When uninstall cannot set the mode, for example on a link to a
+file that another user owns, it still removes the unit and runs `daemon-reload`. It then prints the
+path and the reason, and exits with a non-zero code. Uninstall leaves `secrets.json` and `netclaw.json` in
 place.
 
 The install scripts honor `NETCLAW_HOME` with the `NetclawPaths` rules (`~`, `$HOME`, `${HOME}`,
 and `%USERPROFILE%` expand, a blank value is unset, a relative path resolves against the working
 directory). Both scripts use `<home>/config`. A fresh `install.sh` also uses `<home>/bin` and
-`<home>/env`. An upgrade does not move an install. If `$HOME/.netclaw/bin` holds `netclaw` or
-`netclawd` and `INSTALL_DIR` is not set, `install.sh` upgrades there and keeps the env script at
-`$HOME/.netclaw/env`. It prints the directory. `INSTALL_DIR` always wins. `install.ps1` keeps its
+`<home>/env`. An upgrade does not move an install. The order of the rules: `INSTALL_DIR` always wins.
+Else an install that sits in `<home>/bin` is upgraded there. Else, if `$HOME/.netclaw/bin` holds
+`netclaw` or `netclawd`, `install.sh` upgrades there, keeps the env script at `$HOME/.netclaw/env`, and
+prints the directory. Else it is a fresh install under `<home>`. `install.ps1` keeps its
 own install directory. `CONFIG_DIR` and `NETCLAW_CONFIG_DIR` no longer have an effect.
 
 ### Service Registration (macOS)

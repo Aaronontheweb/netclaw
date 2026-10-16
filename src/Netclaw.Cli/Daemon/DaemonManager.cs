@@ -360,11 +360,17 @@ public sealed partial class DaemonManager
         var capturedPath = DaemonPathEnvironmentFile.CaptureCurrentPath();
         Directory.CreateDirectory(Path.GetDirectoryName(envFilePath)!);
 
+        // File.Exists is true for a link to a missing file, so the link check runs before the read.
         string? existingEnvText = null;
         try
         {
+            DaemonPathEnvironmentFile.EnsureLinkIsSafe(envFilePath);
             if (File.Exists(envFilePath))
                 existingEnvText = await File.ReadAllTextAsync(envFilePath);
+        }
+        catch (UnsafeEnvFileLinkException ex)
+        {
+            return new DaemonResult(false, ex.Message);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -508,9 +514,27 @@ public sealed partial class DaemonManager
         if (File.Exists(unitPath))
             File.Delete(unitPath);
 
-        var keptEnvFile = RemoveDaemonEnvironmentFile();
+        // A file that netclaw cannot secure must not skip the daemon-reload. The result reports it after.
+        string? keptEnvFile;
+        string? envFileProblem = null;
+        try
+        {
+            keptEnvFile = RemoveDaemonEnvironmentFile();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            keptEnvFile = _paths.DaemonEnvironmentFilePath;
+            envFileProblem = ex.Message;
+        }
 
         await RunCommandAsync("systemctl", "--user daemon-reload");
+
+        if (envFileProblem is not null)
+        {
+            return new DaemonResult(false,
+                $"Service uninstalled, but netclaw could not secure {keptEnvFile}: {envFileProblem}\n"
+                + "The file holds lines that you wrote. Set its mode to 0600 by hand, or delete it when you do not need it.");
+        }
 
         return new DaemonResult(true, keptEnvFile is null
             ? "Service uninstalled."

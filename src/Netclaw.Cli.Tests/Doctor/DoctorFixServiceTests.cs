@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Netclaw.Tests.Utilities;
 using Netclaw.Cli.Daemon;
+using Netclaw.Cli.Tests.Cli;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Netclaw.Cli.Config;
@@ -19,6 +20,8 @@ namespace Netclaw.Cli.Tests.Doctor;
 [Collection(Netclaw.Cli.Tests.LegacyModelEnvironmentCollection.Name)]
 public sealed class DoctorFixServiceTests : IDisposable
 {
+    public static bool IsLinux => OperatingSystem.IsLinux();
+
     private readonly DisposableTempDir _temp = new();
 
     public void Dispose() => _temp.Dispose();
@@ -335,6 +338,54 @@ public sealed class DoctorFixServiceTests : IDisposable
         Assert.Equal(
             UnixFileMode.UserRead | UnixFileMode.UserWrite,
             File.GetUnixFileMode(paths.DaemonEnvironmentFilePath));
+    }
+
+    // The mode fix on a link to a file that another user owns cannot work. The other planned fixes
+    // still apply, the failed fix is reported with its path, and no fix aborts the run.
+    [SlopwatchSuppress("SW001", "The owner lookup is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "The owner lookup is Linux-only.")]
+    public async Task Apply_reports_a_failed_fix_and_still_applies_the_other_fixes()
+    {
+        Assert.SkipWhen(UnixOwnership.CurrentUserId() == 0, "Root owns the target, so the target is not foreign.");
+        var paths = NewPaths();
+        const string foreign = "/etc/passwd";
+        File.CreateSymbolicLink(paths.DaemonEnvironmentFilePath, foreign);
+        await File.WriteAllTextAsync(
+            paths.NetclawConfigPath,
+            """{"configVersion":1,"Slack":{"Enabled":false,"Comment":"mine"}}""",
+            TestContext.Current.CancellationToken);
+        var service = new DoctorFixService(paths, Path.Combine(paths.BasePath, "unused.service"), systemdEnabled: false);
+
+        var plan = await service.BuildPlanAsync(TestContext.Current.CancellationToken);
+        var result = await service.ApplyAsync(plan, TestContext.Current.CancellationToken);
+
+        Assert.Contains(plan.Fixes, fix => fix.FilePath == paths.DaemonEnvironmentFilePath);
+        var failure = Assert.Single(result.Failures);
+        Assert.Equal(paths.DaemonEnvironmentFilePath, failure.FilePath);
+        Assert.Contains("another user", failure.Message, StringComparison.Ordinal);
+        Assert.Contains(foreign, failure.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("Comment", await File.ReadAllTextAsync(paths.NetclawConfigPath, TestContext.Current.CancellationToken), StringComparison.Ordinal);
+        Assert.Single(result.Backups);
+        Assert.Equal(foreign, new FileInfo(paths.DaemonEnvironmentFilePath).LinkTarget);
+    }
+
+    [SlopwatchSuppress("SW001", "The owner lookup is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "The owner lookup is Linux-only.")]
+    public async Task Apply_reports_a_dangling_daemon_env_link_with_both_paths_and_does_not_create_the_target()
+    {
+        var paths = NewPaths();
+        var target = Path.Combine(_temp.Path, "later", "daemon.env");
+        File.CreateSymbolicLink(paths.DaemonEnvironmentFilePath, target);
+        var service = new DoctorFixService(paths, Path.Combine(paths.BasePath, "unused.service"), systemdEnabled: false);
+        var plan = new DoctorFixPlan([new DoctorFileFix(paths.DaemonEnvironmentFilePath, "Rewrite daemon.env.", "PATH=/old\n", "PATH=/new\n")]);
+
+        var result = await service.ApplyAsync(plan, TestContext.Current.CancellationToken);
+
+        var failure = Assert.Single(result.Failures);
+        Assert.Contains(paths.DaemonEnvironmentFilePath, failure.Message, StringComparison.Ordinal);
+        Assert.Contains(target, failure.Message, StringComparison.Ordinal);
+        Assert.Contains("missing", failure.Message, StringComparison.Ordinal);
+        Assert.False(File.Exists(target));
     }
 
     [Fact]
