@@ -65,14 +65,7 @@ public sealed class LoopbackAuthenticationHandler : AuthenticationHandler<Authen
         var request = Context.Request;
         var refusal = LoopbackHostOriginPolicy.FindRefusal(request.Host, request.Headers.Origin);
         if (refusal is not null)
-        {
-            Logger.LogWarning(
-                "Refused loopback request: {Reason}. Host={Host} Origin={Origin}",
-                refusal,
-                request.Host.Value,
-                request.Headers.Origin.ToString());
             return Task.FromResult(AuthenticateResult.Fail(refusal));
-        }
 
         var claims = new[]
         {
@@ -88,6 +81,24 @@ public sealed class LoopbackAuthenticationHandler : AuthenticationHandler<Authen
         var ticket = new AuthenticationTicket(principal, SchemeName);
 
         return Task.FromResult(AuthenticateResult.Success(ticket));
+    }
+
+    // Anonymous routes run this scheme too and answer 200, so only a real denial is logged:
+    // a web page must not fill the log through a route that needs no authentication.
+    protected override async Task HandleChallengeAsync(AuthenticationProperties properties)
+    {
+        var result = await HandleAuthenticateOnceSafeAsync();
+        if (result.Failure is not null)
+        {
+            var request = Context.Request;
+            Logger.LogWarning(
+                "Refused loopback request: {Reason}. Host={Host} Origin={Origin}",
+                result.Failure.Message,
+                request.Host.Value,
+                request.Headers.Origin.ToString());
+        }
+
+        await base.HandleChallengeAsync(properties);
     }
 
     private static bool IsLoopback(IPAddress address)
