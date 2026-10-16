@@ -12,23 +12,26 @@ public static class DaemonConfigurationSources
 {
     /// <summary>
     /// Adds the daemon configuration sources. A later source overrides an earlier source:
-    /// netclaw.json, then secrets.json, then <c>NETCLAW_*</c> environment variables.
+    /// netclaw.json, then secrets.json, then oauth-state.json, then <c>NETCLAW_*</c> environment
+    /// variables. oauth-state.json holds only token expiry, so it overrides the retired
+    /// <c>OAuthTokenExpiry</c> key in netclaw.json.
     /// </summary>
     public static IConfigurationBuilder AddNetclawDaemonSources(this IConfigurationBuilder builder, NetclawPaths paths)
         => builder
             .AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false)
             .AddJsonFile(paths.SecretsPath, optional: true, reloadOnChange: false)
+            .AddJsonFile(paths.OAuthStatePath, optional: true, reloadOnChange: false)
             .AddEnvironmentVariables("NETCLAW_");
 
     /// <summary>
-    /// One line for a netclaw.json or secrets.json that the JSON provider could not load:
+    /// One line for a configuration file that the JSON provider could not load:
     /// <c>Couldn't read &lt;file&gt;: &lt;reason&gt;</c>. The provider wraps the cause in
     /// <see cref="InvalidDataException"/> and <see cref="FormatException"/>; the innermost message
     /// says what is wrong, with line and position for a parse error.
     /// </summary>
     public static string DescribeLoadFailure(Exception ex)
     {
-        var file = "netclaw.json or secrets.json";
+        var file = "netclaw.json, secrets.json, or oauth-state.json";
         for (var e = ex; e is not null; e = e.InnerException)
         {
             const string prefix = "Failed to load configuration from file '";

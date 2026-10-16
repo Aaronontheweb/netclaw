@@ -36,7 +36,7 @@ internal static class CliConfigPreflight
             return builder.AddNetclawDaemonSources(paths);
 
         // Leave out only the file that cannot be loaded; the other still says where the daemon is.
-        foreach (var file in new[] { paths.NetclawConfigPath, paths.SecretsPath })
+        foreach (var file in new[] { paths.NetclawConfigPath, paths.SecretsPath, paths.OAuthStatePath })
         {
             if (!TryDescribeUnreadableFile(file, out _, out _))
                 builder.AddJsonFile(file, optional: true, reloadOnChange: false);
@@ -51,7 +51,7 @@ internal static class CliConfigPreflight
     /// </summary>
     public static bool TryDescribeUnreadableConfig(NetclawPaths paths, out string message, out string fix)
     {
-        foreach (var file in new[] { paths.NetclawConfigPath, paths.SecretsPath })
+        foreach (var file in new[] { paths.NetclawConfigPath, paths.SecretsPath, paths.OAuthStatePath })
         {
             if (TryDescribeUnreadableFile(file, out message, out fix))
                 return true;

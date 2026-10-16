@@ -162,7 +162,10 @@ public sealed class ProviderOAuthTokenRefreshServiceTests
         using var configDoc = JsonDocument.Parse(File.ReadAllText(paths.NetclawConfigPath));
         var configProvider = configDoc.RootElement.GetProperty("Providers").GetProperty("openai-codex");
         Assert.Equal("openai", configProvider.GetProperty("Type").GetString());
-        Assert.Equal(now.AddHours(1), DateTimeOffset.Parse(configProvider.GetProperty("OAuthTokenExpiry").GetString()!));
+        Assert.False(configProvider.TryGetProperty("OAuthTokenExpiry", out _));
+
+        Assert.True(OAuthStateStore.TryGetExpiry(paths, "openai-codex", out var storedExpiry));
+        Assert.Equal(now.AddHours(1), storedExpiry);
     }
 
     [Fact]

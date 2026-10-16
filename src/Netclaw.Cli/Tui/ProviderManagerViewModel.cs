@@ -998,6 +998,8 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
             wrote = true;
         }
 
+        OAuthStateStore.Remove(_paths, RemoveProviderName);
+
         if (wrote)
             StatusMessage.Value = $"Removed provider '{RemoveProviderName}'. {ConfigFileHelper.DaemonAppliesChange}";
         RemoveProviderName = null;

@@ -11,7 +11,7 @@ namespace Netclaw.Cli.Provider;
 
 /// <summary>
 /// Renames a provider entry across <c>netclaw.json</c> and
-/// <c>.secrets/netclaw-secrets.json</c>. Swaps the <c>Providers</c>
+/// <c>secrets.json</c>, and moves the token expiry in <c>oauth-state.json</c>. Swaps the <c>Providers</c>
 /// dictionary key and cascades the rename to any
 /// <c>Models.{Main,Fallback,Compaction}.Provider</c> entries that pointed
 /// at the old name, so the daemon never sees a dangling reference after
@@ -85,6 +85,8 @@ internal static class ProviderRenamer
             secretProviders[trimmed] = secretEntry;
             ConfigFileHelper.WriteSecretsFile(paths, secrets);
         }
+
+        OAuthStateStore.Rename(paths, oldName, trimmed);
 
         return RenameResult.Ok(reassigned);
     }

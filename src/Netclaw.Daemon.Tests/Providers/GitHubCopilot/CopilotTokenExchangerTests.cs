@@ -205,9 +205,8 @@ public sealed class CopilotTokenExchangerTests
         Assert.Equal("oauth-new", secretProvider.GetProperty("OAuthAccessToken").GetString());
         Assert.Equal("refresh-new", secretProvider.GetProperty("OAuthRefreshToken").GetString());
 
-        using var configDoc = JsonDocument.Parse(File.ReadAllText(paths.NetclawConfigPath));
-        var configProvider = configDoc.RootElement.GetProperty("Providers").GetProperty("copilot");
-        Assert.Equal(now.AddHours(1), DateTimeOffset.Parse(configProvider.GetProperty("OAuthTokenExpiry").GetString()!));
+        Assert.True(OAuthStateStore.TryGetExpiry(paths, "copilot", out var storedExpiry));
+        Assert.Equal(now.AddHours(1), storedExpiry);
 
         HttpResponseMessage CaptureExchangeRequest(HttpRequestMessage request)
         {

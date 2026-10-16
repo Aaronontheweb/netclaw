@@ -45,6 +45,18 @@ public sealed class CliConfigPreflightTests : IDisposable
     }
 
     [Fact]
+    public void An_oauth_state_file_that_cannot_be_read_is_named_in_the_preflight_message()
+    {
+        File.WriteAllText(_paths.OAuthStatePath, "{ broken");
+
+        var unreadable = CliConfigPreflight.TryDescribeUnreadableConfig(_paths, out var message, out var fix);
+
+        Assert.True(unreadable);
+        Assert.StartsWith("Couldn't read oauth-state.json:", message);
+        Assert.Contains(_paths.OAuthStatePath, fix);
+    }
+
+    [Fact]
     public void TryWriteMissingConfig_Json_PrintsNotConfiguredPayload()
     {
         using var writer = new StringWriter();

@@ -106,6 +106,13 @@ public sealed class NetclawPaths
     public string SecretsPath => Path.Combine(ConfigDirectory, "secrets.json");
     public string DevicesPath => Path.Combine(ConfigDirectory, "devices.json");
     public string BootstrapStatePath => Path.Combine(ConfigDirectory, "bootstrap-state.json");
+
+    /// <summary>
+    /// Runtime OAuth state that the daemon writes on a token refresh. It holds only the
+    /// token expiry of each provider. The daemon does not watch this file, so a refresh
+    /// does not restart the daemon. It is a configuration source after secrets.json.
+    /// </summary>
+    public string OAuthStatePath => Path.Combine(ConfigDirectory, "oauth-state.json");
     public string LogsDirectory => Path.Combine(BasePath, "logs");
     public string RuntimeDirectory => Path.Combine(BasePath, "runtime");
     /// <summary>
