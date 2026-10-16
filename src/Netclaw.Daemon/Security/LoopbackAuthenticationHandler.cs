@@ -4,7 +4,6 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Net;
-using System.Net.Sockets;
 using System.Security.Claims;
 using System.Text.Encodings.Web;
 using Microsoft.AspNetCore.Authentication;
@@ -107,12 +106,14 @@ public sealed class LoopbackAuthenticationHandler : AuthenticationHandler<Authen
 }
 
 /// <summary>
-/// The fixed Host and Origin rule for loopback operator trust. The loopback name rule is
-/// <see cref="DaemonExposureValidator.IsLoopbackHost"/>, so a <c>Daemon.Host</c> that passes
-/// configuration validation passes this rule. A browser always sends a
-/// <c>Host</c> equal to the name in its address bar and an <c>Origin</c> that names the
-/// page that made a cross-site request. The daemon serves plain HTTP in Local mode, so
-/// the only valid Origin is <c>http://</c> plus the request Host.
+/// The fixed Host and Origin rule for loopback operator trust. The Host name must pass
+/// <see cref="LoopbackHostName.IsStrictLoopback"/>: <c>localhost</c> or the canonical text of a
+/// loopback IP literal. The rule does not use the bind validator, so a wider bind value
+/// cannot widen request admission. A <c>Daemon.Host</c> value reaches the daemon through the
+/// CLI <c>Uri</c>, which rewrites a short form to canonical text, and the Host text must be
+/// canonical. A browser always sends a <c>Host</c> equal to the name in its address bar and an
+/// <c>Origin</c> that names the page that made a cross-site request. The daemon serves plain
+/// HTTP in Local mode, so the only valid Origin is <c>http://</c> plus the request Host.
 /// </summary>
 internal static class LoopbackHostOriginPolicy
 {
@@ -141,23 +142,10 @@ internal static class LoopbackHostOriginPolicy
         if (!value.StartsWith(name, StringComparison.Ordinal) || !IsEmptyOrPortSuffix(value.AsSpan(name.Length)))
             return false;
 
+        // An IPv6 literal must have brackets in a Host header, and a name or IPv4 literal must not.
         var bracketed = name.StartsWith('[') && name.EndsWith(']');
         var text = bracketed ? name[1..^1] : name;
-        return DaemonExposureValidator.IsLoopbackHost(text) && IsCanonicalLoopbackForm(text, bracketed);
-    }
-
-    // The shared rule trusts every IP literal of 127.0.0.0/8 and ::1, because a rebinding page
-    // controls a DNS name and not an IP literal. It also parses legacy spellings such as
-    // "127.1", "0x7f.1", "2130706433", and "::ffff:127.0.0.1". A browser sends none of them
-    // for a daemon address, so only the canonical text of the address is admitted.
-    private static bool IsCanonicalLoopbackForm(string text, bool bracketed)
-    {
-        if (!IPAddress.TryParse(text, out var address))
-            return !bracketed && text == text.Trim();
-
-        return address.ToString() == text
-               && !address.IsIPv4MappedToIPv6
-               && (address.AddressFamily == AddressFamily.InterNetworkV6) == bracketed;
+        return text.Contains(':', StringComparison.Ordinal) == bracketed && LoopbackHostName.IsStrictLoopback(text);
     }
 
     private static bool IsEmptyOrPortSuffix(ReadOnlySpan<char> suffix)

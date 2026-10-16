@@ -41,7 +41,7 @@ read -r enforce_start enforce_end enforce_first enforce_last \
 )
 
 report="$output_path/reports/mutation-report.json"
-expected_count=42
+expected_count=33
 tested_count="$(
   jq '[.files[].mutants[] | select(.status != "Ignored" and .status != "CompileError")] | length' "$report"
 )"
@@ -60,5 +60,30 @@ if [[ "$tested_count" -ne "$expected_count" || "$killed_count" -ne "$expected_co
       || "$span_mutants" -ne "$expected_count" ]]; then
   echo "Expected $expected_count killed loopback Host and Origin mutants." >&2
   echo "Found $killed_count killed from $tested_count tested; span=$span_mutants." >&2
+  exit 1
+fi
+
+# The strict name test sits in Netclaw.Configuration, below both the bind validator and the
+# policy. A mutant that widens it widens request admission, so each mutant must die.
+predicate_output="$output_path/predicate"
+(
+  cd "$test_project"
+  dotnet stryker \
+    --config-file stryker-config.json \
+    --project Netclaw.Configuration.csproj \
+    --mutate "LoopbackHostName.cs" \
+    --output "$predicate_output" \
+    --skip-version-check
+)
+
+predicate_report="$predicate_output/reports/mutation-report.json"
+predicate_expected=8
+predicate_tested="$(
+  jq '[.files[].mutants[] | select(.status != "Ignored" and .status != "CompileError")] | length' "$predicate_report"
+)"
+predicate_killed="$(jq '[.files[].mutants[] | select(.status == "Killed")] | length' "$predicate_report")"
+if [[ "$predicate_tested" -ne "$predicate_expected" || "$predicate_killed" -ne "$predicate_expected" ]]; then
+  echo "Expected $predicate_expected killed strict loopback name mutants." >&2
+  echo "Found $predicate_killed killed from $predicate_tested tested." >&2
   exit 1
 fi
