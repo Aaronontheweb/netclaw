@@ -21,9 +21,10 @@ public static class AtomicFile
 {
     /// <summary>
     /// Write <paramref name="contents"/> to <paramref name="path"/> atomically. Parent directories
-    /// are created as needed. When <paramref name="hardenTempPermissions"/> is supplied it runs on
-    /// the temporary file BEFORE the rename, so the destination is never momentarily exposed with
-    /// looser permissions than the final file.
+    /// are created as needed. When <paramref name="hardenTempPermissions"/> is supplied, the temporary
+    /// file is created owner-only (mode 0600 on Linux and macOS), so the plain text is never readable
+    /// by group or others, and the callback runs on it BEFORE the rename. The callback can set the
+    /// mode of the final file, for example a copy of the mode of the file that it replaces.
     /// </summary>
     public static void WriteAllText(string path, string contents, Action<string>? hardenTempPermissions = null)
     {
@@ -36,7 +37,19 @@ public static class AtomicFile
         var temp = path + ".tmp-" + Guid.NewGuid().ToString("N");
         try
         {
-            using (var stream = new FileStream(temp, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+            var streamOptions = new FileStreamOptions
+            {
+                Mode = FileMode.CreateNew,
+                Access = FileAccess.Write,
+                Share = FileShare.None,
+            };
+
+            // The mode is part of the create call. A chmod after the write would leave a window in
+            // which another user can read the plain text. The async overload does the same.
+            if (hardenTempPermissions is not null && !OperatingSystem.IsWindows())
+                streamOptions.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+
+            using (var stream = new FileStream(temp, streamOptions))
             using (var writer = new StreamWriter(stream))
             {
                 writer.Write(contents);

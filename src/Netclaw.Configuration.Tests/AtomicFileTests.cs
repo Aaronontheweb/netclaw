@@ -11,6 +11,8 @@ namespace Netclaw.Configuration.Tests;
 
 public sealed class AtomicFileTests : IDisposable
 {
+    public static bool IsUnix => !OperatingSystem.IsWindows();
+
     private readonly DisposableTempDir _dir = new();
 
     public void Dispose() => _dir.Dispose();
@@ -71,6 +73,47 @@ public sealed class AtomicFileTests : IDisposable
         Assert.True(existedWhenHardened);        // the temp existed when permissions were applied
         Assert.NotEqual(path, hardenedPath);     // perms applied to the temp, not the destination
         Assert.False(File.Exists(hardenedPath)); // the temp was renamed away afterward
+    }
+
+    // A write with a permission callback holds plain text such as daemon.env. The temp file must be
+    // 0600 from its first byte. A chmod after the write leaves a window in which another user can read it.
+    [SlopwatchSuppress("SW001", "Unix file modes mean nothing on Windows.")]
+    [Fact(SkipUnless = nameof(IsUnix), Skip = "Unix file modes mean nothing on Windows.")]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void WriteAllText_with_a_callback_creates_the_temp_file_with_mode_0600()
+    {
+        var path = Path.Combine(_dir.Path, "owner-only.env");
+        UnixFileMode? modeBeforeCallbackChanges = null;
+        string? contentBeforeCallbackChanges = null;
+
+        AtomicFile.WriteAllText(path, "plain=text\n", temp =>
+        {
+            modeBeforeCallbackChanges = File.GetUnixFileMode(temp);
+            contentBeforeCallbackChanges = File.ReadAllText(temp);
+            AtomicFile.HardenOwnerOnly(temp);
+        });
+
+        Assert.Equal("plain=text\n", contentBeforeCallbackChanges);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, modeBeforeCallbackChanges);
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(path));
+    }
+
+    // The callback may give the final file a wider mode, as the config writers do when they copy the
+    // mode of the file that they replace. The temp starts narrow, so the file never gets wider than the copy.
+    [SlopwatchSuppress("SW001", "Unix file modes mean nothing on Windows.")]
+    [Fact(SkipUnless = nameof(IsUnix), Skip = "Unix file modes mean nothing on Windows.")]
+    [System.Runtime.Versioning.UnsupportedOSPlatform("windows")]
+    public void WriteAllText_keeps_the_mode_that_the_callback_sets()
+    {
+        var path = Path.Combine(_dir.Path, "kept.json");
+        File.WriteAllText(path, "old");
+        var shared = UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead;
+        File.SetUnixFileMode(path, shared);
+
+        AtomicFile.WriteAllText(path, "new", temp => AtomicFile.CopyUnixMode(path, temp));
+
+        Assert.Equal("new", File.ReadAllText(path));
+        Assert.Equal(shared, File.GetUnixFileMode(path));
     }
 
     [Fact]
