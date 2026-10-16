@@ -83,7 +83,8 @@ internal static class CliConfigPreflight
                 UnauthorizedAccessException => $"Fix the permissions on {file}.",
                 FileNotFoundException or DirectoryNotFoundException => $"{file} is a link to a file that is missing: restore the target or remove the link.",
                 _ when string.Equals(file, paths.OAuthStatePath, StringComparison.Ordinal)
-                    => $"Delete {file}. Netclaw writes it again at the next OAuth token refresh, and it holds only token expiry dates.",
+                    => $"Delete {file}. Then run `netclaw doctor --fix` if netclaw.json still has an OAuthTokenExpiry key. That command copies each date back. "
+                        + "Otherwise sign in again with `netclaw provider` for each OAuth provider. A github-copilot provider with no expiry date does not refresh.",
                 _ => $"Fix the JSON in {file} (a duplicate key, or a file that is empty or cut off), or restore it from a backup.",
             };
             return true;
