@@ -960,15 +960,28 @@ memory embedding availability. Full guidance:
 `skill_read_resource('netclaw-operations', 'references/diagnostics.md')`.
 
 The systemd service reads `<home>/config/daemon.env`. `netclaw daemon install` and
-`netclaw doctor --fix` change only the `PATH=` line. They keep every other line, and they set the
-file mode to 0600 because the values are plain text. Add a line with
-`netclaw daemon install --env KEY=VALUE`. A key starts with `NETCLAW_` and uses `__` as the section
-separator. Repeat `--env` for more lines. The command refuses a key or a URL that looks like a
-credential. Store a credential with `netclaw secrets set`. `netclaw daemon uninstall` keeps a
-`daemon.env` that holds any line other than `PATH=`, and it prints the path. The install scripts
-(`install.sh` and `install.ps1`) read `NETCLAW_HOME` for the config directory. `install.sh` also
-uses it for the default install directory and for the shell `env` file. `CONFIG_DIR` and
-`NETCLAW_CONFIG_DIR` no longer work.
+`netclaw doctor --fix` change only the `PATH=` line. They keep every other line. They set the file
+mode to 0600 because the values are plain text. If `daemon.env` is a symbolic link, they write to
+the file that the link names, and the link stays. `netclaw doctor` reports a file that other users
+can read, and `netclaw doctor --fix` sets mode 0600 and changes nothing else.
+
+Add a line with `netclaw daemon install --env KEY=VALUE`. A key starts with `NETCLAW_` and uses
+`__` as the section separator. Repeat `--env` for more lines. The command refuses a value that
+holds a backslash, a quote, or a space at its start or end, because systemd reads these in a
+different way. It refuses a key or a URL that looks like a credential, and a URL with user info
+under any key. Store a credential with `netclaw secrets set`. `netclaw daemon install` refuses an
+argument that it does not know.
+
+`netclaw daemon uninstall` deletes `daemon.env` only when every line is one of these: a blank
+line, a comment line that starts with `#` or `;`, or a line that starts with `PATH=`. Leading
+spaces do not count. Any other line, for example `export PATH=...` or `NETCLAW_HOME=...`, keeps the
+file. The command then prints the path and sets mode 0600.
+
+The install scripts (`install.sh` and `install.ps1`) read `NETCLAW_HOME` for the config directory.
+`install.sh` uses `<home>/bin` and `<home>/env` for a fresh install. If `~/.netclaw/bin` already
+holds `netclaw` or `netclawd` and `INSTALL_DIR` is not set, `install.sh` upgrades there, keeps the
+env script at `~/.netclaw/env`, and prints that directory. `CONFIG_DIR` and `NETCLAW_CONFIG_DIR` no
+longer work.
 
 ## Identity
 

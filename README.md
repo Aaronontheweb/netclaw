@@ -289,6 +289,7 @@ netclaw chat -p <text>           Headless single-prompt mode
 netclaw doctor                   Configuration diagnostics
 netclaw daemon start|stop|status Manage the daemon process
 netclaw daemon install           Install systemd user service (Linux)
+netclaw daemon install --env K=V Same, and add a NETCLAW_* line to daemon.env
 netclaw daemon pair              Generate a pairing code for remote access
 netclaw provider                 Manage LLM providers
 netclaw model                    Manage model assignments

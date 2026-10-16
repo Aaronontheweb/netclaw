@@ -371,19 +371,34 @@ The file mode is 0600 because the values are plain text, unlike the encrypted va
 
 `netclaw daemon install --env KEY=VALUE` adds or replaces a line. The flag is repeatable. A key
 must match `NETCLAW_[A-Za-z0-9_]+`, a value must stay on one line, and the same key may appear
-once. Install refuses a key or a URL value that `SchemaFixResolver.HoldsCredential` marks as a
-credential, and the message names `netclaw secrets set`. That check works on key names and URL
-shapes. It does not prove that a value holds no secret. Install checks every entry before it
-runs `systemctl` or writes a file.
+once. A value must not hold `\`, `'`, or `"`, and it must not start or end with a space. systemd
+reads these characters in an `EnvironmentFile=` as a line continuation, a quote, an escape, or a
+trim, so the daemon would see another value. Install refuses the value and does not change it.
+Install refuses a key or a URL value that `SchemaFixResolver.HoldsCredential` marks as a
+credential. The check runs on the whole key, on each `__` segment, and on the last word of a name
+under `EnvironmentVariables` or `Headers`. It also refuses a URL with user info under any key. The
+message names `netclaw secrets set`. That check works on key names and URL shapes. It does not
+prove that a value holds no secret. Install checks every entry before it runs `systemctl` or
+writes a file. `daemon install` refuses an argument other than `--env KEY=VALUE`.
+
+If `daemon.env` is a symbolic link, install and `doctor --fix` write to the file that the link
+names, atomically, and the link stays. A target that cannot be written stops the command with the
+path. `netclaw doctor` reports a `daemon.env` that group or others can access. `doctor --fix` sets
+mode 0600 on it and changes nothing else.
 
 `netclaw daemon uninstall` stops the service and removes the unit file. It removes `daemon.env`
-only when the file holds nothing but blank lines, comments, and the `PATH=` line. Otherwise it
-keeps the file and prints its path. Uninstall leaves `secrets.json` and `netclaw.json` in place.
+only when every line is blank, is a comment that starts with `#` or `;`, or starts with `PATH=`.
+Leading spaces do not count. Any other line keeps the file, for example `export PATH=/a`. Uninstall
+then prints the path and sets mode 0600. Uninstall leaves `secrets.json` and `netclaw.json` in
+place.
 
 The install scripts honor `NETCLAW_HOME` with the `NetclawPaths` rules (`~`, `$HOME`, `${HOME}`,
 and `%USERPROFILE%` expand, a blank value is unset, a relative path resolves against the working
-directory). `install.sh` uses `<home>/config`, `<home>/bin`, and `<home>/env`. `install.ps1` uses
-`<home>\config`. `CONFIG_DIR` and `NETCLAW_CONFIG_DIR` no longer have an effect.
+directory). Both scripts use `<home>/config`. A fresh `install.sh` also uses `<home>/bin` and
+`<home>/env`. An upgrade does not move an install. If `$HOME/.netclaw/bin` holds `netclaw` or
+`netclawd` and `INSTALL_DIR` is not set, `install.sh` upgrades there and keeps the env script at
+`$HOME/.netclaw/env`. It prints the directory. `INSTALL_DIR` always wins. `install.ps1` keeps its
+own install directory. `CONFIG_DIR` and `NETCLAW_CONFIG_DIR` no longer have an effect.
 
 ### Service Registration (macOS)
 

@@ -525,6 +525,108 @@ check_home_form "NETCLAW_HOME=\$home/nc is case-insensitive" "$FORMS_FAKE-lower"
 check_home_form "NETCLAW_HOME=rel/nc is relative to the working directory" "$FORMS_FAKE-rel" 'rel/nc' "$WORK/cwd/rel/nc/config"
 check_home_form "blank NETCLAW_HOME means unset" "$FORMS_FAKE-blank" '   ' "$FORMS_FAKE-blank/.netclaw/config"
 
+check_home_form "NETCLAW_HOME=%USERPROFILE%/nc expands to the home directory" "$FORMS_FAKE-profile" '%USERPROFILE%/nc' "$FORMS_FAKE-profile/nc/config"
+check_home_form "NETCLAW_HOME=%userprofile%/nc is case-insensitive" "$FORMS_FAKE-profile-lower" '%userprofile%/nc' "$FORMS_FAKE-profile-lower/nc/config"
+
+# 8h. A fresh install with NETCLAW_HOME set uses the new layout: bin, env, and config all sit
+# under NETCLAW_HOME, and sourcing the env script puts that bin directory on PATH.
+FRESH_HOME="$WORK/fresh-nc-home"
+FRESH_FAKE="$WORK/fresh-user"
+set +e
+fresh_layout_out=$(INSTALL_SHELL="$(command -v bash)" run_home_install "$FRESH_FAKE" "$FRESH_HOME" --channel beta)
+fresh_layout_rc=$?
+set -e
+fresh_bin_physical=""
+[ -d "$FRESH_HOME/bin" ] && fresh_bin_physical="$(cd "$FRESH_HOME/bin" && pwd -P)"
+fresh_on_path=$(HOME="$FRESH_FAKE" PATH="/usr/bin:/bin" sh -c ". '$FRESH_HOME/env'; command -v netclaw" 2>/dev/null || true)
+if [ "$fresh_layout_rc" -eq 0 ] \
+    && [ "$fresh_on_path" = "$fresh_bin_physical/netclaw" ] \
+    && [ -f "$FRESH_HOME/config/netclaw.json" ] \
+    && [ ! -e "$FRESH_FAKE/.netclaw" ]; then
+  pass "home: fresh install with NETCLAW_HOME uses <home>/bin, <home>/env, and <home>/config"
+else
+  fail "home: fresh install with NETCLAW_HOME did not use the new layout (exit=$fresh_layout_rc, on PATH: '$fresh_on_path')"
+  echo "$fresh_layout_out" | indent
+fi
+
+# 8i. An existing install at the legacy default location is upgraded in place, even when
+# NETCLAW_HOME is set. The env script stays at $HOME/.netclaw/env and its PATH entry still
+# names the legacy bin directory. Only the config directory follows NETCLAW_HOME.
+LEGACY_FAKE="$WORK/legacy-user"
+LEGACY_NC_HOME="$WORK/legacy-nc-home"
+LEGACY_BIN="$LEGACY_FAKE/.netclaw/bin"
+mkdir -p "$LEGACY_BIN"
+for name in netclaw netclawd; do
+  printf '#!/usr/bin/env sh\necho "%s old"\n' "$name" > "$LEGACY_BIN/$name"
+  chmod +x "$LEGACY_BIN/$name"
+done
+set +e
+legacy_out=$(INSTALL_SHELL="$(command -v bash)" run_home_install "$LEGACY_FAKE" "$LEGACY_NC_HOME" --channel beta)
+legacy_rc=$?
+set -e
+legacy_bin_physical="$(cd "$LEGACY_BIN" && pwd -P)"
+legacy_on_path=$(HOME="$LEGACY_FAKE" PATH="/usr/bin:/bin" sh -c ". '$LEGACY_FAKE/.netclaw/env'; command -v netclaw" 2>/dev/null || true)
+if [ "$legacy_rc" -eq 0 ] \
+    && [ "$("$LEGACY_BIN/netclaw")" = "netclaw $VERSION-smoke" ] \
+    && [ "$("$LEGACY_BIN/netclawd")" = "netclawd $VERSION-smoke" ] \
+    && [ "$legacy_on_path" = "$legacy_bin_physical/netclaw" ] \
+    && [ ! -e "$LEGACY_NC_HOME/bin" ] \
+    && [ ! -e "$LEGACY_NC_HOME/env" ] \
+    && [ -f "$LEGACY_NC_HOME/config/netclaw.json" ] \
+    && [ ! -e "$LEGACY_FAKE/.netclaw/config" ] \
+    && echo "$legacy_out" | grep -qF "$LEGACY_BIN"; then
+  pass "home: existing legacy install is upgraded in place and the old binary stays on PATH"
+else
+  fail "home: existing legacy install was not upgraded in place (exit=$legacy_rc, on PATH: '$legacy_on_path')"
+  echo "$legacy_out" | indent
+fi
+
+# 8j. The install says where it installs and why, so an operator is not surprised by the location.
+if echo "$legacy_out" | grep -qE 'Existing install found at .*/\.netclaw/bin'; then
+  pass "home: an in-place upgrade names the existing install directory"
+else
+  fail "home: an in-place upgrade does not name the existing install directory"
+  echo "$legacy_out" | indent
+fi
+
+# 8k. INSTALL_DIR always wins over the existing install.
+EXPLICIT_FAKE="$WORK/explicit-user"
+EXPLICIT_DIR="$WORK/explicit-bin"
+mkdir -p "$EXPLICIT_FAKE/.netclaw/bin"
+printf '#!/usr/bin/env sh\necho "netclaw old"\n' > "$EXPLICIT_FAKE/.netclaw/bin/netclaw"
+chmod +x "$EXPLICIT_FAKE/.netclaw/bin/netclaw"
+set +e
+explicit_out=$(INSTALL_DIR="$EXPLICIT_DIR" run_home_install "$EXPLICIT_FAKE" "$WORK/explicit-nc-home" --skip-shell)
+explicit_rc=$?
+set -e
+if [ "$explicit_rc" -eq 0 ] \
+    && [ -x "$EXPLICIT_DIR/netclaw" ] \
+    && [ "$("$EXPLICIT_FAKE/.netclaw/bin/netclaw")" = "netclaw old" ]; then
+  pass "home: INSTALL_DIR wins over an existing install"
+else
+  fail "home: INSTALL_DIR did not win over an existing install (exit=$explicit_rc)"
+  echo "$explicit_out" | indent
+fi
+
+# 8l. A dry run reports the in-place location and changes nothing.
+DRY_FAKE="$WORK/dry-user"
+mkdir -p "$DRY_FAKE/.netclaw/bin"
+printf '#!/usr/bin/env sh\necho "netclaw old"\n' > "$DRY_FAKE/.netclaw/bin/netclaw"
+chmod +x "$DRY_FAKE/.netclaw/bin/netclaw"
+set +e
+dry_out=$(run_home_install "$DRY_FAKE" "$WORK/dry-nc-home" --dry-run)
+dry_rc=$?
+set -e
+if [ "$dry_rc" -eq 0 ] \
+    && echo "$dry_out" | grep -qF "Install dir: $DRY_FAKE/.netclaw/bin" \
+    && [ ! -e "$WORK/dry-nc-home" ] \
+    && [ "$("$DRY_FAKE/.netclaw/bin/netclaw")" = "netclaw old" ]; then
+  pass "home: dry run reports the in-place install directory and changes nothing"
+else
+  fail "home: dry run did not report the in-place install directory (exit=$dry_rc)"
+  echo "$dry_out" | indent
+fi
+
 # ── 9. Shell integration (PATH automation) ───────────────────────────────────
 echo ""
 echo "=== shell integration ==="
