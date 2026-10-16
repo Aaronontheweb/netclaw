@@ -4,6 +4,7 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Logging;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
 
@@ -15,11 +16,13 @@ namespace Netclaw.Providers.OAuth;
 public sealed class ProviderOAuthTokenRefreshService(
     NetclawPaths paths,
     DeviceFlowServiceFactory deviceFlowFactory,
+    ILogger<ProviderOAuthTokenRefreshService> logger,
     IOperationalNotificationSink? notificationSink = null,
     TimeProvider? timeProvider = null)
 {
     private static readonly TimeSpan RefreshBuffer = TimeSpan.FromMinutes(2);
 
+    private readonly ILogger<ProviderOAuthTokenRefreshService> _logger = logger;
     private readonly IOperationalNotificationSink _notificationSink = notificationSink ?? NullNotificationSink.Instance;
     private readonly TimeProvider _timeProvider = timeProvider ?? TimeProvider.System;
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _refreshLocks = new(StringComparer.OrdinalIgnoreCase);
@@ -64,7 +67,7 @@ public sealed class ProviderOAuthTokenRefreshService(
         await refreshGate.WaitAsync(ct);
         try
         {
-            AdoptStoredTokens(providerName, entry);
+            var displacedRefreshToken = AdoptStoredTokens(providerName, entry);
             accessToken = entry.OAuthAccessToken.RequireValid(
                 $"OAuth access token for provider '{providerName}'");
 
@@ -96,6 +99,28 @@ public sealed class ProviderOAuthTokenRefreshService(
                 entry.OAuthRefreshToken,
                 ct);
 
+            // A refresh that worked at the token server can fail to reach secrets.json. Then the stored
+            // refresh token is spent and the in-memory one is the live one. Try the token that
+            // AdoptStoredTokens replaced, once, before the operator has to sign in again.
+            if (result is null && !displacedRefreshToken.IsNullOrEmpty())
+            {
+                result = await service.RefreshTokenAsync(
+                    oauth.TokenEndpoint.ToString(),
+                    oauth.ClientId,
+                    displacedRefreshToken,
+                    ct);
+
+                if (result is not null)
+                {
+                    _logger.LogWarning(
+                        "The refresh token stored in {SecretsPath} for provider {Provider} was rejected, and the in-memory refresh token worked. "
+                        + "An earlier save of refreshed tokens probably failed.",
+                        paths.SecretsPath,
+                        providerName);
+                    entry.OAuthRefreshToken = displacedRefreshToken;
+                }
+            }
+
             if (result is null)
             {
                 EmitAuthExpired(providerName, "invalid_grant");
@@ -105,11 +130,30 @@ public sealed class ProviderOAuthTokenRefreshService(
             }
 
             ApplyRefreshResult(entry, result);
-            // A protector is mandatory here. Passing none used to skip encryption, so a
-            // refreshed access and refresh token pair landed in secrets.json as plaintext
-            // until some later protected write happened to re-encrypt the file.
-            OAuthTokenPersistence.PersistTokens(
-                paths, providerName, result, SecretsProtection.CreateProtector(paths));
+            try
+            {
+                // A protector is mandatory here. Passing none used to skip encryption, so a
+                // refreshed access and refresh token pair landed in secrets.json as plaintext
+                // until some later protected write happened to re-encrypt the file. The refresh token
+                // is written even when the server did not send one, so the file never keeps a spent token.
+                OAuthTokenPersistence.PersistTokens(
+                    paths,
+                    providerName,
+                    result with { RefreshToken = entry.OAuthRefreshToken },
+                    SecretsProtection.CreateProtector(paths));
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(
+                    ex,
+                    "The OAuth refresh for provider {Provider} worked, but Netclaw could not save the new tokens to {SecretsPath} or the expiry to {OAuthStatePath}. "
+                    + "The saved file can hold a spent refresh token. Fix the file or its directory. Until then this process uses the in-memory tokens.",
+                    providerName,
+                    paths.SecretsPath,
+                    paths.OAuthStatePath);
+                throw;
+            }
+
             return entry.OAuthAccessToken!;
         }
         finally
@@ -119,15 +163,18 @@ public sealed class ProviderOAuthTokenRefreshService(
     }
 
     // Another process, such as `netclaw provider`, can refresh the same provider. The token server
-    // rotates the refresh token, so the in-memory copy can be spent already.
-    private void AdoptStoredTokens(string providerName, ProviderEntry entry)
+    // rotates the refresh token, so the in-memory copy can be spent already. Returns the in-memory
+    // refresh token that the stored one replaced, so the caller can try it if the stored one fails.
+    private SensitiveString? AdoptStoredTokens(string providerName, ProviderEntry entry)
     {
         if (OAuthTokenPersistence.LoadTokens(paths, providerName) is not { } stored)
-            return;
+            return null;
 
+        SensitiveString? displaced = null;
         if (!stored.RefreshToken.IsNullOrEmpty()
             && !string.Equals(stored.RefreshToken.Value, entry.OAuthRefreshToken?.Value, StringComparison.Ordinal))
         {
+            displaced = entry.OAuthRefreshToken;
             entry.OAuthRefreshToken = stored.RefreshToken;
         }
 
@@ -137,6 +184,8 @@ public sealed class ProviderOAuthTokenRefreshService(
             entry.OAuthTokenExpiry = storedExpiry;
             entry.OAuthAccountId = stored.AccountId ?? entry.OAuthAccountId;
         }
+
+        return displaced;
     }
 
     private bool NeedsRefresh(DateTimeOffset? expiresAt)

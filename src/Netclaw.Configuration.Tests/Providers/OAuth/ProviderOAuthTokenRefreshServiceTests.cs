@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using System.Net;
 using System.Text.Json;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
@@ -325,7 +326,7 @@ public sealed class ProviderOAuthTokenRefreshServiceTests
             new OAuthDeviceFlowService(httpClient, time),
             new OpenAiDeviceFlowService(httpClient, time));
 
-        return new ProviderOAuthTokenRefreshService(paths, factory, sink, time);
+        return new ProviderOAuthTokenRefreshService(paths, factory, NullLogger<ProviderOAuthTokenRefreshService>.Instance, sink, time);
     }
 
     private sealed class RecordingNotificationSink : IOperationalNotificationSink
