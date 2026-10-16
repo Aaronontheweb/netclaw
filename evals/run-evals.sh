@@ -42,6 +42,8 @@
 #     NETCLAW_EVAL_TIMEOUT       Per-prompt timeout in seconds (default: 60)
 #     NETCLAW_EVAL_CATEGORY      Run only this category (case-insensitive substring match)
 #     NETCLAW_EVAL_CASE          Run only this specific case name
+#     NETCLAW_EVAL_SEED          Integer seed for prompt variant choice (default: random,
+#                                printed and recorded in each trial's variant.json)
 set -euo pipefail
 
 # ─── Configuration ────────────────────────────────────────────────────────────
@@ -58,6 +60,20 @@ EVAL_CONTAINER_NAME="netclaw-eval-$$"
 NO_BUILD="${NETCLAW_EVAL_NO_BUILD:-0}"
 FILTER_CATEGORY="${NETCLAW_EVAL_CATEGORY:-}"
 FILTER_CASE="${NETCLAW_EVAL_CASE:-}"
+
+# One seed for the whole run. Each (case, trial) derives its own seed from it,
+# so a run filtered with NETCLAW_EVAL_CASE picks the same variants as a full run.
+EVAL_SEED="${NETCLAW_EVAL_SEED:-$((RANDOM * 32768 + RANDOM))}"
+if [[ ! "$EVAL_SEED" =~ ^[0-9]+$ ]]; then
+    echo "ERROR: NETCLAW_EVAL_SEED must be a non-negative integer, got: $EVAL_SEED" >&2
+    exit 2
+fi
+# Whole seconds. `timeout` also accepts 5m, but the trial record stores the
+# value as a JSON number, so a unit suffix would fail in the first trial.
+if [[ ! "$PROMPT_TIMEOUT" =~ ^[1-9][0-9]*$ ]]; then
+    echo "ERROR: NETCLAW_EVAL_TIMEOUT must be a whole number of seconds, 1 or more, got: $PROMPT_TIMEOUT" >&2
+    exit 2
+fi
 
 # Image and CLI binary default to the locally-built artifacts. Evals should
 # always test the current source tree, not a stale published image.
@@ -103,6 +119,15 @@ STDERR_FILE=""
 LAST_TURN_STDOUT_FILE=""
 DAEMON_LOG_LINES_BEFORE=0
 
+# Per-trial state (set by begin_trial, read by the evidence helpers)
+TRIAL_RAW=""
+TRIAL_KNOWN_LOGS_FILE=""
+TRIAL_DAEMON_LOG=""
+TRIAL_DAEMON_LINES_BEFORE=0
+PICKED_VARIANT=""
+PICKED_VARIANT_INDEX=0
+PICKED_TRIAL_SEED=0
+
 # ─── Prerequisites ────────────────────────────────────────────────────────────
 
 check_prerequisites() {
@@ -126,6 +151,13 @@ check_prerequisites() {
 
     if ! command -v jq >/dev/null 2>&1; then
         echo "ERROR: 'jq' not found. Install jq to run the eval suite." >&2
+        exit 1
+    fi
+
+    # Each trial runs evals/trial_evidence.py. It needs Path.is_relative_to.
+    if ! command -v python3 >/dev/null 2>&1 \
+        || ! python3 -c 'import sys; sys.exit(sys.version_info < (3, 9))'; then
+        echo "ERROR: 'python3' 3.9 or later not found. The eval suite needs it for trial evidence." >&2
         exit 1
     fi
 
@@ -301,6 +333,7 @@ asset_commit:   $asset_commit
 asset_dirty:    $asset_dirty
 category:  ${FILTER_CATEGORY:-all}
 case:      ${FILTER_CASE:-all}
+seed:      $EVAL_SEED
 timeout:   ${PROMPT_TIMEOUT:-60}s
 runs:      ${RUNS:-5}
 threshold: ${THRESHOLD:-0.80}
@@ -914,9 +947,160 @@ finalize_db() {
 
 # ─── Utility Functions ────────────────────────────────────────────────────────
 
+## Picks the prompt variant of one (case, trial). Args: case_name, trial, variant...
+## Sets PICKED_VARIANT, PICKED_VARIANT_INDEX, and PICKED_TRIAL_SEED. The index
+## is trial_seed % variant count. It does not use RANDOM: bash 5.1 changed that
+## generator, so the same seed would pick another variant on another host.
 pick_variant() {
-    local -a arr=("$@")
-    echo "${arr[RANDOM % ${#arr[@]}]}"
+    local case_name="$1" trial="$2"
+    shift 2
+    local -a variants=("$@")
+    PICKED_TRIAL_SEED=$(python3 "$TRIAL_EVIDENCE_PY" derive-seed \
+        --seed "$EVAL_SEED" --case "$case_name" --trial "$trial")
+    PICKED_VARIANT_INDEX=$((PICKED_TRIAL_SEED % ${#variants[@]}))
+    PICKED_VARIANT="${variants[PICKED_VARIANT_INDEX]}"
+}
+
+# ─── Trial Evidence ───────────────────────────────────────────────────────────
+
+# Each trial keeps its evidence in evals/runs/<run-id>/trials/<case>/<nn>/raw/.
+# A single-turn trial puts the CLI files there. A multi-turn trial puts them in
+# raw/turn-<nn>/. Session files (session.json, cli-session.log, session.log,
+# daemon-*.log, assert-stderr.txt) always sit in raw/.
+
+TRIAL_EVIDENCE_PY="$REPO_ROOT/evals/trial_evidence.py"
+# Exit codes of `trial_evidence.py discover-session` that are findings, not crashes.
+DISCOVER_NO_SESSION=3
+DISCOVER_AMBIGUOUS_SESSION=4
+
+iso_now() {
+    date -u +%Y-%m-%dT%H:%M:%S.%3N%:z
+}
+
+## Args: case_name, trial number
+begin_trial() {
+    TRIAL_RAW="$REPO_ROOT/evals/runs/${RUN_ID:?}/trials/$1/$(printf '%02d' "$2")/raw"
+    mkdir -p "$TRIAL_RAW"
+}
+
+## Args: variant count. Reads the PICKED_* variables.
+record_variant() {
+    jq -n --argjson index "$PICKED_VARIANT_INDEX" --argjson count "$1" \
+        --argjson seed "$EVAL_SEED" --argjson trial_seed "$PICKED_TRIAL_SEED" \
+        '{variant_index: $index, variant_count: $count, seed: $seed, trial_seed: $trial_seed}' \
+        > "$TRIAL_RAW/variant.json"
+}
+
+## Takes the snapshots that the trial evidence needs, just before the first CLI
+## call: the names of the CLI logs that exist, and the daemon log position.
+snapshot_trial_baseline() {
+    TRIAL_KNOWN_LOGS_FILE="$TMPDIR_EVAL/known_logs_$(date +%s%N).txt"
+    find "$EVAL_HOME/logs" -maxdepth 1 -type f -printf '%f\n' > "$TRIAL_KNOWN_LOGS_FILE"
+    resolve_daemon_log
+    TRIAL_DAEMON_LOG="$DAEMON_LOG"
+    TRIAL_DAEMON_LINES_BEFORE=0
+    if [[ -f "$TRIAL_DAEMON_LOG" ]]; then
+        TRIAL_DAEMON_LINES_BEFORE=$(wc -l < "$TRIAL_DAEMON_LOG")
+    fi
+}
+
+## Writes the record of one CLI call: the prompt that the CLI received, how the
+## call ended, and its output. The exit code is kept, not discarded: 124 means
+## that `timeout` cut the call off.
+## Args: dir, prompt, output_format, exit_code, started_at, ended_at, stdout_file, stderr_file
+record_cli_call() {
+    local dir="$1" prompt="$2" output_format="$3" exit_code="$4"
+    local started_at="$5" ended_at="$6" stdout_file="$7" stderr_file="$8"
+    mkdir -p "$dir"
+    printf '%s' "$prompt" > "$dir/prompt.txt"
+    jq -n --argjson exit_code "$exit_code" --arg started_at "$started_at" \
+        --arg ended_at "$ended_at" --argjson deadline_s "$PROMPT_TIMEOUT" \
+        '{exit_code: $exit_code, started_at: $started_at, ended_at: $ended_at, deadline_s: $deadline_s}' \
+        > "$dir/cli-exit.json"
+    local extension="txt"
+    if [[ "$output_format" == "json" ]]; then
+        extension="json"
+    fi
+    cp "$stdout_file" "$dir/cli-stdout.$extension"
+    cp "$stderr_file" "$dir/cli-stderr.txt"
+}
+
+## Copies the session evidence of a finished trial into raw/. A source that is
+## missing is reported on stderr and the run goes on. The trial folder then
+## shows which source was missing. The daemon evidence comes later, from
+## finish_assertion_evidence, because the assertion reads the daemon log too.
+finish_trial() {
+    local discover_code=0
+    python3 "$TRIAL_EVIDENCE_PY" discover-session --logs-dir "$EVAL_HOME/logs" \
+        --known "$TRIAL_KNOWN_LOGS_FILE" > "$TRIAL_RAW/session.json" || discover_code=$?
+    if [[ "$discover_code" -ne 0 && "$discover_code" -ne "$DISCOVER_NO_SESSION" \
+        && "$discover_code" -ne "$DISCOVER_AMBIGUOUS_SESSION" ]]; then
+        echo "ERROR: discover-session crashed (exit $discover_code)" >&2
+        exit 2
+    fi
+
+    local status
+    status=$(jq -r '.status' "$TRIAL_RAW/session.json")
+    if [[ "$status" != "ok" ]]; then
+        echo "  WARN: no CLI session log for the trial ($status). See $TRIAL_RAW/session.json" >&2
+        return
+    fi
+
+    local session_id
+    session_id=$(jq -r '.session_id' "$TRIAL_RAW/session.json")
+    cp "$EVAL_HOME/logs/$(jq -r '.log' "$TRIAL_RAW/session.json")" "$TRIAL_RAW/cli-session.log"
+
+    local actor_status
+    actor_status=$(python3 "$TRIAL_EVIDENCE_PY" actor-log --home "$EVAL_HOME" \
+        --session "$session_id" --dest "$TRIAL_RAW" | jq -r '.status')
+    if [[ "$actor_status" != "ok" ]]; then
+        echo "  WARN: no actor log for $session_id ($actor_status). See $TRIAL_RAW/actor-log.json" >&2
+    fi
+}
+
+## Copies the daemon window and writes assert.json. Call it right after the
+## assertion, so the window holds every line that the assertion could read.
+## The window starts at the first line after the trial baseline, in the daemon
+## file that was current then. A multi-turn trial starts at turn 1, not at the
+## last turn. A daemon file that did not exist at the baseline (the UTC day
+## changed) is added in full, in name order.
+## Args: assertion exit code
+finish_assertion_evidence() {
+    local assert_rc="$1"
+    local window="$TRIAL_RAW/daemon-window.log"
+    local lines_after name
+    local -a new_files=()
+    while IFS= read -r name; do
+        if [[ "$name" != "$(basename "$TRIAL_DAEMON_LOG")" ]] \
+            && ! grep -qxF -- "$name" "$TRIAL_KNOWN_LOGS_FILE"; then
+            new_files+=("$name")
+        fi
+    done < <(find "$EVAL_HOME/logs" -maxdepth 1 -type f -name 'daemon-*.log' -printf '%f\n' | sort)
+
+    if [[ ! -f "$TRIAL_DAEMON_LOG" ]]; then
+        echo "ERROR: daemon log $TRIAL_DAEMON_LOG is gone after the assertion" >&2
+        exit 2
+    fi
+    lines_after=$(wc -l < "$TRIAL_DAEMON_LOG")
+    head -n "$lines_after" "$TRIAL_DAEMON_LOG" \
+        | tail -n +"$((TRIAL_DAEMON_LINES_BEFORE + 1))" > "$window"
+    for name in "${new_files[@]}"; do
+        cat "$EVAL_HOME/logs/$name" >> "$window"
+    done
+
+    jq -n --argjson exit_code "$assert_rc" \
+        --arg daemon_log "$(basename "$TRIAL_DAEMON_LOG")" \
+        --argjson before "$TRIAL_DAEMON_LINES_BEFORE" --argjson after "$lines_after" \
+        --args '{exit_code: $exit_code, daemon_log: $daemon_log,
+                 window_lines_before: $before, window_lines_after: $after,
+                 extra_daemon_logs: $ARGS.positional}' "${new_files[@]}" \
+        > "$TRIAL_RAW/assert.json"
+
+    if [[ -f "$window" && "$(jq -r '.status' "$TRIAL_RAW/session.json")" == "ok" ]]; then
+        python3 "$TRIAL_EVIDENCE_PY" daemon-session --log "$window" \
+            --session "$(jq -r '.session_id' "$TRIAL_RAW/session.json")" \
+            > "$TRIAL_RAW/daemon-session.log"
+    fi
 }
 
 # ─── Prompt Runner ────────────────────────────────────────────────────────────
@@ -974,10 +1158,15 @@ run_prompt() {
     # "[error] Unknown output type from daemon: ...") to stderr, and a
     # trailing diagnostic line breaks jq's parse of the JSON envelope on
     # stdout, producing a false eval failure rather than a real one.
+    local started_at ended_at exit_code=0
+    started_at=$(iso_now)
     NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
     NETCLAW_HOME="$EVAL_HOME" \
         timeout "$PROMPT_TIMEOUT" stdbuf -oL -eL "$NETCLAW_BIN" chat -p "${output_args[@]}" "$prompt" \
-        > "$STDOUT_FILE" 2> "$STDERR_FILE" || true
+        > "$STDOUT_FILE" 2> "$STDERR_FILE" || exit_code=$?
+    ended_at=$(iso_now)
+    record_cli_call "$TRIAL_RAW" "$prompt" "$output_format" "$exit_code" \
+        "$started_at" "$ended_at" "$STDOUT_FILE" "$STDERR_FILE"
 
     # Brief pause for daemon log flush
     sleep 2
@@ -988,11 +1177,12 @@ run_prompt() {
 ## assertion helpers (stdout_contains, etc.) see the full concatenated output.
 ## Stderr is captured the same way, into a separate shared STDERR_FILE, so
 ## stdout stays pure for assertions (see run_prompt for why that matters).
-## Args: session_id, prompt, [output_format]
+## Args: session_id, prompt, output_format, turn number
 run_prompt_resume() {
     local session_id="$1"
     local prompt="$2"
-    local output_format="${3:-text}"
+    local output_format="$3"
+    local turn_number="$4"
     local ts
     ts="$(date +%s%N)"
     local turn_file="$TMPDIR_EVAL/stdout_${ts}_turn.txt"
@@ -1028,11 +1218,16 @@ run_prompt_resume() {
         output_args+=(--json)
     fi
 
+    local started_at ended_at exit_code=0
+    started_at=$(iso_now)
     NETCLAW_DAEMON_ENDPOINT="http://127.0.0.1:$EVAL_PORT" \
     NETCLAW_HOME="$EVAL_HOME" \
         timeout "$PROMPT_TIMEOUT" stdbuf -oL -eL "$NETCLAW_BIN" chat -p --resume "$session_id" \
         "${output_args[@]}" "$prompt" \
-        > "$turn_file" 2> "$turn_stderr_file" || true
+        > "$turn_file" 2> "$turn_stderr_file" || exit_code=$?
+    ended_at=$(iso_now)
+    record_cli_call "$TRIAL_RAW/turn-$(printf '%02d' "$turn_number")" "$prompt" "$output_format" \
+        "$exit_code" "$started_at" "$ended_at" "$turn_file" "$turn_stderr_file"
 
     # Append this turn's output to the shared files so assertions see all turns.
     cat "$turn_file" >> "$STDOUT_FILE"
@@ -1086,12 +1281,14 @@ run_multi_turn_case() {
         local session_id="eval/${case_name}-run${run}-$$"
         MULTI_TURN_STDOUT_FILE=""
         MULTI_TURN_STDERR_FILE=""
+        begin_trial "$case_name" "$run"
 
         local setup_fn="setup_${case_name}"
         if declare -f "$setup_fn" >/dev/null 2>&1; then
             "$setup_fn" "$run"
         fi
 
+        snapshot_trial_baseline
         local turn=1
         local prompt
         for prompt in "${prompts[@]}"; do
@@ -1101,15 +1298,19 @@ run_multi_turn_case() {
             rendered_prompt="${rendered_prompt//\{\{TARGET_BRANCH\}\}/${CODING_CONTEXT_TARGET_BRANCH:-}}"
             rendered_prompt="${rendered_prompt//\{\{TARGET_FILE\}\}/${CODING_CONTEXT_TARGET_FILE:-}}"
             rendered_prompt="${rendered_prompt//\{\{DIRECT_ATTACHMENT_SOURCE\}\}/${DIRECT_ATTACHMENT_SOURCE_PATH:-}}"
-            run_prompt_resume "$session_id" "$rendered_prompt" "$output_format"
+            run_prompt_resume "$session_id" "$rendered_prompt" "$output_format" "$turn"
             store_metrics "$case_name" "$run" "$turn" "$LAST_TURN_USAGE_LINE"
             turn=$((turn + 1))
         done
+        finish_trial
 
         local passed=0
         local details="fail"
+        local assert_rc=0
         EVAL_ASSERTION_DETAILS=""
-        if $assert_fn 2>/dev/null; then
+        $assert_fn 2> "$TRIAL_RAW/assert-stderr.txt" || assert_rc=$?
+        finish_assertion_evidence "$assert_rc"
+        if [[ "$assert_rc" -eq 0 ]]; then
             passed=1
             passes=$((passes + 1))
             details="pass"
@@ -1172,10 +1373,19 @@ stdout_response_not_contains() {
 ## instead of trusting a computed date. Callers re-resolve before they take a
 ## per-case line baseline; a midnight rollover inside a single case remains
 ## unhandled and acceptable.
+## A run needs a daemon log, because every assertion and the trial evidence
+## read it. When none exists, the daemon did not start or write its log, so
+## the run stops.
 resolve_daemon_log() {
     local newest
-    newest=$(ls -1t "$EVAL_HOME"/logs/daemon-*.log 2>/dev/null | head -n 1)
-    [[ -n "$newest" ]] && DAEMON_LOG="$newest"
+    # `ls` exits non-zero when no file matches. The empty check below turns
+    # that case into a clear error.
+    newest=$(ls -1t "$EVAL_HOME"/logs/daemon-*.log 2>/dev/null | head -n 1) || true
+    if [[ -z "$newest" ]]; then
+        echo "ERROR: no daemon log (daemon-*.log) in $EVAL_HOME/logs. The daemon did not write its log." >&2
+        exit 2
+    fi
+    DAEMON_LOG="$newest"
 }
 
 daemon_log_tail() {
@@ -3030,8 +3240,10 @@ run_case() {
     local passes=0
     local run
     for ((run = 1; run <= RUNS; run++)); do
-        local prompt
-        prompt=$(pick_variant "${prompts[@]}")
+        pick_variant "$case_name" "$run" "${prompts[@]}"
+        local prompt="$PICKED_VARIANT"
+        begin_trial "$case_name" "$run"
+        record_variant "${#prompts[@]}"
 
         local setup_fn="setup_${case_name}"
         if declare -f "$setup_fn" >/dev/null 2>&1; then
@@ -3042,11 +3254,16 @@ run_case() {
         rendered_prompt="${rendered_prompt//\{\{MANAGED_WORKTREE_BRANCH\}\}/${MANAGED_WORKTREE_BRANCH:-}}"
         rendered_prompt="${rendered_prompt//\{\{CYCLE_PROMPT\}\}/${CYCLE_PROMPT:-}}"
         rendered_prompt="${rendered_prompt//\{\{EVAL_REMINDER_TARGET\}\}/${EVAL_REMINDER_TARGET:-}}"
+        snapshot_trial_baseline
         run_prompt "$rendered_prompt" "$output_format"
+        finish_trial
 
         local passed=0
         local details="fail"
-        if $assert_fn 2>/dev/null; then
+        local assert_rc=0
+        $assert_fn 2> "$TRIAL_RAW/assert-stderr.txt" || assert_rc=$?
+        finish_assertion_evidence "$assert_rc"
+        if [[ "$assert_rc" -eq 0 ]]; then
             passed=1
             passes=$((passes + 1))
             details="pass"
@@ -3613,6 +3830,7 @@ main() {
     echo "Eval home: $EVAL_HOME"
     echo "Version:   $NETCLAW_VER"
     echo "Run ID:    $RUN_ID"
+    echo "Seed:      $EVAL_SEED"
     echo "Started:   $STARTED_AT"
     echo "Daemon log: $DAEMON_LOG"
 
