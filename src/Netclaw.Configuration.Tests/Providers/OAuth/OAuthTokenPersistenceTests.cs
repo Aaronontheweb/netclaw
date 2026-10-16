@@ -144,8 +144,6 @@ public sealed class OAuthTokenPersistenceTests
                 null),
             new NullSecretsProtector());
 
-        // Secrets persist in secrets.json and the expiry in oauth-state.json.
-        // The refresh does not materialize a config file.
         Assert.True(File.Exists(paths.SecretsPath));
         Assert.False(File.Exists(paths.NetclawConfigPath));
         Assert.True(OAuthStateStore.TryGetExpiry(paths, "copilot", out var expiry));
@@ -158,14 +156,16 @@ public sealed class OAuthTokenPersistenceTests
         using var dir = new DisposableTempDir();
         var paths = new NetclawPaths(dir.Path);
         paths.EnsureDirectoriesExist();
-        // A directory in place of the state file makes the second write fail.
         Directory.CreateDirectory(paths.OAuthStatePath);
 
-        Assert.ThrowsAny<IOException>(() => OAuthTokenPersistence.PersistTokens(
+        // Linux and macOS fail the rename onto a directory with IOException. Windows fails it with
+        // UnauthorizedAccessException.
+        var failure = Record.Exception(() => OAuthTokenPersistence.PersistTokens(
             paths,
             "copilot",
             new OAuthDeviceFlowResult(new SensitiveString("access-1"), new SensitiveString("refresh-1"), DateTimeOffset.Parse("2026-06-01T01:00:00+00:00")),
             new NullSecretsProtector()));
+        Assert.True(failure is IOException or UnauthorizedAccessException, $"Unexpected: {failure?.GetType().FullName ?? "no exception"}");
 
         using var secrets = JsonDocument.Parse(File.ReadAllText(paths.SecretsPath));
         Assert.Equal(

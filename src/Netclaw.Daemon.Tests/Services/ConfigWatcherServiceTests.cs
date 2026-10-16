@@ -311,7 +311,6 @@ public sealed class ConfigWatcherServiceTests : IDisposable
                 DateTimeOffset.Parse("2026-06-01T01:00:00+00:00")),
             new NullSecretsProtector());
 
-        // Each file the refresh wrote reaches the watcher as an atomic-replace rename.
         var after = SnapshotConfigDirectory();
         var written = after.Where(file => !before.TryGetValue(file.Key, out var hash) || hash != file.Value)
             .Select(file => file.Key)
