@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.109.1"
+  version: "2.110.0"
 ---
 
 # Netclaw Operations
@@ -951,6 +951,15 @@ Headless `COMPACTION` records expose `summarized` and `tool_results_cleared` pha
 A true summary flag does not prove that the summary retains every task requirement.
 Older daemon or CLI versions can omit these flags from the transport and report false.
 Check the actor log before you conclude that an older run skipped a phase.
+
+A request to the loopback daemon can fail with HTTP 401 while the client is on the same host.
+The daemon trusts a loopback request only when its `Host` header is `localhost`, `127.0.0.1`, or `[::1]`, with any port.
+If the request has an `Origin` header, the value must be `http://` plus the `Host`.
+A client that uses another host name for the daemon, such as an `/etc/hosts` alias, gets 401.
+A web page on another origin also gets 401.
+`daemon.log` has a warning, `Refused loopback request`, with the `Host` and `Origin` values.
+Fix: call the daemon as `http://127.0.0.1:<port>` or `http://localhost:<port>`, or pair the client and send a device token.
+A device token request is not checked for `Host` or `Origin`.
 
 When something is broken, start with `netclaw status`, then `netclaw doctor`. Feature
 kill switches and self-update/health are covered in the reference. Memory embeddings
