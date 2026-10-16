@@ -595,7 +595,13 @@ static async Task RunAsync(string[] args)
             }
 
             case "install":
-                var installResult = await manager.InstallAsync();
+                if (!DaemonCommandDispatch.TryParseInstallArguments(args, out var installEnvEntries, out var installArgError))
+                {
+                    WriteDaemonResult(new DaemonResult(false, installArgError));
+                    return;
+                }
+
+                var installResult = await manager.InstallAsync(installEnvEntries);
                 WriteDaemonResult(installResult);
                 return;
 
@@ -1442,7 +1448,8 @@ static void WriteDaemonHelp()
     Console.WriteLine("  start                        Start daemon as a background process");
     Console.WriteLine("  stop                         Stop daemon gracefully");
     Console.WriteLine("  status                       Show daemon process status (exit 1 if not running or not ready)");
-    Console.WriteLine("  install                      Install systemd user service (Linux)");
+    Console.WriteLine("  install [--env KEY=VALUE]    Install systemd user service (Linux). Repeat --env to add NETCLAW_* lines");
+    Console.WriteLine("                               to daemon.env. It refuses a credential. Use `netclaw secrets set` instead.");
     Console.WriteLine("  uninstall                    Remove systemd user service (Linux)");
     Console.WriteLine("  pair                         Generate a pairing code for remote device access");
     Console.WriteLine("  devices                      List paired devices");

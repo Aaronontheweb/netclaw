@@ -261,6 +261,54 @@ public sealed class DoctorFixServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task Fix_keeps_operator_lines_in_daemon_env()
+    {
+        var paths = NewPaths();
+        var unitPath = WriteWiredUnit(paths);
+        const string original =
+            "NETCLAW_HOME=/x/home\n# proxy\nHTTP_PROXY=http://proxy.example:3128\nPATH=/usr/bin\n";
+        await File.WriteAllTextAsync(paths.DaemonEnvironmentFilePath, original, TestContext.Current.CancellationToken);
+
+        var service = new DoctorFixService(paths, unitPath, systemdEnabled: true);
+        var plan = await service.BuildPlanAsync(TestContext.Current.CancellationToken);
+        await service.ApplyAsync(plan, TestContext.Current.CancellationToken);
+
+        var fix = Assert.Single(plan.Fixes, f => f.FilePath == paths.DaemonEnvironmentFilePath);
+        var before = fix.OriginalText.Split('\n');
+        var after = fix.UpdatedText.Split('\n');
+        Assert.Equal(before.Length, after.Length);
+        var changed = before.Zip(after).Where(pair => pair.Item1 != pair.Item2).ToArray();
+        var line = Assert.Single(changed);
+        Assert.StartsWith("PATH=", line.Item1, StringComparison.Ordinal);
+        Assert.StartsWith($"PATH={InstallDir}:", line.Item2, StringComparison.Ordinal);
+        Assert.Equal(
+            fix.UpdatedText,
+            await File.ReadAllTextAsync(paths.DaemonEnvironmentFilePath, TestContext.Current.CancellationToken));
+    }
+
+    [Fact]
+    public async Task Fix_writes_daemon_env_with_mode_0600()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var paths = NewPaths();
+        var unitPath = WriteWiredUnit(paths);
+        await File.WriteAllTextAsync(paths.DaemonEnvironmentFilePath, "PATH=/usr/bin\n", TestContext.Current.CancellationToken);
+        File.SetUnixFileMode(
+            paths.DaemonEnvironmentFilePath,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        var service = new DoctorFixService(paths, unitPath, systemdEnabled: true);
+        var plan = await service.BuildPlanAsync(TestContext.Current.CancellationToken);
+        await service.ApplyAsync(plan, TestContext.Current.CancellationToken);
+
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            File.GetUnixFileMode(paths.DaemonEnvironmentFilePath));
+    }
+
+    [Fact]
     public async Task NoEnvFix_WhenHealthy()
     {
         var paths = NewPaths();

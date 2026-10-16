@@ -296,7 +296,7 @@ public sealed class DoctorFixService
             return;
 
         var captured = DaemonPathEnvironmentFile.CaptureCurrentPath();
-        var updated = DaemonPathEnvironmentFile.Render(installDir, captured);
+        var updated = DaemonPathEnvironmentFile.Merge(existing, installDir, captured, assignments: []);
 
         fixes.Add(new DoctorFileFix(
             FilePath: envPath,
@@ -407,8 +407,12 @@ public sealed class DoctorFixService
 
             cancellationToken.ThrowIfCancellationRequested();
             // The rewrite keeps the file's mode: a netclaw.json that holds a token and is
-            // owner-only must not come back readable by others.
-            AtomicFile.WriteAllText(fix.FilePath, fix.UpdatedText, temp => CopyFileMode(fix.FilePath, temp));
+            // owner-only must not come back readable by others. daemon.env holds plain-text
+            // values, so its rewrite sets owner-only access even over a looser file.
+            Action<string> harden = string.Equals(fix.FilePath, _paths.DaemonEnvironmentFilePath, StringComparison.Ordinal)
+                ? AtomicFile.HardenOwnerOnly
+                : temp => CopyFileMode(fix.FilePath, temp);
+            AtomicFile.WriteAllText(fix.FilePath, fix.UpdatedText, harden);
         }
 
         return Task.FromResult<IReadOnlyList<string>>(backups);

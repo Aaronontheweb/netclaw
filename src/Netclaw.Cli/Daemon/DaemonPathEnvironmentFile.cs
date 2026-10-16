@@ -3,6 +3,11 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text;
+using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
+using Netclaw.Cli.Doctor;
+
 namespace Netclaw.Cli.Daemon;
 
 /// <summary>
@@ -90,7 +95,105 @@ internal static class DaemonPathEnvironmentFile
     /// captured value is written verbatim.
     /// </summary>
     internal static string Render(string installDir, string? capturedPath)
-        => $"{PathAssignmentPrefix}{ComposePathValue(installDir, capturedPath)}\n";
+        => Merge(existingText: null, installDir, capturedPath, assignments: []);
+
+    /// <summary>
+    /// Renders the file after an install or a <c>doctor --fix</c>. The first <c>PATH=</c> line
+    /// changes in place, a later <c>PATH=</c> line goes, and <c>PATH=</c> goes at the end when
+    /// none exists. An <paramref name="assignments"/> key replaces its line in place or goes
+    /// after the last line. Every other line stays verbatim and in order: the method compares
+    /// only the text before the first <c>=</c> and never reads an operator line.
+    /// </summary>
+    internal static string Merge(
+        string? existingText,
+        string installDir,
+        string? capturedPath,
+        IReadOnlyList<DaemonEnvAssignment> assignments)
+    {
+        var lines = string.IsNullOrEmpty(existingText)
+            ? new List<string>()
+            : existingText.Split('\n').ToList();
+        if (lines.Count > 0 && lines[^1].Length == 0)
+            lines.RemoveAt(lines.Count - 1);
+
+        var eol = existingText is not null && existingText.Contains("\r\n", StringComparison.Ordinal) ? "\r\n" : "\n";
+        var pathLine = $"{PathAssignmentPrefix}{ComposePathValue(installDir, capturedPath)}";
+
+        var written = new HashSet<string>(StringComparer.Ordinal);
+        var output = new List<string>(lines.Count + assignments.Count + 1);
+        var pathWritten = false;
+
+        foreach (var line in lines)
+        {
+            var carriage = line.EndsWith('\r') ? "\r" : string.Empty;
+            var content = line.TrimStart();
+
+            if (content.StartsWith(PathAssignmentPrefix, StringComparison.Ordinal))
+            {
+                if (!pathWritten)
+                {
+                    output.Add(pathLine + carriage);
+                    pathWritten = true;
+                }
+
+                continue;
+            }
+
+            var key = KeyOf(content);
+            var assignment = assignments.FirstOrDefault(a => string.Equals(a.Key, key, StringComparison.Ordinal));
+            if (assignment.Key is not null)
+            {
+                if (written.Add(assignment.Key))
+                    output.Add($"{assignment.Key}={assignment.Value}{carriage}");
+
+                continue;
+            }
+
+            output.Add(line);
+        }
+
+        if (!pathWritten)
+            output.Add(pathLine + (eol == "\r\n" ? "\r" : string.Empty));
+
+        foreach (var assignment in assignments)
+        {
+            if (written.Add(assignment.Key))
+                output.Add($"{assignment.Key}={assignment.Value}" + (eol == "\r\n" ? "\r" : string.Empty));
+        }
+
+        var text = new StringBuilder();
+        foreach (var line in output)
+            text.Append(line).Append('\n');
+        return text.ToString();
+    }
+
+    private static string? KeyOf(string trimmedLine)
+    {
+        var equals = trimmedLine.IndexOf('=', StringComparison.Ordinal);
+        return equals > 0 ? trimmedLine[..equals] : null;
+    }
+
+    /// <summary>
+    /// True when the file holds a line other than a blank line, a comment, or a <c>PATH=</c>
+    /// line. Uninstall keeps such a file. The method does not read the operator lines.
+    /// </summary>
+    internal static bool HasOperatorLines(string fileContent)
+    {
+        foreach (var raw in fileContent.Split('\n'))
+        {
+            var line = raw.Trim();
+            if (line.Length == 0
+                || line[0] is '#' or ';'
+                || line.StartsWith(PathAssignmentPrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
+
+            return true;
+        }
+
+        return false;
+    }
 
     /// <summary>
     /// Extracts the <c>PATH</c> value from environment-file content, or <c>null</c>
@@ -211,5 +314,75 @@ internal static class DaemonPathEnvironmentFile
         var value = directive[(equalsIndex + 1)..].TrimStart();
         var spaceIndex = value.IndexOf(' ', StringComparison.Ordinal);
         return spaceIndex < 0 ? value : value[..spaceIndex];
+    }
+}
+
+/// <summary>
+/// One <c>KEY=VALUE</c> line that <c>netclaw daemon install --env</c> writes to the daemon
+/// environment file. The daemon reads each <c>NETCLAW_*</c> line through its environment
+/// configuration source, so a key uses the <c>__</c> section separator.
+/// </summary>
+internal readonly partial record struct DaemonEnvAssignment(string Key, string Value)
+{
+    [GeneratedRegex(@"^NETCLAW_[A-Za-z0-9_]+\z")]
+    private static partial Regex KeyPattern();
+
+    /// <summary>
+    /// Parses every entry before any file is written. The first bad entry stops the parse. No
+    /// message holds a value, because daemon.env is plain text and a value may be a secret.
+    /// </summary>
+    internal static bool TryParseAll(
+        IReadOnlyList<string> entries,
+        out IReadOnlyList<DaemonEnvAssignment> assignments,
+        out string error)
+    {
+        var parsed = new List<DaemonEnvAssignment>(entries.Count);
+        assignments = parsed;
+
+        foreach (var entry in entries)
+        {
+            var separator = entry.IndexOf('=', StringComparison.Ordinal);
+            if (separator < 0)
+            {
+                error = "An --env entry must have the form KEY=VALUE. One entry has no '='.";
+                return false;
+            }
+
+            var key = entry[..separator];
+            var value = entry[(separator + 1)..];
+
+            if (!KeyPattern().IsMatch(key))
+            {
+                error = $"The --env key '{key}' is not valid. A key starts with NETCLAW_ and holds only letters, digits, and '_'.";
+                return false;
+            }
+
+            if (value.Contains('\n') || value.Contains('\r'))
+            {
+                error = $"The --env value for '{key}' holds a line break. A value must stay on one line.";
+                return false;
+            }
+
+            if (parsed.Any(existing => existing.Key == key))
+            {
+                error = $"The --env key '{key}' appears more than once.";
+                return false;
+            }
+
+            // The credential rule has one owner: the schema fixer decides which key names and
+            // URL shapes hold a credential. It works on names and shapes and cannot prove that
+            // a value is free of secrets.
+            if (SchemaFixResolver.HoldsCredential(key, JsonValue.Create(value)))
+            {
+                error = $"Refusing to write '{key}' to daemon.env. The key or the value looks like a credential, "
+                    + "and daemon.env is plain text. Store the credential with `netclaw secrets set`.";
+                return false;
+            }
+
+            parsed.Add(new DaemonEnvAssignment(key, value));
+        }
+
+        error = string.Empty;
+        return true;
     }
 }

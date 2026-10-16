@@ -361,8 +361,29 @@ wiring and contents. Producer, rehydrator, and validator share
 `install`/`doctor --fix`, so after installing new tools re-run either and then
 `systemctl --user restart netclaw`.
 
-`netclaw daemon uninstall` stops the service and removes the unit file and the
-`daemon.env` file.
+**Operator lines.** `daemon.env` is also the place for operator settings, for example
+`NETCLAW_HOME=/x/home` or `HTTP_PROXY=...`. Install and `doctor --fix` replace the first
+`PATH=` line in place, drop a later `PATH=` line, and add `PATH=` at the end when none exists.
+They keep every other line verbatim and in order. They compare only the text before the first
+`=` and never read another line. A rerun with the same input leaves the file byte-identical.
+The file mode is 0600 because the values are plain text, unlike the encrypted values in
+`secrets.json`.
+
+`netclaw daemon install --env KEY=VALUE` adds or replaces a line. The flag is repeatable. A key
+must match `NETCLAW_[A-Za-z0-9_]+`, a value must stay on one line, and the same key may appear
+once. Install refuses a key or a URL value that `SchemaFixResolver.HoldsCredential` marks as a
+credential, and the message names `netclaw secrets set`. That check works on key names and URL
+shapes. It does not prove that a value holds no secret. Install checks every entry before it
+runs `systemctl` or writes a file.
+
+`netclaw daemon uninstall` stops the service and removes the unit file. It removes `daemon.env`
+only when the file holds nothing but blank lines, comments, and the `PATH=` line. Otherwise it
+keeps the file and prints its path. Uninstall leaves `secrets.json` and `netclaw.json` in place.
+
+The install scripts honor `NETCLAW_HOME` with the `NetclawPaths` rules (`~`, `$HOME`, `${HOME}`,
+and `%USERPROFILE%` expand, a blank value is unset, a relative path resolves against the working
+directory). `install.sh` uses `<home>/config`, `<home>/bin`, and `<home>/env`. `install.ps1` uses
+`<home>\config`. `CONFIG_DIR` and `NETCLAW_CONFIG_DIR` no longer have an effect.
 
 ### Service Registration (macOS)
 

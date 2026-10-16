@@ -307,9 +307,10 @@ public sealed partial class DaemonManager
     }
 
     /// <summary>
-    /// Installs daemon as a systemd user service (Linux only).
+    /// Installs daemon as a systemd user service (Linux only). <paramref name="envEntries"/> are the
+    /// <c>--env KEY=VALUE</c> arguments. They are checked before the first command runs or file changes.
     /// </summary>
-    public async Task<DaemonResult> InstallAsync()
+    public async Task<DaemonResult> InstallAsync(IReadOnlyList<string> envEntries)
     {
         if (!OperatingSystem.IsLinux())
             return new DaemonResult(false,
@@ -319,6 +320,9 @@ public sealed partial class DaemonManager
                       "https://github.com/netclaw-dev/netclaw/issues/1015"
                     : "Service installation is currently Linux-only (systemd). " +
                       "See https://github.com/netclaw-dev/netclaw/issues for Windows service support.");
+
+        if (!DaemonEnvAssignment.TryParseAll(envEntries, out var envAssignments, out var envError))
+            return new DaemonResult(false, envError);
 
         var binaryPath = FindDaemonBinary();
         if (binaryPath is null)
@@ -355,7 +359,24 @@ public sealed partial class DaemonManager
         var envFilePath = _paths.DaemonEnvironmentFilePath;
         var capturedPath = DaemonPathEnvironmentFile.CaptureCurrentPath();
         Directory.CreateDirectory(Path.GetDirectoryName(envFilePath)!);
-        await File.WriteAllTextAsync(envFilePath, DaemonPathEnvironmentFile.Render(installDir, capturedPath));
+
+        string? existingEnvText = null;
+        try
+        {
+            if (File.Exists(envFilePath))
+                existingEnvText = await File.ReadAllTextAsync(envFilePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new DaemonResult(false, $"Cannot read {envFilePath}: {ex.Message}");
+        }
+
+        // The file keeps the lines the operator wrote. Its mode is 0600 because the values are
+        // plain text, unlike the encrypted values in secrets.json.
+        AtomicFile.WriteAllText(
+            envFilePath,
+            DaemonPathEnvironmentFile.Merge(existingEnvText, installDir, capturedPath, envAssignments),
+            AtomicFile.HardenOwnerOnly);
 
         var unitPath = SystemdUserUnitFilePath;
         var isUpgrade = File.Exists(unitPath);
@@ -399,16 +420,23 @@ public sealed partial class DaemonManager
 
     /// <summary>
     /// Deletes the netclaw-owned PATH env file written at install so uninstall leaves no
-    /// orphan behind. Idempotent. Separated from <see cref="UninstallAsync"/> (which is
-    /// coupled to real <c>systemctl</c>/<c>loginctl</c> and cannot be driven in-process
-    /// without mutating the developer's live service) so the deletion contract is
-    /// unit-testable on its own.
+    /// orphan behind. A file that holds a line other than a blank line, a comment, or the
+    /// <c>PATH=</c> line stays, and the method returns its path. Idempotent. Separated from
+    /// <see cref="UninstallAsync"/> (which is coupled to real <c>systemctl</c>/<c>loginctl</c>
+    /// and cannot be driven in-process without mutating the developer's live service) so the
+    /// deletion contract is unit-testable on its own.
     /// </summary>
-    internal void RemoveDaemonEnvironmentFile()
+    internal string? RemoveDaemonEnvironmentFile()
     {
         var envFilePath = _paths.DaemonEnvironmentFilePath;
-        if (File.Exists(envFilePath))
-            File.Delete(envFilePath);
+        if (!File.Exists(envFilePath))
+            return null;
+
+        if (DaemonPathEnvironmentFile.HasOperatorLines(File.ReadAllText(envFilePath)))
+            return envFilePath;
+
+        File.Delete(envFilePath);
+        return null;
     }
 
     /// <summary>
@@ -468,11 +496,13 @@ public sealed partial class DaemonManager
         if (File.Exists(unitPath))
             File.Delete(unitPath);
 
-        RemoveDaemonEnvironmentFile();
+        var keptEnvFile = RemoveDaemonEnvironmentFile();
 
         await RunCommandAsync("systemctl", "--user daemon-reload");
 
-        return new DaemonResult(true, "Service uninstalled.");
+        return new DaemonResult(true, keptEnvFile is null
+            ? "Service uninstalled."
+            : $"Service uninstalled.\nKept {keptEnvFile} because it holds lines that you wrote. Delete it by hand when you do not need them.");
     }
 
     // ═══════════════════════════════════════════════════════════════════════

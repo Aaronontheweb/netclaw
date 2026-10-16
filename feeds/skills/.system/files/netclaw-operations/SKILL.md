@@ -3,7 +3,7 @@ name: netclaw-operations
 description: "REQUIRED when the user asks about scheduling, reminders, cron jobs, timers, background jobs, diagnostics, troubleshooting, MCP tools, daemon health, identity updates, or Netclaw capabilities and self-maintenance."
 metadata:
   author: netclaw
-  version: "2.109.1"
+  version: "2.110.0"
 ---
 
 # Netclaw Operations
@@ -958,6 +958,17 @@ can be backfilled with `netclaw memory backfill-embeddings [--force]` (a no-op w
 `Memory.Embeddings.Enabled` is false); doctor checks
 memory embedding availability. Full guidance:
 `skill_read_resource('netclaw-operations', 'references/diagnostics.md')`.
+
+The systemd service reads `<home>/config/daemon.env`. `netclaw daemon install` and
+`netclaw doctor --fix` change only the `PATH=` line. They keep every other line, and they set the
+file mode to 0600 because the values are plain text. Add a line with
+`netclaw daemon install --env KEY=VALUE`. A key starts with `NETCLAW_` and uses `__` as the section
+separator. Repeat `--env` for more lines. The command refuses a key or a URL that looks like a
+credential. Store a credential with `netclaw secrets set`. `netclaw daemon uninstall` keeps a
+`daemon.env` that holds any line other than `PATH=`, and it prints the path. The install scripts
+(`install.sh` and `install.ps1`) read `NETCLAW_HOME` for the config directory. `install.sh` also
+uses it for the default install directory and for the shell `env` file. `CONFIG_DIR` and
+`NETCLAW_CONFIG_DIR` no longer work.
 
 ## Identity
 

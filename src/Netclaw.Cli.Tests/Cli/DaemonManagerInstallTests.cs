@@ -59,7 +59,7 @@ public sealed class DaemonManagerInstallTests : IDisposable
             new SystemCommandResult(1, "Failed to connect to bus: No medium found"));
         var sut = CreateManager(runner);
 
-        var result = await sut.InstallAsync();
+        var result = await sut.InstallAsync([]);
 
         Assert.False(result.Success);
         Assert.Contains("systemd user services are not available on this host", result.Message);
@@ -80,7 +80,7 @@ public sealed class DaemonManagerInstallTests : IDisposable
             new SystemCommandResult(-1, string.Empty, "No such file or directory"));
         var sut = CreateManager(runner);
 
-        var result = await sut.InstallAsync();
+        var result = await sut.InstallAsync([]);
 
         Assert.False(result.Success);
         Assert.Contains("systemd user services are not available on this host", result.Message);
@@ -95,7 +95,7 @@ public sealed class DaemonManagerInstallTests : IDisposable
         var runner = new FakeSystemCommandRunner();
         var sut = CreateManager(runner);
 
-        var result = await sut.InstallAsync();
+        var result = await sut.InstallAsync([]);
 
         Assert.True(result.Success, result.Message);
         Assert.True(File.Exists(_unitPath));
@@ -126,6 +126,132 @@ public sealed class DaemonManagerInstallTests : IDisposable
         Assert.True(result.Success, result.Message);
         Assert.False(File.Exists(_unitPath));
         Assert.False(File.Exists(_paths.DaemonEnvironmentFilePath));
+    }
+
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Install_keeps_operator_lines_in_daemon_env()
+    {
+        File.WriteAllText(
+            _paths.DaemonEnvironmentFilePath,
+            "NETCLAW_HOME=/x/home\n# proxy for the shell tool\nHTTP_PROXY=http://proxy.example:3128\nPATH=/old\n");
+        var sut = CreateManager(new FakeSystemCommandRunner());
+
+        var first = await sut.InstallAsync([]);
+        var afterFirst = File.ReadAllText(_paths.DaemonEnvironmentFilePath);
+        var second = await sut.InstallAsync([]);
+
+        Assert.True(first.Success, first.Message);
+        Assert.True(second.Success, second.Message);
+        var lines = afterFirst.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Equal("NETCLAW_HOME=/x/home", lines[0]);
+        Assert.Equal("# proxy for the shell tool", lines[1]);
+        Assert.Equal("HTTP_PROXY=http://proxy.example:3128", lines[2]);
+        Assert.StartsWith("PATH=", lines[3], StringComparison.Ordinal);
+        Assert.DoesNotContain("PATH=/old", afterFirst, StringComparison.Ordinal);
+        Assert.Single(lines, line => line.StartsWith("PATH=", StringComparison.Ordinal));
+        Assert.Equal(afterFirst, File.ReadAllText(_paths.DaemonEnvironmentFilePath));
+    }
+
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Install_with_env_writes_netclaw_lines_once_and_is_idempotent()
+    {
+        var sut = CreateManager(new FakeSystemCommandRunner());
+        string[] entries = ["NETCLAW_DAEMON__PORT=56114", "NETCLAW_HOME=/x/home"];
+
+        var first = await sut.InstallAsync(entries);
+        var afterFirst = File.ReadAllText(_paths.DaemonEnvironmentFilePath);
+        var second = await sut.InstallAsync(entries);
+
+        Assert.True(first.Success, first.Message);
+        Assert.True(second.Success, second.Message);
+        var lines = afterFirst.Split('\n', StringSplitOptions.RemoveEmptyEntries);
+        Assert.Single(lines, line => line == "NETCLAW_DAEMON__PORT=56114");
+        Assert.Single(lines, line => line == "NETCLAW_HOME=/x/home");
+        Assert.Single(lines, line => line.StartsWith("PATH=", StringComparison.Ordinal));
+        Assert.Equal(afterFirst, File.ReadAllText(_paths.DaemonEnvironmentFilePath));
+    }
+
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Theory(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    [InlineData("NETCLAW_Providers__main__ApiKey=sk-test-value")]
+    [InlineData("NETCLAW_Memory__ServerUrl=https://user:pw-test-value@host.example/db")]
+    public async Task Install_with_env_refuses_credential_keys_and_writes_nothing(string entry)
+    {
+        const string seeded = "HTTP_PROXY=http://proxy.example:3128\nPATH=/old\n";
+        File.WriteAllText(_paths.DaemonEnvironmentFilePath, seeded);
+        var runner = new FakeSystemCommandRunner();
+        var sut = CreateManager(runner);
+
+        var result = await sut.InstallAsync([entry]);
+
+        Assert.False(result.Success);
+        Assert.Contains("netclaw secrets set", result.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("test-value", result.Message, StringComparison.Ordinal);
+        Assert.Empty(runner.Commands);
+        Assert.Equal(seeded, File.ReadAllText(_paths.DaemonEnvironmentFilePath));
+        Assert.False(File.Exists(_unitPath));
+    }
+
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Theory(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    [InlineData("HTTP_PROXY=http://proxy.example:3128")]
+    [InlineData("NOEQUALS")]
+    [InlineData("NETCLAW_HOME=/x\ny")]
+    public async Task Install_with_env_refuses_bad_entries(string entry)
+    {
+        var runner = new FakeSystemCommandRunner();
+        var sut = CreateManager(runner);
+
+        var result = await sut.InstallAsync([entry]);
+
+        Assert.False(result.Success);
+        Assert.DoesNotContain("proxy.example", result.Message, StringComparison.Ordinal);
+        Assert.Empty(runner.Commands);
+        Assert.False(File.Exists(_paths.DaemonEnvironmentFilePath));
+        Assert.False(File.Exists(_unitPath));
+    }
+
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Theory(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Install_writes_daemon_env_with_mode_0600(bool seedLooseFile)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        if (seedLooseFile)
+        {
+            File.WriteAllText(_paths.DaemonEnvironmentFilePath, "HTTP_PROXY=http://proxy.example:3128\n");
+            File.SetUnixFileMode(
+                _paths.DaemonEnvironmentFilePath,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+        }
+
+        var result = await CreateManager(new FakeSystemCommandRunner()).InstallAsync([]);
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            File.GetUnixFileMode(_paths.DaemonEnvironmentFilePath));
+    }
+
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Uninstall_keeps_daemon_env_with_operator_lines_and_names_the_path()
+    {
+        const string content = "NETCLAW_HOME=/x/home\nPATH=/usr/bin\n";
+        File.WriteAllText(_paths.DaemonEnvironmentFilePath, content);
+        var sut = CreateManager(new FakeSystemCommandRunner());
+
+        var result = await sut.UninstallAsync();
+
+        Assert.True(result.Success, result.Message);
+        Assert.StartsWith("Service uninstalled.", result.Message, StringComparison.Ordinal);
+        Assert.Contains(_paths.DaemonEnvironmentFilePath, result.Message, StringComparison.Ordinal);
+        Assert.Equal(content, File.ReadAllText(_paths.DaemonEnvironmentFilePath));
     }
 
     private DaemonManager CreateManager(FakeSystemCommandRunner runner)

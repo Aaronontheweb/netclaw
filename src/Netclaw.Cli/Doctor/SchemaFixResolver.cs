@@ -221,7 +221,7 @@ public static class SchemaFixResolver
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
     // Looks through objects and arrays: a credential nested anywhere under the key keeps the key.
-    private static bool HoldsCredential(string name, JsonNode? value)
+    internal static bool HoldsCredential(string name, JsonNode? value)
         => SecretOutputRedactor.IsSecretKey(name)
            || CredentialNames.Contains(name.Replace("_", "", StringComparison.Ordinal).Replace("-", "", StringComparison.Ordinal))
            || IsCredentialUrl(name, value)
