@@ -4,15 +4,17 @@ The daemon treats every request that arrives from a loopback source address as t
 
 ## What Changes
 
-- The loopback authentication scheme checks the `Host` header of each loopback-source request in `local` exposure mode. The host name must be `localhost`, `127.0.0.1`, or `[::1]`, with any port, compared without case.
+- The loopback authentication scheme checks the `Host` header of each loopback-source request in `local` exposure mode. The host name must be `localhost` or an IP literal that `DaemonExposureValidator.IsLoopbackHost` accepts, in canonical text, with any port, compared without case. A `Daemon.Host` that passes configuration validation, such as `127.0.0.2`, passes this test. A rebinding page controls a DNS name and not an IP literal, so an IP literal is safe.
 - When the request has an `Origin` header, the value must equal `http://` plus the request `Host`. `Origin: null` fails.
-- A refused request fails authentication with a reason. The route answers HTTP 401. The scheme logs a warning with the `Host` and `Origin` values.
+- A refused request fails authentication with a reason. A protected route answers HTTP 401 and the scheme logs a warning with the `Host` and `Origin` values. An anonymous route answers as before and writes no warning.
 - The rule is fixed. No configuration option changes it.
-- **BREAKING**: A client that reaches the loopback daemon through another host name, for example an `/etc/hosts` alias, gets 401. A local web app on another port also gets 401.
+- **BREAKING**: A client that reaches the loopback daemon through another host name, for example an `/etc/hosts` alias, gets 401. A local web app on another port, for example `http://localhost:3000`, also gets 401 when it calls the daemon from the browser.
 
 Source PRD: PRD-002 SEC-005 (exposure policy).
 
-In scope: the loopback scheme. Out of scope: bearer requests, anonymous routes such as `/api/health/ready`, and the tunnel and `reverse-proxy` exposure modes. A per-session CSRF token is out of scope.
+Terms: this change uses [Operator, loopback request, and device token](../../../docs/spec/GLOSSARY.md) as the glossary defines them.
+
+In scope: the loopback scheme. Out of scope: bearer requests, the answer of anonymous routes such as `/api/health/ready`, and the tunnel and `reverse-proxy` exposure modes. A per-session CSRF token is out of scope.
 
 ## Capabilities
 

@@ -8,10 +8,12 @@ When `Daemon.ExposureMode` is `reverse-proxy`, the loopback scheme SHALL return 
 
 In `local` exposure mode, the loopback scheme SHALL refuse a loopback-source request unless the request passes both of these tests:
 
-- The `Host` header names `localhost`, `127.0.0.1`, or `[::1]`, with any port, compared without regard to case.
+- The `Host` header names `localhost`, or an IP literal that the shared loopback rule (`DaemonExposureValidator.IsLoopbackHost`) accepts, with any port, compared without regard to case. An IP literal is an IPv4 address of `127.0.0.0/8` in dotted-quad text, or `[::1]`. The scheme SHALL refuse `localhost.`, a short, decimal, or hexadecimal IPv4 spelling, an IPv4-mapped IPv6 literal, `0.0.0.0`, and any other name.
 - The request has no `Origin` header, or the `Origin` header equals `http://` plus the request `Host`, compared without regard to case.
 
-The loopback scheme SHALL fail a refused request with a reason, and the route SHALL answer HTTP 401. The loopback scheme SHALL log each refusal at warning level with the `Host` and `Origin` values and no other request data. The rule SHALL be fixed and SHALL have no configuration option. The Host and Origin test SHALL NOT apply to requests that carry a bearer token or to routes that allow anonymous access.
+The scheme SHALL run the Host and Origin test on every loopback-source request in `local` mode and SHALL fail a refused request with a reason. A refusal denies only a protected route: the route SHALL answer HTTP 401. A route that allows anonymous access SHALL answer as before. The loopback scheme SHALL log a warning with the `Host` and `Origin` values and no other request data only when it denies a request. A refused request to an anonymous route SHALL NOT write a warning. The rule SHALL be fixed and SHALL have no configuration option. The Host and Origin test SHALL NOT apply to requests that carry a bearer token.
+
+The terms Operator, loopback request, and device token have the meaning in [the engineering glossary](../../../../../docs/spec/GLOSSARY.md). The Host and Origin values are call-local data.
 
 #### Scenario: Loopback connection auto-authenticated in local mode
 
@@ -28,6 +30,21 @@ The loopback scheme SHALL fail a refused request with a reason, and the route SH
 - **AND** the `Host` header is `localhost:5199` and the `Origin` header is `http://localhost:5199`
 - **WHEN** the loopback scheme evaluates the connection
 - **THEN** the connection is authenticated as `Operator` with `LocalProcess` authenticity
+
+#### Scenario: Local bind other than 127.0.0.1 is admitted
+
+- **GIVEN** `Daemon.ExposureMode` is `local` and `Daemon.Host` is `127.0.0.2`
+- **AND** the CLI connects to `http://127.0.0.2:5199`, so the `Host` header is `127.0.0.2:5199`
+- **WHEN** the loopback scheme evaluates the connection
+- **THEN** the connection is authenticated as `Operator` with `LocalProcess` authenticity
+
+#### Scenario: Legacy IP spelling is refused
+
+- **GIVEN** `Daemon.ExposureMode` is `local`
+- **AND** a connection originates from `127.0.0.1`
+- **AND** the `Host` header is `2130706433:5199`, `0x7f.1:5199`, `0.0.0.0:5199`, or `localhost.:5199`
+- **WHEN** the loopback scheme evaluates the connection
+- **THEN** authentication fails
 
 #### Scenario: Foreign Host is refused
 
@@ -46,6 +63,24 @@ The loopback scheme SHALL fail a refused request with a reason, and the route SH
 - **WHEN** the loopback scheme evaluates the connection
 - **THEN** authentication fails
 - **AND** the route answers HTTP 401
+
+#### Scenario: Denied request is logged once
+
+- **GIVEN** `Daemon.ExposureMode` is `local`
+- **AND** a connection originates from `127.0.0.1`
+- **AND** the `Host` header is `rebind.example:5199`
+- **WHEN** the request reaches a protected route
+- **THEN** the route answers HTTP 401
+- **AND** the daemon writes one warning with the `Host` and `Origin` values
+
+#### Scenario: Anonymous route writes no refusal warning
+
+- **GIVEN** `Daemon.ExposureMode` is `local`
+- **AND** a connection originates from `127.0.0.1`
+- **AND** the `Host` header is `rebind.example:5199`
+- **WHEN** the request reaches `/api/health/ready`
+- **THEN** the route answers as it does for any caller
+- **AND** the daemon writes no refusal warning
 
 #### Scenario: Null Origin is refused
 

@@ -953,11 +953,13 @@ Older daemon or CLI versions can omit these flags from the transport and report 
 Check the actor log before you conclude that an older run skipped a phase.
 
 A request to the loopback daemon can fail with HTTP 401 while the client is on the same host.
-The daemon trusts a loopback request only when its `Host` header is `localhost`, `127.0.0.1`, or `[::1]`, with any port.
+The daemon trusts a loopback request only when its `Host` header is `localhost` or a loopback IP literal, with any port.
+A loopback IP literal is an address of `127.0.0.0/8` in dotted-quad text, such as `127.0.0.1` or `127.0.0.2`, or `[::1]`.
+The daemon refuses `localhost.`, short or decimal IP spellings such as `127.1` or `2130706433`, and `0.0.0.0`.
 If the request has an `Origin` header, the value must be `http://` plus the `Host`.
 A client that uses another host name for the daemon, such as an `/etc/hosts` alias, gets 401.
-A web page on another origin also gets 401.
-`daemon.log` has a warning, `Refused loopback request`, with the `Host` and `Origin` values.
+A web page on another origin also gets 401, also a local web app on another port such as `http://localhost:3000`.
+When a protected route denies such a request, `daemon.log` has a warning, `Refused loopback request`, with the `Host` and `Origin` values.
 Fix: call the daemon as `http://127.0.0.1:<port>` or `http://localhost:<port>`, or pair the client and send a device token.
 A device token request is not checked for `Host` or `Origin`.
 
