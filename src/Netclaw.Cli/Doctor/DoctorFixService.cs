@@ -44,6 +44,7 @@ public sealed class DoctorFixService
         // evaluated even when the app config file is absent, so it runs before the
         // config-file early-return below.
         TryAddDaemonPathEnvironmentFix(fixes);
+        TryAddDaemonEnvironmentModeFix(fixes);
         TryAddToolApprovalHygieneFix(fixes);
 
         if (!File.Exists(_paths.NetclawConfigPath))
@@ -306,6 +307,34 @@ public sealed class DoctorFixService
             UpdatedText: updated));
     }
 
+    // The PATH fix already rewrites the file with mode 0600. This fix covers a file whose PATH is
+    // healthy, or one that uninstall kept, and it changes the mode only.
+    private void TryAddDaemonEnvironmentModeFix(List<DoctorFileFix> fixes)
+    {
+        var envPath = _paths.DaemonEnvironmentFilePath;
+        if (fixes.Any(fix => string.Equals(fix.FilePath, envPath, StringComparison.Ordinal))
+            || !DaemonPathEnvironmentFile.HasLooseMode(envPath))
+        {
+            return;
+        }
+
+        string text;
+        try
+        {
+            text = File.ReadAllText(envPath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return;
+        }
+
+        fixes.Add(new DoctorFileFix(
+            FilePath: envPath,
+            Description: "Set the mode of daemon.env to 0600. The file holds plain-text values and no other user needs access.",
+            OriginalText: text,
+            UpdatedText: text));
+    }
+
     // Removes the grants that add nothing. The store text of the plan comes from
     // the store itself, and the apply step writes it only when the store did not
     // change in between.
@@ -398,6 +427,18 @@ public sealed class DoctorFixService
                 continue;
             }
 
+            // daemon.env holds plain-text values, so the file is owner-only. A fix with equal texts
+            // changes the mode and nothing else. Any other fix writes through a symbolic link.
+            if (string.Equals(fix.FilePath, _paths.DaemonEnvironmentFilePath, StringComparison.Ordinal))
+            {
+                if (string.Equals(fix.OriginalText, fix.UpdatedText, StringComparison.Ordinal))
+                    DaemonPathEnvironmentFile.RestrictToOwner(fix.FilePath);
+                else
+                    DaemonPathEnvironmentFile.Write(fix.FilePath, fix.UpdatedText);
+
+                continue;
+            }
+
             // Ensure the parent directory exists before writing. The daemon-PATH fix can
             // target ~/.netclaw/config even after that directory has been removed, so a bare
             // File.WriteAllTextAsync would throw DirectoryNotFoundException and abort the run.
@@ -407,12 +448,8 @@ public sealed class DoctorFixService
 
             cancellationToken.ThrowIfCancellationRequested();
             // The rewrite keeps the file's mode: a netclaw.json that holds a token and is
-            // owner-only must not come back readable by others. daemon.env holds plain-text
-            // values, so its rewrite sets owner-only access even over a looser file.
-            Action<string> harden = string.Equals(fix.FilePath, _paths.DaemonEnvironmentFilePath, StringComparison.Ordinal)
-                ? AtomicFile.HardenOwnerOnly
-                : temp => CopyFileMode(fix.FilePath, temp);
-            AtomicFile.WriteAllText(fix.FilePath, fix.UpdatedText, harden);
+            // owner-only must not come back readable by others.
+            AtomicFile.WriteAllText(fix.FilePath, fix.UpdatedText, temp => CopyFileMode(fix.FilePath, temp));
         }
 
         return Task.FromResult<IReadOnlyList<string>>(backups);

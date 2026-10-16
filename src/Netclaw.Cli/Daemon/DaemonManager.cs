@@ -372,11 +372,18 @@ public sealed partial class DaemonManager
         }
 
         // The file keeps the lines the operator wrote. Its mode is 0600 because the values are
-        // plain text, unlike the encrypted values in secrets.json.
-        AtomicFile.WriteAllText(
-            envFilePath,
-            DaemonPathEnvironmentFile.Merge(existingEnvText, installDir, capturedPath, envAssignments),
-            AtomicFile.HardenOwnerOnly);
+        // plain text, unlike the encrypted values in secrets.json. A symbolic link stays a link.
+        try
+        {
+            DaemonPathEnvironmentFile.Write(
+                envFilePath,
+                DaemonPathEnvironmentFile.Merge(existingEnvText, installDir, capturedPath, envAssignments));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return new DaemonResult(false,
+                $"Cannot write {DaemonPathEnvironmentFile.ResolveTarget(envFilePath)} (the daemon environment file at {envFilePath}): {ex.Message}");
+        }
 
         var unitPath = SystemdUserUnitFilePath;
         var isUpgrade = File.Exists(unitPath);
@@ -433,7 +440,12 @@ public sealed partial class DaemonManager
             return null;
 
         if (DaemonPathEnvironmentFile.HasOperatorLines(File.ReadAllText(envFilePath)))
+        {
+            // The kept lines are plain text that the operator wrote, so the mode must be 0600 even
+            // when an older install or a hand edit left the file open to others.
+            DaemonPathEnvironmentFile.RestrictToOwner(envFilePath);
             return envFilePath;
+        }
 
         File.Delete(envFilePath);
         return null;

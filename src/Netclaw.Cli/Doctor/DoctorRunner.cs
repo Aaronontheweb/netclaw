@@ -21,7 +21,7 @@ public sealed class DoctorRunner(IEnumerable<IDoctorCheck> checks)
 
         foreach (var check in checks)
         {
-            if (configLoad is not null && check is not (ImageProcessingDoctorCheck or SqliteProvisioningDoctorCheck or SystemdUnitPathDoctorCheck))
+            if (configLoad is not null && check is not (ImageProcessingDoctorCheck or SqliteProvisioningDoctorCheck or SystemdUnitPathDoctorCheck or DaemonEnvironmentFileModeDoctorCheck))
             {
                 skipped++;
                 continue;

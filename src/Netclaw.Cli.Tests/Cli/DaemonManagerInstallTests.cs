@@ -254,6 +254,84 @@ public sealed class DaemonManagerInstallTests : IDisposable
         Assert.Equal(content, File.ReadAllText(_paths.DaemonEnvironmentFilePath));
     }
 
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Uninstall_sets_mode_0600_on_a_kept_daemon_env()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        File.WriteAllText(_paths.DaemonEnvironmentFilePath, "NETCLAW_HOME=/x/home\nPATH=/usr/bin\n");
+        File.SetUnixFileMode(
+            _paths.DaemonEnvironmentFilePath,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.GroupRead | UnixFileMode.OtherRead);
+
+        var result = await CreateManager(new FakeSystemCommandRunner()).UninstallAsync();
+
+        Assert.True(result.Success, result.Message);
+        Assert.Equal(
+            UnixFileMode.UserRead | UnixFileMode.UserWrite,
+            File.GetUnixFileMode(_paths.DaemonEnvironmentFilePath));
+    }
+
+    // Fleet tools can link daemon.env to a managed file. Install writes through the link and
+    // never replaces the link with a regular file.
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Install_writes_through_a_symlinked_daemon_env()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var targetDir = Path.Combine(_dir.Path, "managed");
+        Directory.CreateDirectory(targetDir);
+        var target = Path.Combine(targetDir, "daemon.env");
+        File.WriteAllText(target, "HTTP_PROXY=http://proxy.example:3128\nPATH=/old\n");
+        File.CreateSymbolicLink(_paths.DaemonEnvironmentFilePath, target);
+
+        var result = await CreateManager(new FakeSystemCommandRunner()).InstallAsync(["NETCLAW_HOME=/x/home"]);
+
+        Assert.True(result.Success, result.Message);
+        Assert.NotNull(new FileInfo(_paths.DaemonEnvironmentFilePath).LinkTarget);
+        var text = File.ReadAllText(target);
+        Assert.StartsWith("HTTP_PROXY=http://proxy.example:3128\n", text, StringComparison.Ordinal);
+        Assert.Contains("NETCLAW_HOME=/x/home\n", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("PATH=/old", text, StringComparison.Ordinal);
+        Assert.Equal(text, File.ReadAllText(_paths.DaemonEnvironmentFilePath));
+        Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(target));
+        Assert.Equal([target], Directory.GetFiles(targetDir));
+    }
+
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Install_refuses_with_the_path_when_the_symlink_target_cannot_be_written()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var targetDir = Path.Combine(_dir.Path, "locked");
+        Directory.CreateDirectory(targetDir);
+        var target = Path.Combine(targetDir, "daemon.env");
+        const string original = "HTTP_PROXY=http://proxy.example:3128\nPATH=/old\n";
+        File.WriteAllText(target, original);
+        File.CreateSymbolicLink(_paths.DaemonEnvironmentFilePath, target);
+        File.SetUnixFileMode(targetDir, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+        try
+        {
+            var result = await CreateManager(new FakeSystemCommandRunner()).InstallAsync([]);
+
+            Assert.False(result.Success);
+            Assert.Contains(target, result.Message, StringComparison.Ordinal);
+            Assert.NotNull(new FileInfo(_paths.DaemonEnvironmentFilePath).LinkTarget);
+            Assert.Equal(original, File.ReadAllText(target));
+            Assert.False(File.Exists(_unitPath));
+        }
+        finally
+        {
+            File.SetUnixFileMode(targetDir, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+    }
+
     private DaemonManager CreateManager(FakeSystemCommandRunner runner)
         => new(_paths, TimeProvider.System, new FakeSupervisor(), runner);
 

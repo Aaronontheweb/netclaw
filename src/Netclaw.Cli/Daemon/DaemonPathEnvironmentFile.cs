@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 using Netclaw.Cli.Doctor;
+using Netclaw.Configuration;
 
 namespace Netclaw.Cli.Daemon;
 
@@ -167,6 +168,41 @@ internal static class DaemonPathEnvironmentFile
         return text.ToString();
     }
 
+    /// <summary>
+    /// Writes the file atomically with owner-only access, because the values are plain text. A
+    /// symbolic link stays a link: the write goes to the file that the link names, so a fleet tool
+    /// that links <c>daemon.env</c> keeps its link. A target that cannot be written throws.
+    /// </summary>
+    internal static void Write(string envFilePath, string text)
+        => AtomicFile.WriteAllText(ResolveTarget(envFilePath), text, AtomicFile.HardenOwnerOnly);
+
+    /// <summary>The file that a write to <paramref name="envFilePath"/> changes. A symbolic link chain resolves to its end.</summary>
+    internal static string ResolveTarget(string envFilePath)
+    {
+        var file = new FileInfo(envFilePath);
+        return file.LinkTarget is null
+            ? envFilePath
+            : file.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? envFilePath;
+    }
+
+    /// <summary>True when group or others have any access to the file. Always false on Windows.</summary>
+    internal static bool HasLooseMode(string envFilePath)
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(envFilePath))
+            return false;
+
+        const UnixFileMode groupAndOthers = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute
+            | UnixFileMode.OtherRead | UnixFileMode.OtherWrite | UnixFileMode.OtherExecute;
+        return (File.GetUnixFileMode(envFilePath) & groupAndOthers) != 0;
+    }
+
+    /// <summary>Sets mode 0600 on the file and changes nothing else. A no-op on Windows.</summary>
+    internal static void RestrictToOwner(string envFilePath)
+    {
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(envFilePath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+    }
+
     private static string? KeyOf(string trimmedLine)
     {
         var equals = trimmedLine.IndexOf('=', StringComparison.Ordinal);
@@ -324,6 +360,10 @@ internal static class DaemonPathEnvironmentFile
 /// </summary>
 internal readonly partial record struct DaemonEnvAssignment(string Key, string Value)
 {
+    private const string KeyPrefix = "NETCLAW_";
+
+    private static readonly string[] FreeNameSections = ["EnvironmentVariables", "Headers"];
+
     [GeneratedRegex(@"^NETCLAW_[A-Za-z0-9_]+\z")]
     private static partial Regex KeyPattern();
 
@@ -357,9 +397,17 @@ internal readonly partial record struct DaemonEnvAssignment(string Key, string V
                 return false;
             }
 
-            if (value.Contains('\n') || value.Contains('\r'))
+            if (value.Contains('\n', StringComparison.Ordinal) || value.Contains('\r', StringComparison.Ordinal))
             {
                 error = $"The --env value for '{key}' holds a line break. A value must stay on one line.";
+                return false;
+            }
+
+            if (value.AsSpan().IndexOfAny('\\', '\'', '"') >= 0 || value.Trim().Length != value.Length)
+            {
+                error = $"The --env value for '{key}' holds a backslash, a quote, or a space at its start or end. "
+                    + "systemd reads these in an environment file as an escape, a quote, or a trim, so the daemon would see a different value. "
+                    + "Use a value without them.";
                 return false;
             }
 
@@ -372,7 +420,7 @@ internal readonly partial record struct DaemonEnvAssignment(string Key, string V
             // The credential rule has one owner: the schema fixer decides which key names and
             // URL shapes hold a credential. It works on names and shapes and cannot prove that
             // a value is free of secrets.
-            if (SchemaFixResolver.HoldsCredential(key, JsonValue.Create(value)))
+            if (HoldsCredential(key, value))
             {
                 error = $"Refusing to write '{key}' to daemon.env. The key or the value looks like a credential, "
                     + "and daemon.env is plain text. Store the credential with `netclaw secrets set`.";
@@ -384,5 +432,41 @@ internal readonly partial record struct DaemonEnvAssignment(string Key, string V
 
         error = string.Empty;
         return true;
+    }
+
+    // The schema fixer decides by the name of the config property. An --env key holds the whole
+    // path (NETCLAW_McpServers__gh__EnvironmentVariables__GITHUB_PAT), so the rule runs on every
+    // segment. A name inside EnvironmentVariables or Headers is free text, so its last word counts.
+    // A URL with user info is a credential whatever the key says.
+    private static bool HoldsCredential(string key, string value)
+    {
+        if (SchemaFixResolver.HasUrlUserInfo(value))
+            return true;
+
+        var node = JsonValue.Create(value);
+        if (SchemaFixResolver.HoldsCredential(key, node))
+            return true;
+
+        var segments = key[KeyPrefix.Length..].Split("__");
+        for (var i = 0; i < segments.Length; i++)
+        {
+            if (SchemaFixResolver.HoldsCredential(segments[i], node))
+                return true;
+
+            if (i > 0 && FreeNameSections.Contains(segments[i - 1], StringComparer.OrdinalIgnoreCase)
+                && HoldsCredentialInFreeName(segments[i], node))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HoldsCredentialInFreeName(string name, JsonNode? value)
+    {
+        var lastWord = name.Split('_', '-')[^1];
+        return lastWord.Equals("KEY", StringComparison.OrdinalIgnoreCase)
+            || SchemaFixResolver.HoldsCredential(lastWord, value);
     }
 }

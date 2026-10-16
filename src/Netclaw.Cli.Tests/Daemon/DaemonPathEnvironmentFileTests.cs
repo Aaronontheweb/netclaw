@@ -307,6 +307,65 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
         Assert.DoesNotContain("secret-value", error, StringComparison.Ordinal);
     }
 
+    // The doctor decides by the leaf name, but an --env key carries the NETCLAW_ prefix and the
+    // __ path. The refusal must look at each path segment and at the name of a dictionary entry.
+    [Theory]
+    [InlineData("NETCLAW_McpServers__gh__EnvironmentVariables__GITHUB_PAT=ghp_probevalue")]
+    [InlineData("NETCLAW_X__Pat=probevalue")]
+    [InlineData("NETCLAW_X__Passphrase=probevalue")]
+    [InlineData("NETCLAW_X__Pwd=probevalue")]
+    [InlineData("NETCLAW_X__Cookie=probevalue")]
+    [InlineData("NETCLAW_McpServers__x__Headers__Bearer=probevalue")]
+    [InlineData("NETCLAW_McpServers__x__Headers__X_Session_Cookie=probevalue")]
+    [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__OPENAI_KEY=probevalue")]
+    [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__STRIPE_API_KEY=probevalue")]
+    [InlineData("NETCLAW_Search__SearXngEndpoint=https://u:probevalue@searx.example")]
+    [InlineData("NETCLAW_Providers__main__Endpoint=https://u:probevalue@llm.example")]
+    [InlineData("NETCLAW_Providers__main__Endpoint=https://probevalue@llm.example")]
+    [InlineData("NETCLAW_Anything__Else=ssh://probevalue@host.example/repo")]
+    [InlineData("NETCLAW_Providers__main__ApiKey=probevalue")]
+    [InlineData("NETCLAW_Slack__SigningSecret=probevalue")]
+    [InlineData("NETCLAW_Webhooks__x__Url=https://hooks.slack.com/services/T/B/probevalue")]
+    [InlineData("NETCLAW_Sentry__Dsn=https://probevalue@o.ingest.sentry.io/1")]
+    public void TryParseAll_refuses_every_credential_shape_and_never_prints_the_value(string entry)
+    {
+        Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), entry);
+        Assert.Contains("netclaw secrets set", error, StringComparison.Ordinal);
+        Assert.DoesNotContain("probevalue", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("NETCLAW_HOME=/x/home")]
+    [InlineData("NETCLAW_DAEMON__PORT=56113")]
+    [InlineData("NETCLAW_Memory__ServerUrl=https://host.example/db")]
+    [InlineData("NETCLAW_Providers__main__Endpoint=https://llm.example:8443/v1")]
+    [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__LOG_LEVEL=debug")]
+    [InlineData("NETCLAW_McpServers__x__EnvironmentVariables__KEYBOARD_LAYOUT=us")]
+    [InlineData("NETCLAW_McpServers__x__Headers__Accept=application/json")]
+    [InlineData("NETCLAW_Search__MaxKeywordCount=3")]
+    [InlineData("NETCLAW_LOG_DIR=/var/log/netclaw")]
+    [InlineData("NETCLAW_Contact__Email=ops@example.com")]
+    public void TryParseAll_accepts_settings_that_are_not_credentials(string entry)
+        => Assert.True(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), error);
+
+    // systemd EnvironmentFile= reads a trailing backslash as a line continuation, a leading quote
+    // as a value that spans lines, and a backslash as an escape. The writer cannot quote a value
+    // for every systemd version, so it refuses the characters and does not change the value.
+    [Theory]
+    [InlineData("NETCLAW_HOME=/x/home\\")]
+    [InlineData("NETCLAW_HOME='/x/home")]
+    [InlineData("NETCLAW_HOME=\"/x/home")]
+    [InlineData("NETCLAW_LOG_DIR=C:\\logs\\netclaw")]
+    [InlineData("NETCLAW_Contact__Name=it's")]
+    [InlineData("NETCLAW_Contact__Name=say \"hi\"")]
+    public void TryParseAll_refuses_values_that_systemd_reads_differently(string entry)
+    {
+        Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), entry);
+        Assert.Contains("NETCLAW_", error, StringComparison.Ordinal);
+        Assert.Contains("systemd", error, StringComparison.Ordinal);
+        Assert.DoesNotContain(entry[(entry.IndexOf('=', StringComparison.Ordinal) + 1)..], error, StringComparison.Ordinal);
+    }
+
     private NetclawPaths NewPaths()
     {
         var paths = new NetclawPaths(Path.Combine(_temp.Path, Guid.NewGuid().ToString("N")));

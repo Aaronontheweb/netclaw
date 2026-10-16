@@ -232,6 +232,8 @@ public static class SchemaFixResolver
                _ => false,
            };
 
+    internal static bool HasUrlUserInfo(string text) => UrlWithUserInfo.IsMatch(text);
+
     private static bool IsCredentialUrl(string name, JsonNode? value)
     {
         if (value is not JsonValue json || !json.TryGetValue<string>(out var text))
