@@ -1059,6 +1059,31 @@ public sealed class ProviderCommandTests : IDisposable
     }
 
     [Fact]
+    public async Task Rename_ToANameThatOauthStateJsonHolds_FailsAndChangesNothing()
+    {
+        WriteConfig(new Dictionary<string, object>
+        {
+            ["configVersion"] = 1,
+            ["Providers"] = new Dictionary<string, object>
+            {
+                ["my-copilot"] = new Dictionary<string, object> { ["Type"] = "github-copilot", ["AuthMethod"] = "OAuthDevice" }
+            }
+        });
+        var expiry = DateTimeOffset.Parse("2026-07-01T00:00:00+00:00");
+        OAuthStateStore.SetExpiry(_paths, "my-copilot", expiry);
+        OAuthStateStore.SetExpiry(_paths, "Taken", expiry.AddDays(1));
+        var configBefore = File.ReadAllText(_paths.NetclawConfigPath);
+        var stateBefore = File.ReadAllText(_paths.OAuthStatePath);
+
+        var exitCode = await ProviderCommand.RunAsync(["provider", "rename", "my-copilot", "taken"], _paths, output: _output);
+
+        Assert.NotEqual(0, exitCode);
+        Assert.Contains("already exists in oauth-state.json", _output.ToString());
+        Assert.Equal(configBefore, File.ReadAllText(_paths.NetclawConfigPath));
+        Assert.Equal(stateBefore, File.ReadAllText(_paths.OAuthStatePath));
+    }
+
+    [Fact]
     public async Task Rename_CascadesToModelRoles()
     {
         // End-to-end testing surfaced that the old "config-key-only" behavior

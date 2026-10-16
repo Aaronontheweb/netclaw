@@ -865,6 +865,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
         {
             if (NewAuthMethod == AuthMethod.ApiKey && !string.IsNullOrWhiteSpace(NewApiKey))
             {
+                OAuthStateStore.Remove(_paths, name);
                 var secretProviders = ConfigFileHelper.GetOrCreateSection(secrets, "Providers");
                 secretProviders[name] = new Dictionary<string, object>
                 {

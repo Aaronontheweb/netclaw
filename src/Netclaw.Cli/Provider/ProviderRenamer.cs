@@ -43,7 +43,7 @@ internal static class ProviderRenamer
     /// <item><paramref name="oldName"/> must exist in <c>Providers</c> in <c>netclaw.json</c>.</item>
     /// <item><paramref name="newName"/> must be non-empty after trimming.</item>
     /// <item><paramref name="newName"/> must not collide (case-insensitive) with any other
-    /// provider key already present in either file.</item>
+    /// provider key already present in <c>netclaw.json</c>, <c>secrets.json</c>, or <c>oauth-state.json</c>.</item>
     /// <item>A case-only change (e.g. <c>my-vllm</c> → <c>My-Vllm</c>) is permitted and rewrites
     /// the key in place.</item>
     /// </list>
@@ -70,6 +70,9 @@ internal static class ProviderRenamer
         var secretProviders = ConfigFileHelper.GetSectionOrNull(secrets, "Providers");
         if (secretProviders is not null && HasCollision(secretProviders, oldName, trimmed))
             return RenameResult.Fail($"A provider named '{trimmed}' already exists in secrets.");
+
+        if (!string.Equals(oldName, trimmed, StringComparison.OrdinalIgnoreCase) && OAuthStateStore.Contains(paths, trimmed))
+            return RenameResult.Fail($"A provider named '{trimmed}' already exists in oauth-state.json.");
 
         var entry = providers[oldName];
         providers.Remove(oldName);
