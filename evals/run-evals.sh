@@ -67,6 +67,12 @@ THRESHOLD="${NETCLAW_EVAL_THRESHOLD:-0.80}"
 PROMPT_TIMEOUT="${NETCLAW_EVAL_TIMEOUT:-60}"
 EVAL_PORT="${NETCLAW_EVAL_PORT:-5299}"
 EVAL_CONTAINER_NAME="netclaw-eval-$$"
+# True after seed_eval_memories seeded the store. reset_memory_store acts only then.
+# A failed seed stops the run, so a run never goes on with the reset off.
+EVAL_MEMORY_SEEDED=false
+# How the memory reset before the current trial ended: "ok", or a reason code
+# that snapshot_trial_baseline writes into memory-before.json.
+TRIAL_MEMORY_RESET_STATUS=ok
 NO_BUILD="${NETCLAW_EVAL_NO_BUILD:-0}"
 FILTER_CATEGORY="${NETCLAW_EVAL_CATEGORY:-}"
 FILTER_CASE="${NETCLAW_EVAL_CASE:-}"
@@ -740,19 +746,22 @@ start_eval_daemon() {
 
 # ─── Memory Seeding ──────────────────────────────────────────────────────────
 
+## Seeds the memory store. Any failure stops the run with exit 2. A run that
+## goes on after a failed seed has no memory reset, so its trials would not be
+## independent, and the log would show only a warning.
 seed_eval_memories() {
     local db_path="/home/netclaw/.netclaw/netclaw.db"
     local fixtures_path="$EVAL_ASSET_ROOT/evals/fixtures/eval-memories.json"
     local seed_script="$REPO_ROOT/evals/seed-memories.py"
 
     if [[ ! -f "$fixtures_path" ]]; then
-        echo "WARN: no eval fixtures at $fixtures_path — memory tests may fail" >&2
-        return
+        echo "ERROR: no eval fixtures at $fixtures_path. The memory store cannot be seeded." >&2
+        exit 2
     fi
 
     if [[ ! -f "$seed_script" ]]; then
-        echo "WARN: no seed script at $seed_script — memory tests may fail" >&2
-        return
+        echo "ERROR: no seed script at $seed_script. The memory store cannot be seeded." >&2
+        exit 2
     fi
 
     # If the daemon has not touched memory yet, send one warm-up prompt through
@@ -775,24 +784,62 @@ seed_eval_memories() {
     done
 
     if ! docker exec "$EVAL_CONTAINER_NAME" test -f "$db_path" 2>/dev/null; then
-        echo "WARN: netclaw.db not found in container after 30s — skipping memory seeding" >&2
-        return
+        echo "ERROR: netclaw.db not found in the container after 30 s. The memory store cannot be seeded." >&2
+        exit 2
     fi
 
-    # Copy seed script and fixtures into the container, then run inside.
-    # The DB is owned by root, so we must execute within the container.
-    docker cp "$seed_script" "$EVAL_CONTAINER_NAME:/tmp/seed-memories.py"
-    docker cp "$fixtures_path" "$EVAL_CONTAINER_NAME:/tmp/eval-memories.json"
-
-    if docker exec "$EVAL_CONTAINER_NAME" python3 /tmp/seed-memories.py \
-        --db-path "$db_path" \
-        --fixtures /tmp/eval-memories.json; then
+    if run_memory_seed_script; then
         local count
         count=$(python3 -c "import json; print(len(json.load(open('$fixtures_path')).get('seedDocuments', [])))")
         echo "→ Seeded $count eval memories into container"
+        EVAL_MEMORY_SEEDED=true
     else
-        echo "WARN: memory seeding failed — memory tests may fail" >&2
+        echo "ERROR: the memory seed failed. The memory reset would be off, and the trials would not be independent." >&2
+        exit 2
     fi
+}
+
+## Runs seed-memories.py in the container with the given extra options.
+## The database belongs to the daemon, so the script must run in the
+## container, not on the host. The script runs as the daemon user, so the
+## -wal and -shm files that it can create keep the owner of the database.
+## Each call copies the script and the fixtures again, so the call needs no
+## earlier state.
+run_memory_seed_script() {
+    local db_path="/home/netclaw/.netclaw/netclaw.db"
+    docker cp "$REPO_ROOT/evals/seed-memories.py" "$EVAL_CONTAINER_NAME:/tmp/seed-memories.py" || return 1
+    docker cp "$EVAL_ASSET_ROOT/evals/fixtures/eval-memories.json" "$EVAL_CONTAINER_NAME:/tmp/eval-memories.json" || return 1
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" python3 /tmp/seed-memories.py "$@" \
+        --db-path "$db_path" \
+        --fixtures /tmp/eval-memories.json
+}
+
+## Puts the memory store back in the seeded state: the doc-eval-* memories at
+## their fixture content, and nothing else. A trial can write a memory with
+## store_memory, and a session can distill one. Without this reset, the next
+## trial recalls that memory and tests the memory, not the product. The reset
+## is one transaction, so a recall never sees an empty store. The script
+## first waits (30 s) until no curation checkpoint is pending or processing,
+## because a worker that has a checkpoint writes its documents even after the
+## reset deleted the checkpoint row. Exit 3 means that the wait ended. The
+## reset did not run, so the trial is inconclusive: the snapshot records
+## TRIAL_MEMORY_RESET_STATUS. Any other failure stops the run.
+reset_memory_store() {
+    TRIAL_MEMORY_RESET_STATUS=ok
+    [[ "$EVAL_MEMORY_SEEDED" == "true" ]] || return 0
+    local rc=0
+    run_memory_seed_script --reset >/dev/null || rc=$?
+    case "$rc" in
+        0) ;;
+        3)
+            TRIAL_MEMORY_RESET_STATUS=reset_curation_busy
+            echo "WARN: the memory reset waited 30 s for the curation worker and did not run. This trial will be inconclusive." >&2
+            ;;
+        *)
+            echo "ERROR: the memory reset before the trial failed. The trials would not be independent." >&2
+            exit 2
+            ;;
+    esac
 }
 
 # ─── SQLite Setup ─────────────────────────────────────────────────────────────
@@ -1001,6 +1048,59 @@ snapshot_trial_baseline() {
     if [[ -f "$TRIAL_DAEMON_LOG" ]]; then
         TRIAL_DAEMON_LINES_BEFORE=$(wc -l < "$TRIAL_DAEMON_LOG")
     fi
+    # The memory snapshot: the ids of every memory that exists now and that the
+    # harness did not seed. reset_trial_state ran just before, so the list
+    # should be empty. trial_verdict.py makes the trial inconclusive when
+    # recall injects one of these ids, or when this snapshot failed or the
+    # reset did not run. The file is always written, so a failure shows in the
+    # evidence. The snapshot catches a write between the reset and this point.
+    # It does not catch a write later in the trial; the idle wait of the reset
+    # prevents the one writer that is known (a curation in progress).
+    python3 "$TRIAL_EVIDENCE_PY" memory-ids --home "$EVAL_HOME" \
+        --dest "$TRIAL_RAW/memory-before.json" \
+        --reset-status "$TRIAL_MEMORY_RESET_STATUS"
+}
+
+## Writes the agent definitions of the eval fixtures into the daemon home
+## again, and removes every other file from the agents folder. A trial can edit
+## a definition or add one (the parent agent can rewrite an agent file), and
+## the next trial of the same run must start from the fixtures.
+## The daemon user (uid 1654) can own a file that the trial replaced. The host
+## user cannot write over such a file. So the restore runs in the container.
+## It runs as the daemon user (netclaw), not as root: the agent can remove the
+## folder or replace it with a symbolic link, and root would follow the link
+## and change its target. The daemon user owns the folder and each file in it,
+## so it needs no more right. The restore removes a link and not its target,
+## and then it rebuilds the folder from the fixtures. A trial can also remove
+## the write right from the folder or a subfolder (chmod -R a-w). rm -rf would
+## fail on such a folder, so the restore gives the owner the right back first.
+## The guard skips a link at the top, and chmod -R does not follow a link
+## inside the tree.
+## The daemon creates agents/.server-feeds at start, so the restore makes it
+## too, and the home matches a real install.
+restore_agent_fixtures() {
+    local fixtures="$EVAL_ASSET_ROOT/evals/fixtures/agents"
+    [[ -d "$fixtures" ]] || return 0
+    # chmod keeps the files editable by the daemon user, as in a real install.
+    if ! tar -C "$fixtures" -cf - . \
+        | docker exec --interactive --user netclaw "$EVAL_CONTAINER_NAME" sh -c '
+            set -e
+            if [ -d "$1" ] && [ ! -L "$1" ]; then chmod -R u+rwx -- "$1"; fi
+            rm -rf -- "$1"
+            mkdir -m 0777 -- "$1"
+            tar -xf - -C "$1" --no-same-owner
+            mkdir -p -- "$1/.server-feeds"
+            chmod -R ugo+rwX "$1"' sh /home/netclaw/.netclaw/agents; then
+        echo "ERROR: the restore of the agent fixtures failed. The trials would not be independent." >&2
+        exit 2
+    fi
+}
+
+## Puts the state that a trial can change back to the state of the start of the
+## run. Run this before the setup function of the case and before the snapshot.
+reset_trial_state() {
+    restore_agent_fixtures
+    reset_memory_store
 }
 
 ## Writes the record of one CLI call: the prompt that the CLI received, how the
@@ -1396,6 +1496,7 @@ run_multi_turn_case() {
         MULTI_TURN_STDERR_FILE=""
         begin_trial "$case_name" "$run"
 
+        reset_trial_state
         local setup_fn="setup_${case_name}"
         if declare -f "$setup_fn" >/dev/null 2>&1; then
             "$setup_fn" "$run"
@@ -1822,9 +1923,11 @@ assert_memory_recall_active() {
 # Per the netclaw-agent-memory spec, durable user preferences are memory documents,
 # not identity-file edits. The invariant under test: the preference is routed to
 # memory and NOT written to an identity file (SOUL.md). The eval memory store is
-# shared across runs, so after the first store the model correctly recognizes the
-# fact is already in durable memory rather than re-storing it — both are correct
-# routing. The hard failure we guard against is a SOUL.md (file_edit/file_write) edit.
+# reset to the seeded state before each trial, so each trial starts without the
+# preference and the model should store it. The fallback below also accepts a
+# reply that only names memory, because a model can answer that it keeps the
+# preference in memory without a call. The hard failure we guard against is a
+# SOUL.md (file_edit/file_write) edit.
 assert_memory_identity_preference_routing() {
     # 'memor' not 'memory': correct responses often say "memories", and the
     # plural drops the y — "memories" does not contain the substring "memory".
@@ -2140,12 +2243,81 @@ assert_subagent_headless_ambiguous_task() {
         stdout_response_not_contains 'need.*more.*information'
 }
 
+# Prints the full text of each spawn_agent TOOL_RESULT entry in a CLI
+# session log. An entry continues until the next timestamped record. The
+# child log keeps only a short preview of the child's final text, so read
+# the child's answer here.
+cli_spawn_results() {
+    awk '
+        /^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[^]]*\] / { keep = ($0 ~ /\] TOOL_RESULT: spawn_agent /) }
+        keep { print }
+    ' "$1"
+}
+
+# Prints the text of the last ASSISTANT_FINAL record in a CLI session log.
+cli_final_reply() {
+    awk '
+        /^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[^]]*\] / {
+            keep = ($0 ~ /\] ASSISTANT_FINAL: /)
+            if (keep) { text = ""; sub(/^\[[^]]*\] ASSISTANT_FINAL: /, "") }
+        }
+        keep { text = text $0 "\n" }
+        END { printf "%s", text }
+    ' "$1"
+}
+
+# What this case checks:
+#   - the delegation ran and the child finished with an answer;
+#   - the parent did not change an agent file, by any tool or path form;
+#   - the parent returns an email that follows the deployment mission: a
+#     subject line and the mission call line.
+# The child and the parent are judged apart. The child result is a TOOL_RESULT
+# record. The parent reply is the last ASSISTANT_FINAL record.
+#
+# This case does NOT test which one wins when the parent task and the child role
+# conflict. A child that writes the email and a child that returns its brief both
+# pass, because the product contract does not yet say that the parent task wins.
+# The strict check (the last completed child result holds the email, and the
+# parent returns that email) ships with the follow-up "Document that the parent
+# task overrides the child profile role".
 assert_subagent_specialization_precedence() {
-    stdout_tool_called 'spawn_agent' && \
-        stdout_contains '\[subagent:done\] headless-analyst (completed' && \
-        stdout_contains 'SPECIALIZED ANALYST BRIEF' && \
-        stdout_response_contains '^Subject:' && \
-        stdout_response_contains 'Would Tuesday or Wednesday work for a 15-minute call?'
+    local cli_log="$TRIAL_RAW/cli-session.log"
+    stdout_tool_called 'spawn_agent' || return 1
+    stdout_contains '\[subagent:done\] headless-analyst (completed' || return 1
+
+    # The parent must not change the role. Compare the folder with the fixtures
+    # after the trial. A change, an added file, or a removed file fails, whatever
+    # tool or path form the parent used. A read does not change the folder.
+    # A missing folder or a link is a change by the parent, so it fails. The
+    # daemon makes agents/.server-feeds again, so the diff skips it.
+    # diff exits 1 for a difference and 2 for a failure. Exit 2 is an assertion
+    # exit that gives an inconclusive trial, not a fail.
+    local agents="$EVAL_HOME/data/agents"
+    [[ -d "$agents" && ! -L "$agents" ]] || return 1
+    local agents_diff_rc=0
+    diff -r -x .server-feeds "$EVAL_ASSET_ROOT/evals/fixtures/agents" "$agents" >/dev/null \
+        || agents_diff_rc=$?
+    [[ "$agents_diff_rc" -eq 0 ]] || return "$agents_diff_rc"
+
+    # Child side: a completed child result holds text after "Summary:".
+    cli_spawn_results "$cli_log" | awk '
+        function flush() { if (inres && done && text) ok = 1 }
+        /^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[^]]*\] / {
+            flush(); inres = ($0 ~ /\] TOOL_RESULT: spawn_agent /)
+            done = 0; text = 0; insummary = 0
+        }
+        inres && /Outcome: completed/ { done = 1 }
+        inres && insummary && $0 !~ /^[[:space:]]*$/ { text = 1 }
+        inres && /^Summary:/ { insummary = 1 }
+        END { flush(); exit !ok }
+    ' || return 1
+
+    # Parent side: the final reply holds a subject line and the mission call
+    # line. Markdown emphasis such as "**Subject:**" is a subject line too.
+    local reply
+    reply=$(cli_final_reply "$cli_log")
+    grep -aiqE '^[[:space:]]*(\*\*|__)?subject(\*\*|__)?[[:space:]]*:' <<<"$reply" || return 1
+    grep -aFq 'Would Tuesday or Wednesday work for a 15-minute call?' <<<"$reply"
 }
 
 setup_subagent_project_scope_declaration() {
@@ -2299,45 +2471,61 @@ setup_subagent_session_scratch_disposable() {
 assert_subagent_session_scratch_disposable() {
     stdout_json_tool_called 'spawn_agent' || return 1
 
-    local spawn_call child_task child_log
-    spawn_call=$(stdout_json_tool_call_arguments 'spawn_agent' | head -1)
-    child_task=$(jq -r '.Task // .task // ""' <<<"$spawn_call")
-    jq -e '(.Agent // .agent) == "disposable-diagnostic"' <<<"$spawn_call" >/dev/null || return 1
-    [[ -n "$child_task" ]] || return 1
-    ! grep -Eiq 'session_dir|/tmp|temporary|working.?directory|set_working_directory|(^|[^[:alpha:]])cwd([^[:alpha:]]|$)' \
-        <<<"$child_task" || return 1
+    # Every spawn_agent call names the fixture, has a task, has no Context,
+    # and gives the child no hint about where temporary files go.
+    local spawn_call child_task
+    while IFS= read -r spawn_call; do
+        jq -e '(.Agent // .agent) == "disposable-diagnostic"' <<<"$spawn_call" >/dev/null || return 1
+        jq -e '(.Context // .context // "") == ""' <<<"$spawn_call" >/dev/null || return 1
+        child_task=$(jq -r '.Task // .task // ""' <<<"$spawn_call")
+        [[ -n "$child_task" ]] || return 1
+        ! grep -Eiq 'session_dir|/tmp|temporary|working.?directory|set_working_directory|(^|[^[:alpha:]])cwd([^[:alpha:]]|$)' \
+            <<<"$child_task" || return 1
+    done < <(stdout_json_tool_call_arguments 'spawn_agent')
 
-    local child_relative expected_temp_dir
-    child_log=$(find "$EVAL_HOME/data/sessions" -type f \
-        -path '*/logs/session.log' \
-        -newer "$SUBAGENT_SCRATCH_LOG_MARKER" 2>/dev/null | head -1)
-    [[ -n "$child_log" ]] || return 1
+    # Only a child log sits below subagents/. The parent's own
+    # logs/session.log also matches '*/logs/session.log', and `find` order
+    # decides which one a broad pattern returns first.
+    local -a child_logs
+    mapfile -t child_logs < <(find "$EVAL_HOME/data/sessions" -type f \
+        -path '*/subagents/*/logs/session.log' \
+        -newer "$SUBAGENT_SCRATCH_LOG_MARKER" 2>/dev/null)
+    [[ "${#child_logs[@]}" -eq 1 ]] || return 1
+    local child_log="${child_logs[0]}"
     grep -aq \
         'SubAgent \[disposable-diagnostic\] completed (success=True, outcome=Completed' \
         "$child_log" || return 1
+
+    local child_relative expected_temp_dir
     child_relative="${child_log#"$EVAL_HOME/data/"}"
     expected_temp_dir="/home/netclaw/.netclaw/${child_relative%/logs/session.log}/tmp"
 
-    local shell_count shell_result_count
-    shell_count=$(grep -ac \
-        'SubAgent \[disposable-diagnostic\] tool start .* name=shell_execute' \
-        "$child_log")
-    shell_result_count=$(grep -ac \
-        'SubAgent \[disposable-diagnostic\] tool \[shell_execute\] result: Exit code: 0' \
-        "$child_log")
-
-    [[ "$shell_count" -eq 1 ]] || return 1
-    [[ "$shell_result_count" -eq 1 ]] || return 1
+    # Since #2078 the child log writes an authorization start and result per
+    # tool call. It no longer writes "tool start" or "tool [...] result" lines.
+    local -a shell_calls
+    mapfile -t shell_calls < <(grep -a \
+        'SubAgent \[disposable-diagnostic\] authorization attempt started .* toolName=shell_execute' \
+        "$child_log" | sed -n 's/.* callId=\([^ ]*\) toolName=shell_execute.*/\1/p')
+    [[ "${#shell_calls[@]}" -eq 1 ]] || return 1
+    grep -aq "callId=${shell_calls[0]} outcomeCategory=Success" "$child_log" || return 1
 
     local -a call_previews
-    mapfile -t call_previews < <(grep -aEo \
-        'shell_execute#[^(]+\([^)]*\)' \
-        "$child_log")
+    mapfile -t call_previews < <(grep -aEo 'shell_execute#[^(]+\([^)]*\)' "$child_log")
     [[ "${#call_previews[@]}" -eq 1 ]] || return 1
     [[ "${call_previews[0]}" == *"tempfile.gettempdir()"* ]] || return 1
-    grep -aFq "$expected_temp_dir" "$child_log" || return 1
-    stdout_response_contains "$expected_temp_dir"
 
+    # The command wrote its real output to a probe file in gettempdir(). The
+    # child log holds no command output, and the child could report the temp
+    # path from its context without running anything. The probe is on disk
+    # evidence: it exists only if gettempdir() resolved to the managed folder,
+    # and it holds the path that the command saw. A missing file reads as an
+    # empty string and fails the comparison.
+    local probe="${child_log%/logs/session.log}/tmp/eval-probe"
+    [[ "$(< "$probe")" == "$expected_temp_dir" ]] || return 1
+
+    # The child answer and the parent reply must both return the probed path.
+    cli_spawn_results "$TRIAL_RAW/cli-session.log" | grep -aFq "$expected_temp_dir" || return 1
+    jq -r '.response // ""' "$STDOUT_FILE" | grep -aFq "$expected_temp_dir"
 }
 
 setup_coding_context_worktree_handoff() {
@@ -3340,6 +3528,7 @@ run_case() {
         begin_trial "$case_name" "$run"
         record_variant "${#prompts[@]}"
 
+        reset_trial_state
         local setup_fn="setup_${case_name}"
         if declare -f "$setup_fn" >/dev/null 2>&1; then
             "$setup_fn" "$run"
@@ -3650,13 +3839,15 @@ run_all() {
     print_category "Subagents"
 
     local previous_timeout="$PROMPT_TIMEOUT"
-    PROMPT_TIMEOUT=120
+    # A delegated turn takes 40 to 110 s on an idle endpoint. Keep at least
+    # 120 s, but honor a larger NETCLAW_EVAL_TIMEOUT.
+    PROMPT_TIMEOUT=$(( previous_timeout > 120 ? previous_timeout : 120 ))
 
     run_case subagent_headless_ambiguous_task "spawned subagent completes ambiguous task without clarification" \
         "Use spawn_agent with agent headless-analyst. Ask it to prepare final release notes from these candidate changes without asking follow-up questions. Include everything that looks user-facing: fixed arrow-key input decoding; updated an internal test helper; improved file trace listener encoding. Return the subagent's assumptions and final notes." \
         "Delegate this to the headless-analyst subagent using spawn_agent: decide what belongs in release notes from this ambiguous list without asking me for clarification: legacy CSI key decoding fix; private test fixture cleanup; file trace listener writes UTF-8 correctly. Include all user-facing items and return assumptions plus final notes."
 
-    run_case subagent_specialization_precedence "specialized subagent guidance overrides a conflicting deployment playbook" \
+    run_case subagent_specialization_precedence "parent returns an email with a subject and the call line, and leaves the agent files unchanged" \
         "Use spawn_agent with agent headless-analyst to write a prospecting email to Casey, a VP of Engineering interested in reducing operational toil. Return its final email." \
         "Delegate to headless-analyst: draft an outbound email for Jordan, a technology leader evaluating autonomous operations. Return the worker's final email."
 
@@ -3664,7 +3855,7 @@ run_all() {
         "Use spawn_agent with agent project-scope-analyst. Ask it to inspect /home/netclaw/.netclaw/workspaces/project-scope-target with exactly two shell_execute calls: git status --short and git diff --stat. Return the command results, project layout, and build-file summary. Keep the parent project unchanged."
 
     run_case --json subagent_session_scratch_disposable "subagent standard temporary API uses its managed temp directory" \
-        "Use spawn_agent with agent disposable-diagnostic. Ask it to complete its assigned diagnostic and return the exact marker. Do not include a Context argument."
+        "Use spawn_agent with agent disposable-diagnostic. Ask it to complete its assigned diagnostic and return the exact path that it reports. Do not include a Context argument."
 
     PROMPT_TIMEOUT="$previous_timeout"
 

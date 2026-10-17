@@ -63,6 +63,70 @@ edit an interactive trust policy. A companion `tool-approvals.json` trusts Git
 for shell-based coding cases. Tool exposure and command-deny rules still apply,
 and these policies are never copied into an operator's config.
 
+### Trial independence
+
+All trials of one invocation share one daemon, one memory database, and one
+home folder. A trial must not change what a later trial sees. The harness
+keeps these rules:
+
+- **The harness resets state before each trial.** `reset_trial_state` runs
+  before the setup function of the case and before the memory snapshot. It
+  does two things:
+  - `reset_memory_store` restores the memory store to the seeded state. It
+    runs `seed-memories.py --reset` in the container. The script deletes every
+    row of every `memory_*` table and seeds the `doc-eval-*` memories again,
+    in one transaction. A memory from an earlier trial is gone (a
+    `store_memory` call or a distilled memory). A seed memory that a trial
+    changed is back at its fixture content. The session catalog is not
+    touched. A failed reset stops the run with exit 2.
+    A curation that is in progress writes its documents even after the reset
+    deleted its checkpoint row. So the script first waits, for up to 30 s,
+    until no checkpoint is `pending` or `processing`. The wait, the deletes,
+    and the seed run in one write transaction. If the wait ends, the reset does
+    not run and the trial is inconclusive with the reason
+    `infra:memory_snapshot_reset_curation_busy`.
+  - `restore_agent_fixtures` writes `evals/fixtures/agents/` into the daemon
+    home again, in the container, and removes every other file from the
+    agents folder. A parent agent can rewrite or add an agent file during a
+    trial. The daemon user (uid 1654) can own such a file, and the host user
+    cannot write over it, so the restore does not run on the host. It runs as
+    the daemon user and not as root, because the agent can remove the folder
+    or replace it with a symbolic link, and root would follow the link. The
+    restore removes the folder (a link is removed, not its target), creates it
+    again, extracts the fixtures, and creates `agents/.server-feeds`, as the
+    daemon does at start. A failed restore stops the run with exit 2.
+  - `seed_eval_memories` runs once at the start of the run. A failed seed
+    stops the run with exit 2, because the reset cannot run without a seed.
+- **Distillation is off in the fixture config.** `Session.IdleTimeout` is
+  `00:00:00`, `Session.MemoryObserverIdleSeconds` is 86400, and
+  `Session.Tuning.MemoryDistillationTurnInterval` is 0. `IdleTimeout` zero
+  disables the passivation timer. It does not mean "passivate at once". An idle
+  passivation distills the session, so a session never passivates in an eval
+  run. A case that tests distillation must run in its own invocation with the
+  default settings. `NETCLAW_EVAL_CONFIG_FILE` replaces the whole fixture
+  config, so a config that you supply does not get these keys (the background
+  evals do not get them either). The reset still removes a memory that an
+  earlier trial wrote. It cannot stop a distillation that lands during a
+  trial, so such a run can see a memory that the trial did not write.
+- **The harness checks that the reset worked.** Before each trial, the harness
+  writes `raw/memory-before.json`: the status of the snapshot and the ids of
+  every memory that is not a `doc-eval-*` seed. After a reset, the list is
+  empty. If recall injects an id from the list, `trial_verdict.py` gives the
+  reason `learned_memory_recalled`, even when the assertion passed. A memory
+  that the trial itself wrote is not on the list, so it does not count. If
+  `netclaw.db` is missing or locked, or if the reset did not run, the snapshot
+  has a status other than `ok`, and the trial is inconclusive with the reason
+  `infra:memory_snapshot_<status>`.
+  The check sees only a write that lands between the reset and the snapshot.
+  A write after the snapshot is not on the list. The idle wait of the reset
+  prevents the one known writer of that kind, a curation in progress.
+- **The memory check covers automatic recall.** A reset store also covers a
+  `find_memories` or `get_memories` call of the trial, because the store holds
+  no memory from an earlier trial.
+- **A case that keeps other state must reset it.** A case that changes
+  reminders, identity files, or workspaces resets them in its `setup_<case>`
+  function.
+
 `--network host` is the default because operators often host their LLM on
 a Tailscale node — MagicDNS hostnames like `my-gpu-server.tailnet.ts.net` only
 resolve when the container shares the host's DNS resolver. macOS/Windows
@@ -327,7 +391,7 @@ the missing values. In non-interactive contexts it fails loudly.
 |----------|---------|-------------|
 | `NETCLAW_EVAL_RUNS` | `5` | Runs per case |
 | `NETCLAW_EVAL_THRESHOLD` | `0.80` | Pass threshold, a number above 0 and at most 1. The run stops at startup with exit 2 for any other value, such as `0`. The harness compares it as an exact decimal, so use `0.66` for 2 of 3, not `0.67`. |
-| `NETCLAW_EVAL_TIMEOUT` | `60` | Per-prompt timeout in whole seconds. The run stops at startup with exit 2 for any other value, such as `5m`. |
+| `NETCLAW_EVAL_TIMEOUT` | `60` | Per-prompt timeout in whole seconds. The run stops at startup with exit 2 for any other value, such as `5m`. The Subagents category uses at least 120 seconds, or this value when it is larger. |
 | `NETCLAW_EVAL_SEED` | random | Integer seed for the choice of prompt variants. The harness prints the seed and records it in each trial's `variant.json`. |
 
 ### Examples
@@ -444,6 +508,7 @@ while the run goes on. `<nn>` is the trial number, `01` and up.
 | `session.log` | The actor log that `netclaw.db` names for the session |
 | `subagents/<run id>/*.log` | Logs of the sub-agents of the session |
 | `actor-log.json` | How the harness found the actor log. A status other than `ok` means that the log is missing or was refused, and the harness prints a warning. The actor log must resolve under `data/sessions`. A sub-agent log must resolve under the folder of its session. `refused_subagent_logs` lists the sub-agent logs that were refused. |
+| `memory-before.json` | `status` of the memory snapshot (`ok`, `no_memory_db`, `memory_db_unreadable`, or `reset_curation_busy`), and `ids`: the memories that exist before the trial and that the harness did not seed. `ids` is empty after a clean reset, and `null` when the status is not `ok`. |
 | `daemon-session.log` | Daemon lines with the exact token `session=<id>` or `sessionId=<id>` |
 | `daemon-window.log` | Every daemon line from the start of the trial to the end of the assertion, for people to read. A trial that crosses midnight UTC adds the lines of the new daemon file. A run stops with exit 2 and an error message when `$EVAL_HOME/logs` holds no `daemon-*.log` file. |
 | `assert.json` | `exit_code` of the assertion (141 is a pipe failure, 1 is a missed match), `daemon_log`, `window_lines_before`, `window_lines_after`, `extra_daemon_logs` |
@@ -539,6 +604,12 @@ A trial has one of three states:
     record. The channel threw before the turn ended. The deadline did not cut it.
   - `turn_failed`: the CLI exit is 1 and the turn has a `TURN_COMPLETED` record.
     `details` keeps the `ERROR` text.
+  - `learned_memory_recalled`: recall injected a memory that existed before the
+    trial and that the harness did not seed (see Trial independence). A trial
+    folder with no `memory-before.json` skips this check.
+  - `infra:memory_snapshot_<status>`: the memory snapshot of the trial failed
+    (`no_memory_db` or `memory_db_unreadable`), or the reset did not run
+    (`reset_curation_busy`), so the recall cannot be checked.
   - the reason of an assertion report that says `inconclusive` (cycle cases).
   - `assertion_exit_<code>`: the assertion exited with a code other than 0 and 1
     (141 for a pipe failure, 127 for a missing command).
