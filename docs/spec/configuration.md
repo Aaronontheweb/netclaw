@@ -112,6 +112,16 @@ token and the access token stay in `secrets.json`, and the daemon reads both fil
 a refresh token. A refresh that the CLI does (`netclaw provider` probes each provider) reaches a
 running daemon through those two files.
 
+- The daemon takes the stored refresh token only when it differs from the last token that the
+  daemon read from or wrote to `secrets.json`. After a failed save, `secrets.json` holds a spent
+  token, so the daemon keeps the live token in memory and never presents the spent one.
+- When the token server rejects a token, the daemon reads `secrets.json` again. If another process
+  saved a new token during the request, the daemon uses that token once. Otherwise it raises the
+  re-authentication alert.
+- The daemon treats `invalid_grant` and the OpenAI codes `refresh_token_reused`,
+  `refresh_token_expired`, and `refresh_token_invalidated` as a rejected token. It treats any other
+  error as a temporary failure and keeps its tokens.
+
 ```json
 { "Providers": { "my-codex": { "OAuthTokenExpiry": "2026-06-01T01:00:00.0000000+00:00" } } }
 ```
