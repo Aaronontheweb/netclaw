@@ -182,9 +182,13 @@ public static class UpdateCheckService
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
         {
+            // A timeout or a transport error says nothing about the manifest's authenticity, so it is
+            // a network failure. An HTTP status error (such as 404 for a missing .sig) stays a
+            // signature failure. Both abort the update; only the operator message differs.
+            var isTransportFailure = ex is OperationCanceledException or HttpRequestException { StatusCode: null };
             return new ManifestFetchResult
             {
-                Status = ManifestFetchStatus.SignatureFailure,
+                Status = isTransportFailure ? ManifestFetchStatus.NetworkFailure : ManifestFetchStatus.SignatureFailure,
                 ErrorMessage = DescribeFetchFailure("manifest signature", FeedConstants.BinaryManifestSignatureUrl, ex),
             };
         }
