@@ -3,6 +3,13 @@
   "Webhooks": {
     "Enabled": true
   },
+  "Session": {
+    "IdleTimeout": "00:00:00",
+    "MemoryObserverIdleSeconds": 86400,
+    "Tuning": {
+      "MemoryDistillationTurnInterval": 0
+    }
+  },
   "McpServers": {
     "eval_analytics": {
       "Transport": "stdio",

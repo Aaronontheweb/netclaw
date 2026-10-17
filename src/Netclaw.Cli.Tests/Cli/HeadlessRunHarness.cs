@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -90,20 +91,34 @@ internal static class HeadlessRunHarness
             new HeadlessOptions(prompt) { JsonOutput = json },
             NullLogger<HeadlessChannel>.Instance);
 
-        var stdout = new StringWriter();
-        var stderr = new StringWriter();
+        var stdout = new LockedCapture();
+        var stderr = new LockedCapture();
         var originalOut = Console.Out;
         var originalError = Console.Error;
         Environment.ExitCode = 0;
-        Console.SetOut(TextWriter.Synchronized(stdout));
-        Console.SetError(TextWriter.Synchronized(stderr));
+        Console.SetOut(stdout);
+        Console.SetError(stderr);
         try
         {
             await channel.StartAsync(TestContext.Current.CancellationToken);
+
+            // The channel calls StopApplication as its last act on every path. It writes the console
+            // output and sets the exit code first. So this signal means that the channel finished its
+            // own writes. StopAsync only marks the channel as disconnected. It does not drain output.
             await stopped.Task.WaitAsync(StopCeiling, TestContext.Current.CancellationToken);
+            await channel.StopAsync(CancellationToken.None);
+
+            // The Akka StandardOutLogger reads Console.Out on each call, so it can write to the capture on
+            // its own thread. The ASP.NET console logger keeps the Console.Out that it got before
+            // Console.SetOut, so it never writes to the capture. Detach the capture first, then take the
+            // snapshot under the writer lock. A write in flight finishes before the snapshot. A later write
+            // that reads Console.Out goes to the original console. A writer that kept a reference to the
+            // capture still writes to it, under the lock, after the snapshot.
+            Console.SetOut(originalOut);
+            Console.SetError(originalError);
             return new HeadlessRun(
-                stdout.ToString(),
-                stderr.ToString(),
+                stdout.Snapshot(),
+                stderr.Snapshot(),
                 Environment.ExitCode,
                 ReadSessionLog(paths),
                 ReadFile(Path.Combine(paths.LogsDirectory, "headless-errors.log")));
@@ -113,7 +128,6 @@ internal static class HeadlessRunHarness
             Console.SetOut(originalOut);
             Console.SetError(originalError);
             Environment.ExitCode = 0;
-            await channel.StopAsync(CancellationToken.None);
         }
     }
 
@@ -147,5 +161,42 @@ internal static class HeadlessRunHarness
         public CancellationToken ApplicationStopping => stopping;
         public CancellationToken ApplicationStopped => CancellationToken.None;
         public void StopApplication() => stopped.TrySetResult();
+    }
+}
+
+/// <summary>
+/// A <see cref="TextWriter"/> that keeps its text in a buffer. Every write and the snapshot take one lock,
+/// so a thread that reads the text never sees a write in progress. A plain <see cref="StringWriter"/> has
+/// no lock for <c>ToString</c>, and <see cref="Console.SetOut(TextWriter)"/> locks only its own wrapper.
+/// </summary>
+internal sealed class LockedCapture : TextWriter
+{
+    private readonly object _gate = new();
+    private readonly StringBuilder _buffer = new();
+
+    public override Encoding Encoding => Encoding.UTF8;
+
+    public override void Write(char value)
+    {
+        lock (_gate)
+            _buffer.Append(value);
+    }
+
+    public override void Write(char[] buffer, int index, int count)
+    {
+        lock (_gate)
+            _buffer.Append(buffer, index, count);
+    }
+
+    public override void Write(string? value)
+    {
+        lock (_gate)
+            _buffer.Append(value);
+    }
+
+    public string Snapshot()
+    {
+        lock (_gate)
+            return _buffer.ToString();
     }
 }

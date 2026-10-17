@@ -7,6 +7,7 @@ a trial. The commands:
   discover-session  Find the CLI session log that a trial created.
   actor-log         Copy the actor log of a session, and its sub-agent logs.
   daemon-session    Print the daemon lines that carry a session id token.
+  memory-ids        Write the memory snapshot (status and the ids of unseeded memories).
   derive-seed       Derive the seed of one (case, trial) from the run seed.
 """
 
@@ -186,6 +187,43 @@ def daemon_session_lines(log_path, session_id):
         return [line for line in handle if pattern.search(line)]
 
 
+# The harness seeds its memories with ids that start with doc-eval-
+# (evals/fixtures/eval-memories.json). The daemon makes every other id.
+SEEDED_MEMORY_PREFIX = "doc-eval-"
+
+
+def memory_snapshot(db_path):
+    """Return the memory snapshot of the database as a dict: status, ids, and error.
+
+    `ids` lists every memory (document and record) that the harness did not
+    seed. The harness takes this list before each trial, after it reset the
+    memory store. On a clean store the list is empty. An id on it means that
+    something wrote a memory after the reset. The database is read-only here,
+    because the daemon holds it open.
+
+    Status is "ok", "no_memory_db" (the daemon has not created the file), or
+    "memory_db_unreadable" (`error` holds the SQLite message). Both findings
+    leave `ids` as None. The snapshot is always written, so the trial evidence
+    records a snapshot that failed, and trial_verdict.py gives that trial no
+    verdict. A table that does not exist yet holds no memory.
+    """
+    if not db_path.is_file():
+        return {"status": "no_memory_db", "ids": None, "error": None}
+    ids = []
+    try:
+        database = sqlite3.connect(db_path.resolve().as_uri() + "?mode=ro", uri=True)
+        try:
+            tables = {row[0] for row in database.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+            for table, column in (("memory_documents", "document_id"), ("memory_records", "record_id")):
+                if table in tables:
+                    ids += [row[0] for row in database.execute(f"SELECT {column} FROM {table}")]
+        finally:
+            database.close()
+    except sqlite3.Error as error:
+        return {"status": "memory_db_unreadable", "ids": None, "error": str(error)}
+    return {"status": "ok", "ids": sorted(i for i in ids if not i.startswith(SEEDED_MEMORY_PREFIX)), "error": None}
+
+
 def derive_seed(run_seed, case_name, trial):
     """Give each (case, trial) its own stable seed.
 
@@ -215,6 +253,13 @@ def main(argv=None):
     daemon.add_argument("--log", type=Path, required=True)
     daemon.add_argument("--session", required=True)
 
+    memory = commands.add_parser("memory-ids", help="write the memory snapshot of the database")
+    memory.add_argument("--home", type=Path, required=True, help="EVAL_HOME")
+    memory.add_argument("--dest", type=Path, required=True)
+    memory.add_argument("--reset-status", default="ok",
+                        help="how the memory reset before the trial ended: ok, or a reason code "
+                             "such as reset_curation_busy. A value other than ok replaces the snapshot.")
+
     seed = commands.add_parser("derive-seed", help="print the seed of one (case, trial)")
     seed.add_argument("--seed", type=int, required=True)
     seed.add_argument("--case", required=True)
@@ -232,6 +277,19 @@ def main(argv=None):
         return 0
     if args.command == "daemon-session":
         sys.stdout.writelines(daemon_session_lines(args.log, args.session))
+        return 0
+    if args.command == "memory-ids":
+        if args.reset_status != "ok":
+            # The reset did not run, so the store can hold a memory of an
+            # earlier trial. A database read would say nothing about that.
+            snapshot = {"status": args.reset_status, "ids": None,
+                        "error": "the memory reset before the trial did not run"}
+        else:
+            snapshot = memory_snapshot(args.home / "data" / "netclaw.db")
+        args.dest.write_text(json.dumps(snapshot, indent=2) + "\n")
+        if snapshot["status"] != "ok":
+            print(f"WARN: memory snapshot failed: {snapshot['status']}. The trial will be inconclusive.",
+                  file=sys.stderr)
         return 0
     print(derive_seed(args.seed, args.case, args.trial))
     return 0

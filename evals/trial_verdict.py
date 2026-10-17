@@ -21,6 +21,21 @@ Trial states, in this order (design 2.4):
                  nothing about the product behavior under test. Reason:
                  "turn_failed", and "error" holds the text of the ERROR
                  record.
+  4a. memory     The memory snapshot of the trial failed (the database was
+                 missing or unreadable), or the memory reset did not run (the
+                 curation worker stayed busy), so the harness cannot check
+                 the recall. Reason: "infra:memory_snapshot_<status>".
+                 Or: the recall of the session injected a memory that existed
+                 before the trial and that the harness did not seed. The
+                 harness resets the memory store before each trial, so such a
+                 memory means that a write landed between the reset and the
+                 snapshot. A write after the snapshot is not seen; the idle
+                 wait of the reset prevents the known writer of that kind.
+                 The trial does not test the product alone, so it
+                 gives no verdict, even when the assertion passed. Reason:
+                 "learned_memory_recalled". A trial folder with no
+                 memory-before.json (a run of an older harness) skips both
+                 rules.
   5. report      The assertion wrote a report with the status "inconclusive"
                  (cycle cases). Reason: the reason of the report.
   6. assertion   An assertion exit other than 0 and 1 (141 from a pipe,
@@ -66,6 +81,12 @@ RECORD_START = re.compile(r"^\[[^\]\n]+\] ", re.MULTILINE)
 SESSION_HEADER = re.compile(r"^\[[^\]\n]+\] Headless session started: ", re.MULTILINE)
 TURN_COMPLETED = re.compile(r"^\[[^\]\n]+\] TURN_COMPLETED: turn=\d+", re.MULTILINE)
 ERROR_RECORD = re.compile(r"^\[[^\]\n]+\] ERROR: ", re.MULTILINE)
+
+# Recall logs one memory_retrieval_final line for each turn. Its items field
+# lists only what recall injected: id=score pairs joined by "|". The ids are
+# doc-<hex> or rec-<hex>, or doc-eval-<name> for a seeded memory.
+RETRIEVAL_FINAL = re.compile(r"memory_retrieval_final session=\S+ .*? items=(.*)$")
+MEMORY_ITEM = re.compile(r"(?:^|\|)((?:doc|rec)-[0-9A-Za-z-]+)=score")
 
 
 class EvidenceError(Exception):
@@ -147,6 +168,38 @@ def cli_failed_without_turn_end(log, exit_codes):
                for code, block in zip(exit_codes, blocks))
 
 
+def injected_memory_ids(daemon_session_log):
+    """The ids that recall injected for the session, from daemon-session.log."""
+    ids = set()
+    for line in daemon_session_log.splitlines():
+        found = RETRIEVAL_FINAL.search(line)
+        if found:
+            ids.update(MEMORY_ITEM.findall(found.group(1)))
+    return ids
+
+
+def memory_guard(raw):
+    """Rule 4a. Returns a verdict for a failed snapshot or a leaked memory, else None."""
+    before_path = raw / "memory-before.json"
+    if not before_path.exists():
+        return None
+    before = read_json(before_path)
+    status = before.get("status")
+    if status != "ok":
+        return infra(f"memory_snapshot_{status}" if isinstance(status, str) and status else "memory_snapshot_unreadable")
+    ids = before.get("ids")
+    if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+        raise EvidenceError("memory-before.json ids is not a list of strings")
+    session_log = raw / "daemon-session.log"
+    # The harness writes both files for every trial. A missing daemon file
+    # means broken evidence, not a clean trial.
+    if not session_log.exists():
+        raise EvidenceError("daemon-session.log is missing, so the memory recall cannot be checked")
+    if set(ids) & injected_memory_ids(read_text(session_log)):
+        return verdict(INCONCLUSIVE, "learned_memory_recalled")
+    return None
+
+
 def judge_assertion(raw):
     """Rules 5 to 7. The turn finished, so the assertion result is needed."""
     code = read_exit_code(raw / "assert.json")
@@ -194,6 +247,10 @@ def judge_trial(raw):
         return verdict(INCONCLUSIVE, "timeout")
     if CLI_EXIT_FAILED_TURN in exit_codes:
         return verdict(INCONCLUSIVE, "turn_failed", failed_turn_error(log, exit_codes))
+
+    guarded = memory_guard(raw)
+    if guarded:
+        return guarded
 
     return judge_assertion(raw)
 
