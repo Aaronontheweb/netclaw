@@ -434,6 +434,37 @@ public sealed class DaemonManagerInstallTests : IDisposable
         Assert.Equal(foreign, new FileInfo(_paths.DaemonEnvironmentFilePath).LinkTarget);
     }
 
+    [SlopwatchSuppress("SW001", "Service installation is Linux-only.")]
+    [Fact(SkipUnless = nameof(IsLinux), Skip = "Service installation is Linux-only.")]
+    public async Task Uninstall_says_so_when_it_cannot_delete_a_daemon_env_that_holds_only_the_PATH_line()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        Assert.SkipWhen(UnixOwnership.CurrentUserId() == 0, "Root can delete from a read-only directory.");
+        File.WriteAllText(_paths.DaemonEnvironmentFilePath, "PATH=/usr/bin\n");
+        var configDirectory = Path.GetDirectoryName(_paths.DaemonEnvironmentFilePath)!;
+        var runner = new FakeSystemCommandRunner();
+        File.SetUnixFileMode(configDirectory, UnixFileMode.UserRead | UnixFileMode.UserExecute);
+
+        DaemonResult result;
+        try
+        {
+            result = await CreateManager(runner).UninstallAsync();
+        }
+        finally
+        {
+            File.SetUnixFileMode(configDirectory, UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+
+        Assert.False(result.Success);
+        Assert.Contains(("systemctl", "--user daemon-reload"), runner.Commands);
+        Assert.Contains(_paths.DaemonEnvironmentFilePath, result.Message, StringComparison.Ordinal);
+        Assert.Contains("could not delete", result.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("lines that you wrote", result.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secure", result.Message, StringComparison.Ordinal);
+    }
+
     private DaemonManager CreateManager(FakeSystemCommandRunner runner)
         => new(_paths, TimeProvider.System, new FakeSupervisor(), runner);
 

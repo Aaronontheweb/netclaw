@@ -319,7 +319,7 @@ static async Task RunAsync(string[] args)
                     Console.WriteLine("hint: Some issues may be auto-fixable. Run `netclaw doctor --fix --dry-run` to preview.");
             }
 
-            Environment.ExitCode = fixFailed ? Math.Max(result.ExitCode, 1) : result.ExitCode;
+            Environment.ExitCode = result.ExitCodeAfterFix(fixFailed);
             return;
         }
         catch (ModelConfigurationException ex)

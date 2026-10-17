@@ -218,9 +218,13 @@ All settings can also be overridden via environment variables using the
 `NETCLAW_` prefix with double-underscore separators for nested keys:
 
 ```bash
-export NETCLAW_Providers__local-ollama__Endpoint=http://localhost:11434
+export NETCLAW_Providers__ollama__Endpoint=http://localhost:11434
 export NETCLAW_Models__Main__ModelId=qwen3:8b
 ```
+
+An environment variable name holds only letters, digits, and `_`. A shell rejects a name with `-`,
+so `NETCLAW_Providers__local-ollama__Endpoint` is not valid. To set a provider by environment
+variable, give the provider a name without `-`, for example `ollama` or `local_ollama`.
 
 For the full configuration reference, see the
 [configuration docs](https://netclaw.dev/configuration/managed-providers/).

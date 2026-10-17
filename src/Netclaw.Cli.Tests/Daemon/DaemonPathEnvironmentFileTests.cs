@@ -133,11 +133,11 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
         File.WriteAllText(paths.DaemonEnvironmentFilePath, "PATH=/opt/netclaw:/usr/bin\n");
         var manager = new DaemonManager(paths, TimeProvider.System);
 
-        Assert.Null(manager.RemoveDaemonEnvironmentFile());
+        Assert.Null(manager.RemoveDaemonEnvironmentFile().KeptPath);
         Assert.False(File.Exists(paths.DaemonEnvironmentFilePath));
 
         // Idempotent — a second call on an already-removed file must not throw.
-        Assert.Null(manager.RemoveDaemonEnvironmentFile());
+        Assert.Null(manager.RemoveDaemonEnvironmentFile().KeptPath);
     }
 
     [Theory]
@@ -149,7 +149,7 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
         File.WriteAllText(paths.DaemonEnvironmentFilePath, content);
         var manager = new DaemonManager(paths, TimeProvider.System);
 
-        var kept = manager.RemoveDaemonEnvironmentFile();
+        var kept = manager.RemoveDaemonEnvironmentFile().KeptPath;
 
         Assert.Equal(paths.DaemonEnvironmentFilePath, kept);
         Assert.Equal(content, File.ReadAllText(paths.DaemonEnvironmentFilePath));
@@ -162,7 +162,7 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
         File.WriteAllText(paths.DaemonEnvironmentFilePath, "# netclaw\n\n  PATH=/usr/bin\n; note\n");
         var manager = new DaemonManager(paths, TimeProvider.System);
 
-        Assert.Null(manager.RemoveDaemonEnvironmentFile());
+        Assert.Null(manager.RemoveDaemonEnvironmentFile().KeptPath);
         Assert.False(File.Exists(paths.DaemonEnvironmentFilePath));
     }
 
@@ -419,6 +419,42 @@ public sealed class DaemonPathEnvironmentFileTests : IDisposable
     [InlineData("NETCLAW_McpServers__apikey__Url=https://mcp.example/sse")]
     public void TryParseAll_treats_a_keyed_map_entry_name_as_a_wildcard(string entry)
         => Assert.True(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), error);
+
+    [Theory]
+    [InlineData("NETCLAW_Logging__LogLevel__Akka=Debug")]
+    [InlineData("NETCLAW_Logging__LogLevel__Microsoft=Warning")]
+    [InlineData("NETCLAW_logging__loglevel__Default=Debug")]
+    [InlineData("NETCLAW_Tools__AudienceProfiles__Team__McpServerToolGrants__github__0=read_file")]
+    [InlineData("NETCLAW_Tools__AudienceProfiles__Personal__McpServerToolGrants__github__12=read_file")]
+    public void TryParseAll_accepts_a_log_category_and_a_keyed_map_of_arrays(string entry)
+        => Assert.True(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), error);
+
+    [Theory]
+    [InlineData("NETCLAW_Logging__LogLevel__Akka=hunter2-probe-value", "Information")]
+    [InlineData("NETCLAW_Logging__LogLevel__Akka=https://u:probe-value@h", "Information")]
+    public void TryParseAll_refuses_a_log_category_value_that_is_not_a_log_level_and_never_prints_it(string entry, string levelName)
+    {
+        Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), entry);
+        Assert.Contains(levelName, error, StringComparison.Ordinal);
+        Assert.DoesNotContain("probe-value", error, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("NETCLAW_Tools__AudienceProfiles__Team__McpServerToolGrants__github=read_file")]
+    [InlineData("NETCLAW_Tools__AudienceProfiles__Team__McpServerToolGrants__github__first=read_file")]
+    [InlineData("NETCLAW_Tools__AudienceProfiles__Team__McpServerToolGrants__github__0__x=read_file")]
+    [InlineData("NETCLAW_Tools__AudienceProfiles__Team__Typo__github__0=read_file")]
+    public void TryParseAll_refuses_a_keyed_map_of_arrays_entry_without_an_index(string entry)
+        => Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out _), entry);
+
+    [Theory]
+    [InlineData("NETCLAW_X__ClientSecret=probe-value")]
+    [InlineData("NETCLAW_Sentry__Dsn=https://probe-value@o.ingest.sentry.io/1")]
+    public void TryParseAll_does_not_print_an_empty_section_name(string entry)
+    {
+        Assert.False(DaemonEnvAssignment.TryParseAll([entry], out _, out var error), entry);
+        Assert.DoesNotContain("''", error, StringComparison.Ordinal);
+    }
 
     // systemd EnvironmentFile= reads a trailing backslash as a line continuation, a leading quote
     // as a value that spans lines, and a backslash as an escape. The writer cannot quote a value

@@ -169,7 +169,7 @@ internal static class DaemonPathEnvironmentFile
     internal static void Write(string envFilePath, string text)
     {
         EnsureLinkIsSafe(envFilePath);
-        AtomicFile.WriteAllText(ResolveTarget(envFilePath), text, AtomicFile.HardenOwnerOnly);
+        AtomicFile.WriteAllTextOwnerOnly(ResolveTarget(envFilePath), text);
     }
 
     /// <summary>The file that a write to <paramref name="envFilePath"/> changes. A symbolic link chain resolves to its end.</summary>
@@ -181,24 +181,65 @@ internal static class DaemonPathEnvironmentFile
             : file.ResolveLinkTarget(returnFinalTarget: true)?.FullName ?? envFilePath;
     }
 
-    internal static void EnsureLinkIsSafe(string envFilePath)
+    internal delegate bool OwnerReader(string path, out uint ownerId);
+
+    /// <summary>
+    /// Describes why <paramref name="envFilePath"/> is a link that no command can use: it points to a
+    /// missing file, or it loops. Returns <c>null</c> for a regular file, for a link to an existing
+    /// file, and for a path that does not exist. A command must call this before any call that
+    /// follows the link, because those calls throw for a broken link.
+    /// </summary>
+    internal static string? FindLinkProblem(string envFilePath)
     {
         var link = new FileInfo(envFilePath);
         if (link.LinkTarget is null)
-            return;
+            return null;
 
-        var target = link.ResolveLinkTarget(returnFinalTarget: true);
-        if (target is null || !target.Exists)
+        FileSystemInfo? target;
+        try
         {
-            throw new UnsafeEnvFileLinkException(
-                $"{envFilePath} is a link that points to a missing file, {target?.FullName ?? link.LinkTarget}. "
-                + "Create that file or remove the link, then run the command again.");
+            target = link.ResolveLinkTarget(returnFinalTarget: true);
+        }
+        catch (IOException ex)
+        {
+            return $"{envFilePath} is a link that netclaw cannot follow ({ex.Message}). "
+                + "Remove the link, or replace it with a regular file, then run the command again.";
         }
 
-        if (!UnixOwnership.IsSupported)
+        return target is null || !target.Exists
+            ? $"{envFilePath} is a link that points to a missing file, {target?.FullName ?? link.LinkTarget}. "
+                + "Create that file or remove the link, then run the command again."
+            : null;
+    }
+
+    internal static void EnsureLinkIsSafe(string envFilePath)
+        => EnsureLinkIsSafe(envFilePath, UnixOwnership.TryGetOwnerId);
+
+    internal static void EnsureLinkIsSafe(string envFilePath, OwnerReader readOwner)
+    {
+        if (FindLinkProblem(envFilePath) is { } problem)
+            throw new UnsafeEnvFileLinkException(problem);
+
+        var link = new FileInfo(envFilePath);
+        if (link.LinkTarget is null || !UnixOwnership.IsSupported)
             return;
 
-        if (!UnixOwnership.TryGetOwnerId(envFilePath, out var ownerId))
+        var target = link.ResolveLinkTarget(returnFinalTarget: true)!;
+        bool ownerKnown;
+        uint ownerId;
+        try
+        {
+            ownerKnown = readOwner(envFilePath, out ownerId);
+        }
+        catch (Exception ex) when (ex is EntryPointNotFoundException or DllNotFoundException)
+        {
+            throw new UnsafeEnvFileLinkException(
+                $"{envFilePath} is a link to {target.FullName}, and this system has no statx call in its C library "
+                + "(glibc 2.28 or newer has it), so netclaw cannot check who owns the target. "
+                + "Netclaw does not write to a file when it cannot check who owns it. Replace the link with a regular file.");
+        }
+
+        if (!ownerKnown)
         {
             throw new UnsafeEnvFileLinkException(
                 $"{envFilePath} is a link to {target.FullName}, and netclaw cannot read the owner of that file. "
@@ -213,10 +254,13 @@ internal static class DaemonPathEnvironmentFile
         }
     }
 
-    /// <summary>True when group or others have any access to the file. Always false on Windows.</summary>
+    /// <summary>
+    /// True when group or others have any access to the file. Always false on Windows, for a missing
+    /// file, and for a broken link. <see cref="FindLinkProblem"/> reports the broken link.
+    /// </summary>
     internal static bool HasLooseMode(string envFilePath)
     {
-        if (OperatingSystem.IsWindows() || !File.Exists(envFilePath))
+        if (OperatingSystem.IsWindows() || FindLinkProblem(envFilePath) is not null || !File.Exists(envFilePath))
             return false;
 
         const UnixFileMode groupAndOthers = UnixFileMode.GroupRead | UnixFileMode.GroupWrite | UnixFileMode.GroupExecute

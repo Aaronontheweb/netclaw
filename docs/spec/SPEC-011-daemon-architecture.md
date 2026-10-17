@@ -378,10 +378,18 @@ The embedded config schema is the allow-list for the key. Install accepts `NETCL
 `<path>` names a property that `netclaw-config.v1.schema.json` declares. The match ignores case. The
 name of an entry in a keyed map (a provider, a model definition, an MCP server, a channel id)
 matches as a wildcard, and the property after it must be declared. `NETCLAW_Providers__main__Type`
-passes. `NETCLAW_Providers__main__Typo` fails. A key under a free-form section (`EnvironmentVariables`,
-`Headers`, `VendorOptions`, or a map of free text) fails, because the schema gives no meaning to a name
-there and netclaw cannot tell a credential from a setting. `NETCLAW_McpServers__db__EnvironmentVariables__SMTP_PASS`
-fails for that reason. A key that names a section and not a property fails. `NETCLAW_HOME` and
+passes. `NETCLAW_Providers__main__Typo` fails. Two more shapes pass. A keyed map whose entry is an array
+passes with an index: `NETCLAW_Tools__AudienceProfiles__Team__McpServerToolGrants__github__0=read_file`.
+A log category passes when its value is a log level: `NETCLAW_Logging__LogLevel__Akka=Debug`. An open
+section whose declared properties are all the same list of choices takes that list for a name that the
+schema does not declare, and the value must be one of the choices (the match ignores case). A key under a
+free-form section (`EnvironmentVariables`, `Headers`, `VendorOptions`, or a map of free text) fails, because
+the schema gives no meaning to a name there and netclaw cannot tell a credential from a setting.
+`NETCLAW_McpServers__db__EnvironmentVariables__SMTP_PASS` fails for that reason. A key at the top level of
+netclaw.json that the schema does not declare fails as an undeclared key. A key that names a section or a
+list and not a property fails. A name in a key holds only letters, digits, and `_`, so a provider that
+`--env` sets needs a name without `-`. `DaemonEnvKeyPolicy` walks the schema with the same
+`SchemaFixResolver.StepInto` step that the doctor fix uses. `NETCLAW_HOME` and
 `NETCLAW_DAEMON_ENDPOINT` are process settings that no schema describes, and both pass. A declared
 property that holds a credential fails: `SchemaFixResolver.HoldsCredential` decides by the property name,
 for example `ApiKey`, `OAuthRefreshToken`, or `OAuthClientSecret`. That rule skips a property that cannot
@@ -396,21 +404,32 @@ it names, atomically, and the link stays. Three cases stop the command with the 
 path of the target. The target does not exist. Another user owns the target: install, `doctor --fix`,
 and uninstall compare the owner of the target with the current user and do not change the file. Or the
 target cannot be written. The Linux kernel call `statx` gives the owner, so the check runs on Linux
-only. `netclaw doctor` reports a `daemon.env` that group or others can access. `doctor --fix` sets
-mode 0600 on it and changes nothing else. When one fix cannot be written, `doctor --fix` applies the
-other fixes, prints the path and the reason of the failed fix, and exits with a non-zero code.
+only. A system with a C library older than glibc 2.28 has no `statx`. There the command stops with a
+message that names the missing call and tells the operator to replace the link with a regular file. It does
+not write, because it cannot check the owner. A link that points to a missing file, or that loops, never
+crashes `netclaw doctor`. The check `Daemon Env File Mode` reports it as a warning with the path, and
+`doctor --fix` plans no fix for it. `netclaw doctor` reports a `daemon.env` that group or others can access.
+`doctor --fix` sets mode 0600 on it and changes nothing else. When one fix cannot be written, `doctor --fix`
+applies the other fixes, prints the path and the reason of the failed fix, and exits with code 1. The code
+is 1 also when the checks found only warnings.
 
-A write to `daemon.env` creates the temporary file with mode 0600, so the plain text is never readable by
-group or others, not even before the rename. `AtomicFile.WriteAllText` does this for every write that
-passes a permission callback. `secrets.json` and `devices.json` use the same path. A `netclaw.json`
-that netclaw creates new is therefore mode 0600, and a rewrite copies the mode of the file that it replaces.
+Only three files are owner-only: `daemon.env`, `secrets.json`, and `devices.json`. They hold plain-text
+or secret values. `AtomicFile.WriteAllTextOwnerOnly` creates the temporary file with mode 0600, so the
+content is never readable by group or others, not even before the rename. Every other file keeps the
+default mode of a new file. This includes `netclaw.json`. A container can run the daemon as a user that
+does not own a bind-mounted `netclaw.json`, for example uid 1654 with a read-only single-file mount, and
+that user must read the file. `AtomicFile.WriteAllText` creates the temporary file with the mode of the file
+that it replaces, so a rewrite is never more open than the file before it, and a rewrite of an owner-only
+`netclaw.json` stays owner-only.
 
 `netclaw daemon uninstall` stops the service and removes the unit file. It removes `daemon.env`
 only when every line is blank, is a comment that starts with `#` or `;`, or starts with `PATH=`.
 Leading spaces do not count. Any other line keeps the file, for example `export PATH=/a`. Uninstall
-then prints the path and sets mode 0600. When uninstall cannot set the mode, for example on a link to a
-file that another user owns, it still removes the unit and runs `daemon-reload`. It then prints the
-path and the reason, and exits with a non-zero code. Uninstall leaves `secrets.json` and `netclaw.json` in
+then prints the path and sets mode 0600. When uninstall cannot finish this step, it still removes the unit and
+runs `daemon-reload`. It then prints the path and the reason, and exits with a non-zero code. The message names
+the step that failed. It says "could not secure" for a kept file whose mode cannot change, for example a link to a
+file that another user owns. It says "could not delete" for a PATH-only file that cannot go. It says "left in
+place" for a link to a missing file or a link loop. Uninstall leaves `secrets.json` and `netclaw.json` in
 place.
 
 The install scripts honor `NETCLAW_HOME` with the `NetclawPaths` rules (`~`, `$HOME`, `${HOME}`,

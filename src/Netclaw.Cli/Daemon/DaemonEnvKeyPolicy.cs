@@ -40,9 +40,17 @@ internal static class DaemonEnvKeyPolicy
                     + "Set the value in netclaw.json, or store a credential with `netclaw secrets set`.";
                 return false;
             case Outcome.Section:
-                reason = $"The --env key '{key}' names a section, not a setting. Name a property inside it, or set the value in netclaw.json. "
+                reason = $"The --env key '{key}' names a section or a list, not a setting. Name a property or an index inside it, or set the value in netclaw.json. "
                     + "Store a credential with `netclaw secrets set`.";
                 return false;
+        }
+
+        // A name that the operator chooses (a log category, a channel id) can be anything, so the
+        // value must be one of the declared choices. A choice cannot hold a credential.
+        if (resolution.Choices is { } choices && !choices.Contains(value, StringComparer.OrdinalIgnoreCase))
+        {
+            reason = $"The --env value for '{key}' must be one of: {string.Join(", ", choices)}.";
+            return false;
         }
 
         var node = JsonValue.Create(value);
@@ -83,30 +91,36 @@ internal static class DaemonEnvKeyPolicy
     private readonly record struct Resolution(
         Outcome Outcome,
         IReadOnlyList<(string Name, JsonObject Schema)> DeclaredPath,
-        string FreeFormSection)
+        string FreeFormSection,
+        IReadOnlyList<string>? Choices)
     {
-        internal static Resolution Declared => new(Outcome.Declared, [], string.Empty);
+        internal static Resolution Declared => new(Outcome.Declared, [], string.Empty, null);
 
-        internal static Resolution Undeclared => new(Outcome.Undeclared, [], string.Empty);
+        internal static Resolution DeclaredChoice(IReadOnlyList<string>? choices) => new(Outcome.Declared, [], string.Empty, choices);
 
-        internal static Resolution NamesSection => new(Outcome.Section, [], string.Empty);
+        internal static Resolution Undeclared => new(Outcome.Undeclared, [], string.Empty, null);
 
-        internal static Resolution FreeFormIn(string section) => new(Outcome.FreeForm, [], section);
+        internal static Resolution NamesSection => new(Outcome.Section, [], string.Empty, null);
+
+        // The top level of netclaw.json has no section name to report, and the schema declares each of its settings.
+        internal static Resolution FreeFormIn(string section)
+            => section.Length == 0 ? Undeclared : new(Outcome.FreeForm, [], section, null);
     }
 
+    // The schema walk is SchemaFixResolver.StepInto, the same one that the doctor fix uses. This method adds
+    // what only an environment key needs: a case-insensitive match, the oneOf alternatives, and the
+    // decision whether a name in a keyed map or an open section is a setting or free text.
     private static Resolution Resolve(JsonObject root, JsonObject node, ReadOnlySpan<string> segments, string section)
     {
-        node = Follow(root, node);
-
         if (Alternatives(node) is { } alternatives)
         {
             var best = Resolution.Undeclared;
             foreach (var alternative in alternatives)
             {
-                if (alternative is not JsonObject shape)
+                if (alternative is not JsonObject shape || SchemaFixResolver.FollowRef(root, shape) is not { } followed)
                     continue;
 
-                var resolution = Resolve(root, shape, segments, section);
+                var resolution = Resolve(root, followed, segments, section);
                 if (resolution.Outcome == Outcome.Declared)
                     return resolution;
                 if (resolution.Outcome != Outcome.Undeclared)
@@ -119,37 +133,35 @@ internal static class DaemonEnvKeyPolicy
         if (segments.IsEmpty)
             return IsSection(node) ? Resolution.NamesSection : Resolution.Declared;
 
-        var segment = segments[0];
         var rest = segments[1..];
-
-        if (node["properties"] is JsonObject properties && FindIgnoreCase(properties, segment) is { } propertyName
-            && properties[propertyName] is JsonObject property)
+        if (SchemaFixResolver.StepInto(root, node, segments[0], ignoreCase: true) is { } child)
         {
-            var child = Follow(root, property);
-            var resolution = Resolve(root, child, rest, propertyName);
-            return resolution.Outcome == Outcome.Declared
-                ? resolution with { DeclaredPath = [(propertyName, child), .. resolution.DeclaredPath] }
-                : resolution;
+            switch (child.Kind)
+            {
+                case SchemaFixResolver.SchemaChildKind.Property:
+                    var resolution = Resolve(root, child.Schema, rest, child.Name);
+                    return resolution.Outcome == Outcome.Declared
+                        ? resolution with { DeclaredPath = [(child.Name, child.Schema), .. resolution.DeclaredPath] }
+                        : resolution;
+                case SchemaFixResolver.SchemaChildKind.MapEntry:
+                    if (HasShape(child.Schema))
+                        return Resolve(root, child.Schema, rest, section);
+                    return rest.IsEmpty && IsFixedChoice(child.Schema)
+                        ? Resolution.DeclaredChoice(ChoicesOf(child.Schema))
+                        : Resolution.FreeFormIn(section);
+                default:
+                    return Resolve(root, child.Schema, rest, section);
+            }
         }
 
-        if (node["additionalProperties"] is JsonObject entrySchema)
-        {
-            var entry = Follow(root, entrySchema);
-
-            if (entry["properties"] is JsonObject || Alternatives(entry) is not null)
-                return Resolve(root, entry, rest, section);
-
-            if (rest.IsEmpty && IsFixedChoice(entry))
-                return Resolution.Declared;
-
-            return Resolution.FreeFormIn(section);
-        }
-
+        // An open object takes any name. When every declared property of it is the same list of choices,
+        // as in Logging:LogLevel:{Category}, a name that the schema does not declare takes those choices.
         if (node["additionalProperties"] is JsonValue open && open.TryGetValue<bool>(out var anything) && anything)
-            return Resolution.FreeFormIn(section);
-
-        if (node["items"] is JsonObject items && IsIndex(segment))
-            return Resolve(root, Follow(root, items), rest, section);
+        {
+            return rest.IsEmpty && SharedChoices(root, node) is { } shared
+                ? Resolution.DeclaredChoice(shared)
+                : Resolution.FreeFormIn(section);
+        }
 
         return Resolution.Undeclared;
     }
@@ -157,13 +169,44 @@ internal static class DaemonEnvKeyPolicy
     private static JsonArray? Alternatives(JsonObject node)
         => node["oneOf"] as JsonArray ?? node["anyOf"] as JsonArray;
 
+    private static bool HasShape(JsonObject node)
+        => node["properties"] is JsonObject || node["items"] is JsonObject || Alternatives(node) is not null;
+
     private static bool IsSection(JsonObject node)
         => node["properties"] is JsonObject
+           || node["items"] is JsonObject
            || node["additionalProperties"] is JsonObject
            || (node["additionalProperties"] is JsonValue open && open.TryGetValue<bool>(out var anything) && anything);
 
     private static bool IsFixedChoice(JsonObject node)
         => node["enum"] is JsonArray || TypeNames(node).All(type => type is "boolean" or "integer" or "number" or "null");
+
+    private static IReadOnlyList<string>? ChoicesOf(JsonObject node)
+        => node["enum"] is JsonArray choices
+            ? choices.Select(choice => choice?.GetValue<string>()).OfType<string>().ToList()
+            : null;
+
+    private static IReadOnlyList<string>? SharedChoices(JsonObject root, JsonObject node)
+    {
+        if (node["properties"] is not JsonObject properties || properties.Count == 0)
+            return null;
+
+        IReadOnlyList<string>? shared = null;
+        foreach (var (_, declared) in properties)
+        {
+            if (declared is not JsonObject schema
+                || SchemaFixResolver.FollowRef(root, schema) is not { } followed
+                || ChoicesOf(followed) is not { } choices
+                || (shared is not null && !shared.SequenceEqual(choices)))
+            {
+                return null;
+            }
+
+            shared = choices;
+        }
+
+        return shared;
+    }
 
     private static bool CanHoldText(JsonObject node)
     {
@@ -178,31 +221,6 @@ internal static class DaemonEnvKeyPolicy
             JsonArray many => many.Select(item => item?.GetValue<string>()).OfType<string>(),
             _ => [],
         };
-
-    private static bool IsIndex(string segment)
-        => segment.Length > 0 && segment.All(char.IsAsciiDigit);
-
-    private static string? FindIgnoreCase(JsonObject properties, string name)
-        => properties.Select(property => property.Key)
-            .FirstOrDefault(key => string.Equals(key, name, StringComparison.OrdinalIgnoreCase));
-
-    private static JsonObject Follow(JsonObject root, JsonObject node)
-    {
-        while (node["$ref"] is JsonValue reference && reference.TryGetValue<string>(out var pointer))
-        {
-            const string definitions = "#/$defs/";
-            if (!pointer.StartsWith(definitions, StringComparison.Ordinal)
-                || root["$defs"] is not JsonObject defs
-                || defs[pointer[definitions.Length..]] is not JsonObject target)
-            {
-                throw new InvalidOperationException($"The embedded config schema holds a reference that this check cannot follow: {pointer}");
-            }
-
-            node = target;
-        }
-
-        return node;
-    }
 
     private static JsonObject LoadSchema()
     {

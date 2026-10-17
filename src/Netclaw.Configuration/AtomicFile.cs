@@ -21,12 +21,44 @@ public static class AtomicFile
 {
     /// <summary>
     /// Write <paramref name="contents"/> to <paramref name="path"/> atomically. Parent directories
-    /// are created as needed. When <paramref name="hardenTempPermissions"/> is supplied, the temporary
-    /// file is created owner-only (mode 0600 on Linux and macOS), so the plain text is never readable
-    /// by group or others, and the callback runs on it BEFORE the rename. The callback can set the
-    /// mode of the final file, for example a copy of the mode of the file that it replaces.
+    /// are created as needed. The temporary file gets the mode of the file that it replaces, or the
+    /// default mode of a new file when none exists, so a rewrite is never more open than the file
+    /// before it. <paramref name="hardenTempPermissions"/> runs on the temporary file BEFORE the
+    /// rename and can set the mode of the final file, for example a copy of the replaced mode.
+    /// A file that holds plain-text values or credentials uses <see cref="WriteAllTextOwnerOnly"/>.
     /// </summary>
     public static void WriteAllText(string path, string contents, Action<string>? hardenTempPermissions = null)
+    {
+        Write(path, contents, hardenTempPermissions, ModeOfExistingFile(path));
+    }
+
+    // A link to a missing file counts as no file: the write replaces the link.
+    private static UnixFileMode? ModeOfExistingFile(string path)
+    {
+        if (OperatingSystem.IsWindows() || !File.Exists(path))
+            return null;
+
+        try
+        {
+            return File.GetUnixFileMode(path);
+        }
+        catch (FileNotFoundException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Write <paramref name="contents"/> to <paramref name="path"/> atomically, with mode 0600 on Linux
+    /// and macOS. The temporary file is created owner-only, so the plain text is never readable by group
+    /// or others, not even before the rename. Only daemon.env, secrets.json, and devices.json use this
+    /// method. Any other file keeps the default mode, because a container can run the daemon as another
+    /// user than the owner of a bind-mounted file.
+    /// </summary>
+    public static void WriteAllTextOwnerOnly(string path, string contents)
+        => Write(path, contents, HardenOwnerOnly, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+    private static void Write(string path, string contents, Action<string>? hardenTempPermissions, UnixFileMode? createMode)
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir))
@@ -46,8 +78,8 @@ public static class AtomicFile
 
             // The mode is part of the create call: a chmod after the write leaves a window in which
             // another user can read the plain text.
-            if (hardenTempPermissions is not null && !OperatingSystem.IsWindows())
-                streamOptions.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+            if (createMode is { } mode && !OperatingSystem.IsWindows())
+                streamOptions.UnixCreateMode = mode;
 
             using (var stream = new FileStream(temp, streamOptions))
             using (var writer = new StreamWriter(stream))

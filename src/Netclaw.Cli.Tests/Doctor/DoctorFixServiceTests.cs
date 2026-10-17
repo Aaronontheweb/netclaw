@@ -432,6 +432,33 @@ public sealed class DoctorFixServiceTests : IDisposable
         Assert.Contains(InstallDir, text, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BuildPlan_plans_no_daemon_env_fix_and_does_not_throw_for_a_broken_link(bool loop)
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var paths = NewPaths();
+        var unitPath = WriteWiredUnit(paths);
+        if (loop)
+        {
+            var other = Path.Combine(paths.ConfigDirectory, "other.env");
+            File.CreateSymbolicLink(paths.DaemonEnvironmentFilePath, other);
+            File.CreateSymbolicLink(other, paths.DaemonEnvironmentFilePath);
+        }
+        else
+        {
+            File.CreateSymbolicLink(paths.DaemonEnvironmentFilePath, Path.Combine(_temp.Path, "later", "daemon.env"));
+        }
+
+        var service = new DoctorFixService(paths, unitPath, systemdEnabled: true);
+        var plan = await service.BuildPlanAsync(TestContext.Current.CancellationToken);
+
+        Assert.DoesNotContain(plan.Fixes, fix => fix.FilePath == paths.DaemonEnvironmentFilePath);
+    }
+
     [Fact]
     public async Task NoEnvFix_WhenHealthy()
     {

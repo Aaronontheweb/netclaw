@@ -434,27 +434,71 @@ public sealed partial class DaemonManager
     /// <summary>
     /// Deletes the netclaw-owned PATH env file written at install so uninstall leaves no
     /// orphan behind. A file that holds a line other than a blank line, a comment, or the
-    /// <c>PATH=</c> line stays, and the method returns its path. Idempotent. Separated from
-    /// <see cref="UninstallAsync"/> (which is coupled to real <c>systemctl</c>/<c>loginctl</c>
-    /// and cannot be driven in-process without mutating the developer's live service) so the
-    /// deletion contract is unit-testable on its own.
+    /// <c>PATH=</c> line stays, and the result holds its path. A step that fails does not throw:
+    /// the result holds a sentence that names the file and says which step failed. Idempotent.
+    /// Separated from <see cref="UninstallAsync"/> (which is coupled to real
+    /// <c>systemctl</c>/<c>loginctl</c> and cannot be driven in-process without mutating the
+    /// developer's live service) so the deletion contract is unit-testable on its own.
     /// </summary>
-    internal string? RemoveDaemonEnvironmentFile()
+    internal DaemonEnvCleanup RemoveDaemonEnvironmentFile()
     {
         var envFilePath = _paths.DaemonEnvironmentFilePath;
-        if (!File.Exists(envFilePath))
-            return null;
+        if (DaemonPathEnvironmentFile.FindLinkProblem(envFilePath) is { } linkProblem)
+            return DaemonEnvCleanup.Failed($"netclaw left {envFilePath} in place. {linkProblem}");
 
-        if (DaemonPathEnvironmentFile.HasOperatorLines(File.ReadAllText(envFilePath)))
+        if (!File.Exists(envFilePath))
+            return DaemonEnvCleanup.Removed;
+
+        string content;
+        try
+        {
+            content = File.ReadAllText(envFilePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return DaemonEnvCleanup.Failed($"netclaw could not read {envFilePath}: {ex.Message}");
+        }
+
+        if (DaemonPathEnvironmentFile.HasOperatorLines(content))
         {
             // The kept lines are plain text that the operator wrote, so the mode must be 0600 even
             // when an older install or a hand edit left the file open to others.
-            DaemonPathEnvironmentFile.RestrictToOwner(envFilePath);
-            return envFilePath;
+            try
+            {
+                DaemonPathEnvironmentFile.RestrictToOwner(envFilePath);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                return DaemonEnvCleanup.Failed(
+                    $"netclaw could not secure {envFilePath}: {ex.Message}\n"
+                    + "The file holds lines that you wrote. Set its mode to 0600 by hand, or delete it when you do not need it.");
+            }
+
+            return DaemonEnvCleanup.Kept(envFilePath);
         }
 
-        File.Delete(envFilePath);
-        return null;
+        try
+        {
+            File.Delete(envFilePath);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return DaemonEnvCleanup.Failed(
+                $"netclaw could not delete {envFilePath}: {ex.Message}\n"
+                + "The file holds only the PATH line that netclaw wrote. Delete it by hand.");
+        }
+
+        return DaemonEnvCleanup.Removed;
+    }
+
+    /// <summary>The result of <see cref="RemoveDaemonEnvironmentFile"/>: the file is gone, it stays, or a step failed.</summary>
+    internal readonly record struct DaemonEnvCleanup(string? KeptPath, string? Failure)
+    {
+        internal static DaemonEnvCleanup Removed => new(null, null);
+
+        internal static DaemonEnvCleanup Kept(string path) => new(path, null);
+
+        internal static DaemonEnvCleanup Failed(string failure) => new(null, failure);
     }
 
     /// <summary>
@@ -514,27 +558,14 @@ public sealed partial class DaemonManager
         if (File.Exists(unitPath))
             File.Delete(unitPath);
 
-        string? keptEnvFile;
-        string? envFileProblem = null;
-        try
-        {
-            keptEnvFile = RemoveDaemonEnvironmentFile();
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            keptEnvFile = _paths.DaemonEnvironmentFilePath;
-            envFileProblem = ex.Message;
-        }
+        var envCleanup = RemoveDaemonEnvironmentFile();
 
         await RunCommandAsync("systemctl", "--user daemon-reload");
 
-        if (envFileProblem is not null)
-        {
-            return new DaemonResult(false,
-                $"Service uninstalled, but netclaw could not secure {keptEnvFile}: {envFileProblem}\n"
-                + "The file holds lines that you wrote. Set its mode to 0600 by hand, or delete it when you do not need it.");
-        }
+        if (envCleanup.Failure is not null)
+            return new DaemonResult(false, $"Service uninstalled, but {envCleanup.Failure}");
 
+        var keptEnvFile = envCleanup.KeptPath;
         return new DaemonResult(true, keptEnvFile is null
             ? "Service uninstalled."
             : $"Service uninstalled.\nKept {keptEnvFile} because it holds lines that you wrote. Delete it by hand when you do not need them.");
