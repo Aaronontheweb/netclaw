@@ -19,27 +19,38 @@ namespace Netclaw.Cli.Tests.Cli;
 /// <remarks>
 /// The scan is a trip wire for the usual mistakes. It reads comment-free source text, so it
 /// cannot follow a path that a test builds in a way the patterns do not name. The product
-/// check of #2527 (a request with a wrong PID or home gets 409 and stops nothing) is the
-/// boundary. The runtime checks <c>StandInDaemon.RequireExplicitEndpoint</c> and
-/// <c>StandInDaemon.RequireDaemonBindPort</c> cover the child processes that the scan finds.
+/// check of #2527 (a request with a wrong PID or home gets 409 and stops nothing) is not
+/// merged yet. Until it merges, this scan is the only guard. The runtime checks
+/// <c>StandInDaemon.RequireExplicitEndpoint</c> and <c>StandInDaemon.RequireDaemonBindPort</c>
+/// cover the child processes that the scan finds.
+/// Known gap: each rule reads one file. A helper in another file that starts the process, with
+/// a caller that only passes <c>"netclaw.dll"</c>, escapes the CLI and daemon rules. Put such a
+/// helper through <c>StandInDaemon</c>, or extend the scan, before you add it.
 /// </remarks>
 public sealed class StandInDaemonGuardTests
 {
     private static readonly string[] HelperFiles = ["StandInDaemon.cs", "SleepStandIn.cs", "StandInDaemonGuardTests.cs"];
 
-    private static readonly Regex StandInExecutable = new(@"\bSleepStandIn\b|""/(usr/)?bin/sleep""", RegexOptions.Compiled);
+    // SleepStandIn anywhere, or a /bin/sleep literal in a file that also copies or links a file. The
+    // rule is per file, so a constant or a local that holds the path still counts. A test that only
+    // runs /bin/sleep (for a timeout, for example) is not a stand-in daemon.
+    private static readonly Regex SleepStandInType = new(@"\bSleepStandIn\b", RegexOptions.Compiled);
+
+    private static readonly Regex SleepBinaryPath = new(@"""/(usr/)?bin/sleep""", RegexOptions.Compiled);
 
     // The file name of a stand-in daemon, next to a call that copies or links a file.
     private static readonly Regex StandInName = new(@"""netclawd""", RegexOptions.Compiled);
 
-    private static readonly Regex LinksOrCopiesFile = new(@"CreateSymbolicLink|CreateHardLink|File\.(Copy|Move)\s*\(", RegexOptions.Compiled);
+    private static readonly Regex LinksOrCopiesFile = new(
+        @"CreateSymbolicLink|CreateHardLink|File\.(Copy|Move|WriteAllBytes)\s*\(|\.CopyTo\s*\(",
+        RegexOptions.Compiled);
 
     // Matches "netclaw.dll" and the split form "netclaw" + ".dll".
     private static readonly Regex RunsBuiltCli = new(@"netclaw\.dll|""netclaw""\s*\+\s*""\.dll""", RegexOptions.Compiled);
 
     private static readonly Regex RunsBuiltDaemon = new(@"netclawd\.dll|""netclawd""\s*\+\s*""\.dll""", RegexOptions.Compiled);
 
-    private static readonly Regex StartsProcess = new(@"ProcessStartInfo|Process\.Start\s*\(", RegexOptions.Compiled);
+    private static readonly Regex StartsProcess = new(@"StartInfo|Process\.Start\s*\(", RegexOptions.Compiled);
 
     // Only the runtime check counts as proof. An endpoint variable alone leaves `daemon stop`,
     // `daemon status`, and `pair` on port 5199, because they ignore it.
@@ -70,19 +81,30 @@ public sealed class StandInDaemonGuardTests
     [Theory]
     [InlineData("SleepStandIn.Create(path);", "Foo.cs", true)]
     [InlineData("File.Copy(\"/bin/sleep\", path);", "Foo.cs", true)]
+    [InlineData("File.Copy(\"/bin/sleep\", Path.Combine(d, \"daemon\"));", "Foo.cs", true)]
+    [InlineData("File.CreateSymbolicLink(Path.Combine(d, \"daemon\"), \"/usr/bin/sleep\");", "Foo.cs", true)]
+    [InlineData("File.CreateHardLink(Path.Combine(d, \"daemon\"), \"/bin/sleep\");", "Foo.cs", true)]
+    [InlineData("File.Move(\"/bin/sleep\", Path.Combine(d, \"daemon\"));", "Foo.cs", true)]
+    [InlineData("const string SleepPath = \"/bin/sleep\"; File.CreateSymbolicLink(dest, SleepPath);", "Foo.cs", true)]
+    [InlineData("File.WriteAllBytes(exe, File.ReadAllBytes(\"/bin/sleep\"));", "Foo.cs", true)]
+    [InlineData("new FileInfo(\"/bin/sleep\").CopyTo(exe);", "Foo.cs", true)]
+    [InlineData("var psi = new ProcessStartInfo(\"/bin/sleep\", \"30\"); using var p = Process.Start(psi);", "Foo.cs", false)]
+    [InlineData("Process.Start(\"dotnet\", \"netclaw.dll daemon stop\");", "Foo.cs", true)]
+    [InlineData("using var p = new Process { StartInfo = { FileName = \"dotnet\", ArgumentList = { \"netclaw.dll\" } } }; p.Start();", "Foo.cs", true)]
     [InlineData("File.CreateSymbolicLink(Path.Combine(d, \"netclawd\"), p);", "Foo.cs", true)]
     [InlineData("File.WriteAllText(Path.Combine(d, \"netclawd\"), \"\");", "Foo.cs", false)]
     [InlineData("SleepStandIn.Create(path);", "StandInDaemon.cs", false)]
     [InlineData("var psi = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, \"netclaw.dll\"));", "Foo.cs", true)]
     [InlineData("var psi = new ProcessStartInfo(Path.Combine(AppContext.BaseDirectory, \"netclaw\" + \".dll\"));", "Foo.cs", true)]
-    [InlineData("psi.Add(\"netclaw.dll\"); psi.Environment[\"NETCLAW_DAEMON_ENDPOINT\"] = e;", "Foo.cs", true)]
-    [InlineData("// StandInDaemon.RequireExplicitEndpoint(home, env)\npsi.Add(\"netclaw.dll\");", "Foo.cs", true)]
-    [InlineData("/* NETCLAW_DAEMON_ENDPOINT */ psi.Add(\"netclaw.dll\");", "Foo.cs", true)]
-    [InlineData("psi.Add(\"netclaw.dll\"); StandInDaemon.RequireExplicitEndpoint(home, psi.Environment);", "Foo.cs", false)]
-    [InlineData("var u = \"http://x\"; // note\npsi.Add(\"netclaw.dll\");", "Foo.cs", true)]
+    [InlineData("var psi = new ProcessStartInfo(); psi.Add(\"netclaw.dll\"); psi.Environment[\"NETCLAW_DAEMON_ENDPOINT\"] = e;", "Foo.cs", true)]
+    [InlineData("// StandInDaemon.RequireExplicitEndpoint(home, env)\nvar psi = new ProcessStartInfo(); psi.Add(\"netclaw.dll\");", "Foo.cs", true)]
+    [InlineData("/* NETCLAW_DAEMON_ENDPOINT */ var psi = new ProcessStartInfo(); psi.Add(\"netclaw.dll\");", "Foo.cs", true)]
+    [InlineData("var psi = new ProcessStartInfo(); psi.Add(\"netclaw.dll\"); StandInDaemon.RequireExplicitEndpoint(home, psi.Environment);", "Foo.cs", false)]
+    [InlineData("var u = \"http://x\"; // note\nvar psi = new ProcessStartInfo(); psi.Add(\"netclaw.dll\");", "Foo.cs", true)]
     [InlineData("var psi = new ProcessStartInfo(); psi.ArgumentList.Add(\"netclawd.dll\");", "Foo.cs", true)]
     [InlineData("var psi = new ProcessStartInfo(); psi.ArgumentList.Add(\"netclawd.dll\"); StandInDaemon.RequireDaemonBindPort(psi.Environment);", "Foo.cs", false)]
     [InlineData("[InlineData(\"dotnet /opt/netclaw/netclawd.dll\")]", "Foo.cs", false)]
+    [InlineData("[InlineData(\"dotnet /opt/netclaw/netclaw.dll\")]", "Foo.cs", false)]
     [InlineData("var m = new DaemonManager(p, t); File.WriteAllText(p.PidFilePath, \"1\");", "Foo.cs", true)]
     [InlineData("var m = new DaemonManager(p, t); var pid = p.PidFilePath; File.WriteAllText(pid, \"1\");", "Foo.cs", true)]
     [InlineData("var m = new DaemonManager(p, t); StandInDaemon.Start(h, d);", "Foo.cs", false)]
@@ -137,13 +159,13 @@ public sealed class StandInDaemonGuardTests
 
         var source = StripComments(rawSource);
 
-        if (StandInExecutable.IsMatch(source))
+        if (SleepStandInType.IsMatch(source) || (SleepBinaryPath.IsMatch(source) && LinksOrCopiesFile.IsMatch(source)))
             violations.Add("starts a stand-in daemon outside StandInDaemon");
 
         if (StandInName.IsMatch(source) && LinksOrCopiesFile.IsMatch(source))
             violations.Add("copies or links a file named netclawd outside StandInDaemon");
 
-        if (RunsBuiltCli.IsMatch(source) && !GivesCliAnEndpoint.IsMatch(source))
+        if (RunsBuiltCli.IsMatch(source) && StartsProcess.IsMatch(source) && !GivesCliAnEndpoint.IsMatch(source))
             violations.Add("runs the CLI with no daemon port (call StandInDaemon.RequireExplicitEndpoint)");
 
         if (RunsBuiltDaemon.IsMatch(source) && StartsProcess.IsMatch(source) && !GivesDaemonAPort.IsMatch(source))
