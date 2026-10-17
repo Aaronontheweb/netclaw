@@ -35,7 +35,7 @@ public sealed class DaemonManagerInstallTests : IDisposable
         Directory.CreateDirectory(home);
         Environment.SetEnvironmentVariable("HOME", home);
 
-        var daemonBinary = Path.Combine(_dir.Path, "netclawd");
+        var daemonBinary = Path.Combine(_dir.Path, "daemon-binary");
         File.WriteAllText(daemonBinary, string.Empty);
         Environment.SetEnvironmentVariable("NETCLAW_DAEMON_PATH", daemonBinary);
 
