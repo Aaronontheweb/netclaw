@@ -30,35 +30,32 @@ public static class OAuthTokenPersistence
     {
         paths.EnsureDirectoriesExist();
 
-        // Load existing secrets as a JSON object tree to preserve other entries
-        var existingJson = File.Exists(paths.SecretsPath)
-            ? File.ReadAllText(paths.SecretsPath)
-            : "{}";
+        // The read and the write happen under one lock. Two providers can refresh at the same moment,
+        // and a read outside the lock lets one save put back the other provider's spent refresh token.
+        SecretsFileWriter.Update(paths.SecretsPath, (root, _) =>
+        {
+            var providers = root["Providers"]?.AsObject() ?? [];
+            root["Providers"] = providers;
 
-        var root = JsonNode.Parse(existingJson)?.AsObject() ?? [];
-        var providers = root["Providers"]?.AsObject() ?? [];
-        root["Providers"] = providers;
+            var providerNode = providers[providerName]?.AsObject() ?? [];
+            providers[providerName] = providerNode;
 
-        var providerNode = providers[providerName]?.AsObject() ?? [];
-        providers[providerName] = providerNode;
+            providerNode.Remove(nameof(ProviderEntry.ApiKey));
+            providerNode["OAuthAccessToken"] = result.AccessToken.Value;
 
-        providerNode.Remove(nameof(ProviderEntry.ApiKey));
-        providerNode["OAuthAccessToken"] = result.AccessToken.Value;
+            // Preserve any previously-stored refresh token / account id when the new
+            // result omits them. An OAuth response that doesn't echo refresh_token means
+            // "keep using the existing one" (RFC 6749 §5.1), and a partial refresh that
+            // lacks the ChatGPT account id must not wipe a value the Codex backend still
+            // requires.
+            if (result.RefreshToken is not null)
+                providerNode["OAuthRefreshToken"] = result.RefreshToken.Value;
 
-        // Preserve any previously-stored refresh token / account id when the new
-        // result omits them. An OAuth response that doesn't echo refresh_token means
-        // "keep using the existing one" (RFC 6749 §5.1), and a partial refresh that
-        // lacks the ChatGPT account id must not wipe a value the Codex backend still
-        // requires. (The expiry is still cleared on null — a stale expiry
-        // is worse than an absent one.)
-        if (result.RefreshToken is not null)
-            providerNode["OAuthRefreshToken"] = result.RefreshToken.Value;
+            if (result.AccountId is not null)
+                providerNode["OAuthAccountId"] = result.AccountId.Value;
 
-        if (result.AccountId is not null)
-            providerNode["OAuthAccountId"] = result.AccountId.Value;
-
-        var json = root.ToJsonString(new JsonSerializerOptions { WriteIndented = true });
-        SecretsFileWriter.Write(paths.SecretsPath, json, protector);
+            return (root, 0);
+        }, protector);
 
         // Order matters. A crash between the two writes leaves the new tokens with the old expiry,
         // which costs one extra refresh. The reverse order could lose a rotated refresh token.

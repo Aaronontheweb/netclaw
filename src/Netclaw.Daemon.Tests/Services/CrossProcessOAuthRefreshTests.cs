@@ -260,10 +260,65 @@ public sealed class CrossProcessOAuthRefreshTests : IDisposable
         Assert.Single(_alerts.Alerts);
     }
 
+    // One daemon refreshes two providers at the same moment. A save for one provider must not put
+    // the other provider's spent refresh token back in secrets.json.
+    [Fact]
+    public async Task Two_providers_that_refresh_together_keep_each_others_newest_token_on_disk()
+    {
+        var serverA = new TokenServer { RevokeFamilyOnReuse = true };
+        var serverB = new TokenServer { RevokeFamilyOnReuse = true };
+        var oauthA = OAuthFor("https://a.example/token");
+        var oauthB = OAuthFor("https://b.example/token");
+        var now = _time.GetUtcNow();
+        StoreTokens("codex-a", "access-0", "refresh-0", now.AddMinutes(-1));
+        StoreTokens("codex-b", "access-0", "refresh-0", now.AddMinutes(-1));
+
+        // Both answers wait for each other, so both saves start together.
+        using var bothAnswered = new Barrier(2);
+        var service = CreateService(new FakeHttpMessageHandler(request =>
+        {
+            var response = request.RequestUri!.Host == "a.example" ? serverA.Handle(request) : serverB.Handle(request);
+            bothAnswered.SignalAndWait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            return response;
+        }));
+        var entryA = Entry("access-0", "refresh-0", now.AddMinutes(-1));
+        var entryB = Entry("access-0", "refresh-0", now.AddMinutes(-1));
+
+        var lostUpdates = 0;
+        for (var round = 0; round < 100 && lostUpdates == 0; round++)
+        {
+            await Task.WhenAll(
+                Task.Run(() => service.GetValidAccessTokenAsync("codex-a", entryA, oauthA, TestContext.Current.CancellationToken)),
+                Task.Run(() => service.GetValidAccessTokenAsync("codex-b", entryB, oauthB, TestContext.Current.CancellationToken)));
+
+            if (StoredRefresh("codex-a") != serverA.Current || StoredRefresh("codex-b") != serverB.Current)
+                lostUpdates++;
+            _time.Advance(TimeSpan.FromHours(2));
+        }
+
+        Assert.Equal(0, lostUpdates);
+        Assert.Equal(0, serverA.Reuses + serverB.Reuses);
+    }
+
     private void StoreTokens(string access, string refresh, DateTimeOffset expiry)
-        => OAuthTokenPersistence.PersistTokens(_paths, "codex",
+        => StoreTokens("codex", access, refresh, expiry);
+
+    private void StoreTokens(string provider, string access, string refresh, DateTimeOffset expiry)
+        => OAuthTokenPersistence.PersistTokens(_paths, provider,
             new OAuthDeviceFlowResult(new SensitiveString(access), new SensitiveString(refresh), expiry),
             SecretsProtection.CreateProtector(_paths));
+
+    private string? StoredRefresh(string provider)
+        => OAuthTokenPersistence.LoadTokens(_paths, provider)?.RefreshToken?.Value;
+
+    private static OAuthAuth OAuthFor(string tokenEndpoint) => new()
+    {
+        SupportedAuthMethods = OpenAiOAuth.SupportedAuthMethods,
+        TokenEndpoint = new Uri(tokenEndpoint),
+        DeviceEndpoint = OpenAiOAuth.DeviceEndpoint,
+        ClientId = OpenAiOAuth.ClientId,
+        UseProprietaryDeviceFlow = true,
+    };
 
     // After the token server answers, a directory takes the place of secrets.json, so the save that
     // follows fails on every platform. The returned action puts the old file back, as it was on disk.
@@ -329,6 +384,15 @@ public sealed class CrossProcessOAuthRefreshTests : IDisposable
         public int Reuses { get; private set; }
 
         public List<string> Presented { get; } = [];
+
+        public string? Current
+        {
+            get
+            {
+                lock (_gate)
+                    return _current;
+            }
+        }
 
         // Another client spent the current token and got `next`.
         public void Advance(string next)
@@ -405,7 +469,11 @@ public sealed class CrossProcessOAuthRefreshTests : IDisposable
     {
         public List<OperationalAlert> Alerts { get; } = [];
 
-        public void Emit(OperationalAlert alert) => Alerts.Add(alert);
+        public void Emit(OperationalAlert alert)
+        {
+            lock (Alerts)
+                Alerts.Add(alert);
+        }
     }
 
     private sealed class CapturingLogger : ILogger<ProviderOAuthTokenRefreshService>
