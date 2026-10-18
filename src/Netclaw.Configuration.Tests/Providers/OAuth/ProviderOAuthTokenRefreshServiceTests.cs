@@ -206,8 +206,6 @@ public sealed class ProviderOAuthTokenRefreshServiceTests
         Assert.Equal("invalid_grant", alert.Context!["reason"]);
     }
 
-    // Only a new sign-in fixes a rejected refresh token. The daemon log, the alert, and
-    // /api/health/status must name the provider and the code that the token server sent.
     [Theory]
     [InlineData(400, """{"error":"invalid_grant"}""", "invalid_grant")]
     [InlineData(401, """{"error":{"code":"refresh_token_reused"}}""", "refresh_token_reused")]

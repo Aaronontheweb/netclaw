@@ -4,7 +4,6 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Netclaw.Cli.Doctor;
-using Netclaw.Cli.Json;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
 using Netclaw.Providers;

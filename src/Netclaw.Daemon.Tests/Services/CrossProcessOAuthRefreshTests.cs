@@ -260,8 +260,6 @@ public sealed class CrossProcessOAuthRefreshTests : IDisposable
         Assert.Single(_alerts.Alerts);
     }
 
-    // An older copy of secrets.json comes back, for example from a backup. It holds a refresh token
-    // that this process spent two refreshes ago. The process keeps its live token.
     [Fact]
     public async Task An_older_secrets_json_copy_does_not_bring_back_a_spent_token()
     {
@@ -288,8 +286,6 @@ public sealed class CrossProcessOAuthRefreshTests : IDisposable
         Assert.Equal("refresh-3", StoredRefresh("codex"));
     }
 
-    // One daemon refreshes two providers at the same moment. A save for one provider must not put
-    // the other provider's spent refresh token back in secrets.json.
     [Fact]
     public async Task Two_providers_that_refresh_together_keep_each_others_newest_token_on_disk()
     {
@@ -301,12 +297,11 @@ public sealed class CrossProcessOAuthRefreshTests : IDisposable
         StoreTokens("codex-a", "access-0", "refresh-0", now.AddMinutes(-1));
         StoreTokens("codex-b", "access-0", "refresh-0", now.AddMinutes(-1));
 
-        // Both answers wait for each other, so both saves start together.
-        using var bothAnswered = new Barrier(2);
+        using var savesStartTogether = new Barrier(2);
         var service = CreateService(new FakeHttpMessageHandler(request =>
         {
             var response = request.RequestUri!.Host == "a.example" ? serverA.Handle(request) : serverB.Handle(request);
-            bothAnswered.SignalAndWait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            savesStartTogether.SignalAndWait(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
             return response;
         }));
         var entryA = Entry("access-0", "refresh-0", now.AddMinutes(-1));

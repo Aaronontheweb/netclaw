@@ -30,8 +30,6 @@ public static class OAuthTokenPersistence
     {
         paths.EnsureDirectoriesExist();
 
-        // The read and the write happen under one lock. Two providers can refresh at the same moment,
-        // and a read outside the lock lets one save put back the other provider's spent refresh token.
         SecretsFileWriter.Update(paths.SecretsPath, (root, _) =>
         {
             var providers = root["Providers"]?.AsObject() ?? [];
