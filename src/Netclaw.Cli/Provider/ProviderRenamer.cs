@@ -82,12 +82,15 @@ internal static class ProviderRenamer
 
         ConfigFileHelper.WriteConfigFile(paths.NetclawConfigPath, config);
 
-        if (secretProviders is not null && secretProviders.TryGetValue(oldName, out var secretEntry))
+        ConfigFileHelper.UpdateSecretsFile(paths, (latest, _) =>
         {
-            secretProviders.Remove(oldName);
-            secretProviders[trimmed] = secretEntry;
-            ConfigFileHelper.WriteSecretsFile(paths, secrets);
-        }
+            var latestProviders = ConfigFileHelper.GetSectionOrNull(latest, "Providers");
+            if (latestProviders is null || !latestProviders.Remove(oldName, out var secretEntry))
+                return false;
+
+            latestProviders[trimmed] = secretEntry;
+            return true;
+        });
 
         OAuthStateStore.Rename(paths, oldName, trimmed);
 

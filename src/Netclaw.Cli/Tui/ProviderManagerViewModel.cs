@@ -844,7 +844,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
             return;
 
         var configBefore = File.ReadAllText(_paths.NetclawConfigPath);
-        var (config, secrets) = ConfigFileHelper.LoadConfigFiles(_paths);
+        var (config, _) = ConfigFileHelper.LoadConfigFiles(_paths);
         var providers = ConfigFileHelper.GetOrCreateSection(config, "Providers");
         if (!providers.TryGetValue(name, out var rawProvider))
             return;
@@ -863,33 +863,40 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
 
         try
         {
-            if (NewAuthMethod == AuthMethod.ApiKey && !string.IsNullOrWhiteSpace(NewApiKey))
+            if (NewAuthMethod == AuthMethod.ApiKey && NewApiKey is { } apiKey && !string.IsNullOrWhiteSpace(apiKey))
             {
                 OAuthStateStore.Remove(_paths, name);
-                var secretProviders = ConfigFileHelper.GetOrCreateSection(secrets, "Providers");
-                secretProviders[name] = new Dictionary<string, object>
+                ConfigFileHelper.UpdateSecretsFile(_paths, (latest, _) =>
                 {
-                    ["ApiKey"] = NewApiKey
-                };
-                ConfigFileHelper.WriteSecretsFile(_paths, secrets);
+                    ConfigFileHelper.GetOrCreateSection(latest, "Providers")[name] = new Dictionary<string, object>
+                    {
+                        ["ApiKey"] = apiKey
+                    };
+                    return true;
+                });
                 return;
             }
 
             if (NewAuthMethod == AuthMethod.None)
             {
-                var secretProviders = ConfigFileHelper.GetSectionOrNull(secrets, "Providers");
-                if (secretProviders?.TryGetValue(name, out var rawSecret) == true)
+                ConfigFileHelper.UpdateSecretsFile(_paths, (latest, _) =>
                 {
-                    var secret = ConfigFileHelper.DeserializeSection<Dictionary<string, object>>(rawSecret) ?? [];
-                    if (secret.Remove("ApiKey"))
+                    if (ConfigFileHelper.GetSectionOrNull(latest, "Providers") is not { } secretProviders
+                        || !secretProviders.TryGetValue(name, out var rawSecret))
                     {
-                        if (secret.Count == 0)
-                            secretProviders.Remove(name);
-                        else
-                            secretProviders[name] = secret;
-                        ConfigFileHelper.WriteSecretsFile(_paths, secrets);
+                        return false;
                     }
-                }
+
+                    var secret = ConfigFileHelper.DeserializeSection<Dictionary<string, object>>(rawSecret) ?? [];
+                    if (!secret.Remove("ApiKey"))
+                        return false;
+
+                    if (secret.Count == 0)
+                        secretProviders.Remove(name);
+                    else
+                        secretProviders[name] = secret;
+                    return true;
+                });
             }
         }
         catch (Exception secretError)
@@ -982,7 +989,7 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
             return;
         }
 
-        var (config, secrets) = ConfigFileHelper.LoadConfigFiles(_paths);
+        var (config, _) = ConfigFileHelper.LoadConfigFiles(_paths);
 
         var wrote = false;
         var providers = ConfigFileHelper.GetSectionOrNull(config, "Providers");
@@ -992,12 +999,12 @@ public sealed class ProviderManagerViewModel : ReactiveViewModel
             wrote = true;
         }
 
-        var secretProviders = ConfigFileHelper.GetSectionOrNull(secrets, "Providers");
-        if (secretProviders?.Remove(RemoveProviderName) == true)
+        var removeName = RemoveProviderName;
+        wrote |= ConfigFileHelper.UpdateSecretsFile(_paths, (latest, _) =>
         {
-            ConfigFileHelper.WriteSecretsFile(_paths, secrets);
-            wrote = true;
-        }
+            var removed = ConfigFileHelper.GetSectionOrNull(latest, "Providers")?.Remove(removeName) == true;
+            return (removed, removed);
+        });
 
         OAuthStateStore.Remove(_paths, RemoveProviderName);
 

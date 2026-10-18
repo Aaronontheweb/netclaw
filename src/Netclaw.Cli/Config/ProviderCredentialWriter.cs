@@ -60,7 +60,7 @@ internal static class ProviderCredentialWriter
         paths.EnsureDirectoriesExist();
 
         // Build provider config entry in netclaw.json
-        var (config, secrets) = ConfigFileHelper.LoadConfigFiles(paths);
+        var (config, _) = ConfigFileHelper.LoadConfigFiles(paths);
         var providers = ConfigFileHelper.GetOrCreateSection(config, "Providers");
 
         // Configuration keys are case-insensitive: "Local" beside "local" fails the next load.
@@ -97,26 +97,23 @@ internal static class ProviderCredentialWriter
             OAuthTokenPersistence.PersistTokens(
                 paths, providerName, oauthResult, effectiveProtector);
         }
-        else if (!string.IsNullOrWhiteSpace(apiKey))
+        else if (apiKey is { } key && !string.IsNullOrWhiteSpace(key))
         {
             OAuthStateStore.Remove(paths, providerName);
-            var secretProviders = ConfigFileHelper.GetOrCreateSection(secrets, "Providers");
-            secretProviders[providerName] = new Dictionary<string, object>
+            ConfigFileHelper.UpdateSecretsFile(paths, (latest, _) =>
             {
-                ["ApiKey"] = apiKey
-            };
-            SecretsFileWriter.Write(paths.SecretsPath, secrets,
-                options: JsonDefaults.Indented, protector: effectiveProtector);
+                ConfigFileHelper.GetOrCreateSection(latest, "Providers")[providerName] = new Dictionary<string, object>
+                {
+                    ["ApiKey"] = key
+                };
+                return true;
+            }, effectiveProtector);
         }
         else if (authMethod == AuthMethod.None)
         {
             OAuthStateStore.Remove(paths, providerName);
-            var secretProviders = ConfigFileHelper.GetSectionOrNull(secrets, "Providers");
-            if (secretProviders?.Remove(providerName) == true)
-            {
-                SecretsFileWriter.Write(paths.SecretsPath, secrets,
-                    options: JsonDefaults.Indented, protector: effectiveProtector);
-            }
+            ConfigFileHelper.UpdateSecretsFile(paths, (latest, _) =>
+                ConfigFileHelper.GetSectionOrNull(latest, "Providers")?.Remove(providerName) == true, effectiveProtector);
         }
     }
 

@@ -499,8 +499,8 @@ internal static class ProviderCommand
         if (providers?.Remove(name) == true)
             ConfigFileHelper.WriteConfigFile(paths.NetclawConfigPath, config);
 
-        if (secretProviders?.Remove(name) == true)
-            ConfigFileHelper.WriteSecretsFile(paths, secrets);
+        ConfigFileHelper.UpdateSecretsFile(paths, (latest, _) =>
+            ConfigFileHelper.GetSectionOrNull(latest, "Providers")?.Remove(name) == true);
 
         OAuthStateStore.Remove(paths, name);
 
