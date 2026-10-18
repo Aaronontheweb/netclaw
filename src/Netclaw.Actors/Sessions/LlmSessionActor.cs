@@ -65,6 +65,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
     private readonly MemoryProposalGate _memoryProposalGate = new();
     private readonly MemoryConfig _memoryConfig;
     private readonly TimeProvider _timeProvider;
+    private readonly IOperationalNotificationSink _notificationSink;
     private readonly SessionStoragePaths _sessionStorage;
     private readonly ISessionLifecycleObserver? _lifecycleObserver;
     private readonly Memory.SQLiteMemoryStore? _memoryStore;
@@ -139,6 +140,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         ModelCapabilities modelCapabilities,
         SessionConfig config,
         SessionServices services,
+        IOperationalNotificationSink notificationSink,
         SessionToolServices? tools = null,
         SessionMemoryServices? memory = null,
         SessionObservability? observability = null)
@@ -168,6 +170,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         _memoryVectorIndexHolder = memory?.VectorIndexHolder;
         _memoryConfig = memory?.MemoryConfig ?? new MemoryConfig();
         _timeProvider = services.TimeProvider;
+        _notificationSink = notificationSink;
         _sessionStorage = services.StorageResolver.Resolve(_sessionId);
         _trustContextDeriver = tools?.TrustDeriver;
         PersistenceId = $"session-{entityId}";
@@ -203,7 +206,12 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             _input.ClearTurnContext();
         });
         Recover<ToolBatchStarted>(RecoverParentBatch);
-        Recover<InputAdmitted>(evt => _state = _state.Apply(evt));
+        Recover<InputAdmitted>(evt =>
+        {
+            _state = _state.Apply(evt);
+            // Live admission of a new input clears the delivery state of the earlier turn. Replay does the same.
+            _deliveryRetry.Clear();
+        });
         Recover<InputClosed>(RecoverParentClosure);
         Recover<ChildRunAccepted>(evt => _state = _state.Apply(evt));
         Recover<ChildRunEvent>(evt => _state = _state.Apply(evt));
@@ -219,7 +227,18 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 _state = SessionState.FromSnapshot(snapshot);
                 HydrateLegacyChildApprovals();
                 if (snapshot.EligibleDeliveryTurnNumber is { } eligibleTurn)
+                {
                     _deliveryRetry.MarkEligible(eligibleTurn);
+
+                    // A restore from a snapshot does not replay the TurnRecorded event of the eligible turn,
+                    // so the snapshot carries what the event would give. Every new snapshot writes the routed
+                    // mark, so its presence tells a new snapshot from an old one. An old snapshot records nothing,
+                    // and a report for that turn then finds an unknown turn and writes a Warning.
+                    if (snapshot.EligibleDeliveryTurnRoutedSkill is { } routedMark)
+                    {
+                        _deliveryRetry.RecordTurn(eligibleTurn, snapshot.EligibleDeliveryReminderId, routedMark);
+                    }
+                }
 
                 _log.Info("Recovered from snapshot (turns={TurnCount})", _state.TurnCount);
             }
@@ -426,30 +445,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             AdmitInput(cmd, InputPlacement.BufferDuringModel);
         });
 
-        Command<DeliveryFailed>(msg =>
-        {
-            if (RestartDrainRequested)
-            {
-                _log.Info("Ignoring delivery feedback while restart drain is pending");
-                return;
-            }
-
-            if (!DeliveryRetryHandler.IsRetryable(msg))
-            {
-                _log.Warning(
-                    "Non-retryable delivery feedback while processing channel={Channel} turn={Turn} kind={FailureKind}; injecting context",
-                    msg.ChannelType,
-                    msg.TurnNumber,
-                    msg.FailureKind);
-                _state = _state.AddSystemNudge(DeliveryRetryHandler.BuildNudge(msg));
-                return;
-            }
-
-            _log.Warning(
-                "Ignoring retryable delivery feedback while processing channel={Channel} turn={Turn}",
-                msg.ChannelType,
-                msg.TurnNumber);
-        });
+        Command<DeliveryFailed>(msg => HandleDeliveryFailedWithoutRetry(msg, "processing"));
 
         Command<CompactionWorkCompleted>(_ => { });
         Command<CompactionWorkFailed>(_ => { });
@@ -856,6 +852,8 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
 
         Command<ProcessingWatchdogExpired>(HandleCompactionWatchdogExpired);
 
+        Command<DeliveryFailed>(msg => HandleDeliveryFailedWithoutRetry(msg, "compacting"));
+
         Command<CompactionTriggered>(HandleCompactionTriggered);
 
         Command<CompactionWorkCompleted>(HandleCompactionWorkCompleted);
@@ -1200,7 +1198,8 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         {
             if (RestartDrainRequested)
             {
-                _log.Info("Ignoring delivery feedback while restart passivation is in progress");
+                _log.Info("Reporting delivery feedback while restart passivation is in progress");
+                ReportReminderPostFailure(msg);
                 return;
             }
 
@@ -1560,6 +1559,8 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         }
 
         var selected = _input.SelectedInputs;
+        var continuation = _toolWorkflow.ChildDecision(_execution.CurrentModelCallId);
+        var deliveredChild = continuation is null ? null : _state.ChildRuns[continuation.RunId];
         var turnEvent = new TurnRecorded
         {
             SessionId = _sessionId,
@@ -1570,10 +1571,12 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             },
             AssistantReply = reply,
             RecordedAtMs = NowMs(),
-            SourceReminderId = selected.ReminderId,
+            SourceReminderId = RunningTurnReminder(deliveredChild),
             SourceBackgroundJobId = selected.BackgroundJobId,
             ConsumedInputIds = selected.Ids,
-            ChildContinuation = _toolWorkflow.ChildDecision(_execution.CurrentModelCallId)
+            // RoutedSkill stays false. The main model writes the reply of a child-delivery turn, also for a routed
+            // skill, so a retry can fix a rejected reply. Only the routed turn that accepts the child never retries.
+            ChildContinuation = continuation
         };
 
         _ = _state.Apply(turnEvent, userAlreadyInHistory: true);
@@ -1586,10 +1589,11 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             _toolWorkflow.ChildContinuationClosed();
 
             EmitResponseOutputs(lastMessage, usage, includeText: true, includeThinking: true);
+
+            // Record the turn before the snapshot, so a snapshot that this turn triggers keeps the delivery state.
+            RecordEligibleTurn(evt);
             MaybeSnapshot();
             MaybeGenerateTitle();
-
-            _deliveryRetry.MarkEligible(new TurnNumber(_state.TurnCount));
 
             // Check if compaction should trigger
             if (ShouldCompact())
@@ -1687,6 +1691,29 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             _toolRegistry);
     }
 
+    /// <summary>
+    /// The reminder link of the running turn. A child-delivery turn has no input of its own, so it takes the link
+    /// that the child run kept from the turn that started it. A retry turn keeps the link of the turn that it
+    /// repeats. Any other turn takes the link of its own input. A child that this turn starts keeps the same link,
+    /// so the link also reaches the child result of a child that a child-delivery turn started.
+    /// </summary>
+    private ReminderId? RunningTurnReminder(BackgroundChildRun? deliveredChild)
+        => deliveredChild is not null
+            ? deliveredChild.SourceReminderId
+            : _input.SelectedInputs.ReminderId ?? _deliveryRetry.RetriedTurnReminder;
+
+    /// <summary>
+    /// Makes the turn that <paramref name="evt"/> recorded the eligible turn and the latest recorded turn.
+    /// The live text turn, the live routed-skill turn, and the journal replay all call this, so the three
+    /// paths cannot drift apart.
+    /// </summary>
+    private void RecordEligibleTurn(TurnRecorded evt)
+    {
+        var turn = new TurnNumber(_state.TurnCount);
+        _deliveryRetry.MarkEligible(turn);
+        _deliveryRetry.RecordTurn(turn, evt.SourceReminderId, evt.RoutedSkill);
+    }
+
     private void HandleDeliveryFailedWhenReady(DeliveryFailed msg)
     {
         if (_deliveryRetry.EligibleTurnNumber != msg.TurnNumber)
@@ -1699,6 +1726,21 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             return;
         }
 
+        // A sub-agent produced the reply of a routed-skill turn. A retry would ask the main model for a
+        // reply that it never wrote, so the first report is the final failure. This holds live, after
+        // replay, and after a snapshot restore, because the mark is part of all three.
+        if (DeliveryRetryHandler.IsRetryable(msg) && _deliveryRetry.IsRoutedSkill(msg.TurnNumber))
+        {
+            _log.Warning(
+                "Not retrying routed-skill turn channel={Channel} turn={Turn} kind={FailureKind}",
+                msg.ChannelType,
+                msg.TurnNumber,
+                msg.FailureKind);
+            _deliveryRetry.Exhaust();
+            ReportReminderPostFailure(msg);
+            return;
+        }
+
         if (!DeliveryRetryHandler.IsRetryable(msg))
         {
             _log.Warning(
@@ -1707,6 +1749,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 msg.TurnNumber,
                 msg.FailureKind);
             _state = _state.AddSystemNudge(DeliveryRetryHandler.BuildNudge(msg));
+            ReportReminderPostFailure(msg);
             return;
         }
 
@@ -1718,6 +1761,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 msg.TurnNumber,
                 msg.FailureKind);
             _deliveryRetry.Exhaust();
+            ReportReminderPostFailure(msg);
             return;
         }
 
@@ -1734,6 +1778,119 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         _modelContext.ResetForNewTurn(); // Delivery feedback changed context — resolve recall fresh
         FireLlmCall();
         TransitionTo(SessionPhase.Processing);
+    }
+
+    /// <summary>
+    /// Handles delivery feedback while the session is busy (processing or compacting). The session does not
+    /// retry in these phases. A restart drain adds no nudge, because the session is about to stop. Compaction adds
+    /// no nudge either, because it discards one. In every case the feedback reaches
+    /// <see cref="ReportReminderPostFailure"/>, so a failed reminder reply is never dropped.
+    /// </summary>
+    private void HandleDeliveryFailedWithoutRetry(DeliveryFailed msg, string phase)
+    {
+        if (RestartDrainRequested)
+        {
+            _log.Info("Reporting delivery feedback while restart drain is pending");
+            ReportReminderPostFailure(msg);
+            return;
+        }
+
+        if (!DeliveryRetryHandler.IsRetryable(msg))
+        {
+            if (_phase.Current == SessionPhase.Compacting)
+            {
+                // Apply(SessionCompacted) builds the history again from the state saved when compaction started.
+                // A nudge added now would vanish, so the alert and the Error log are the only signal here.
+                _log.Warning(
+                    "Non-retryable delivery feedback while {Phase} channel={Channel} turn={Turn} kind={FailureKind}; adds no nudge, because compaction rebuilds the history",
+                    phase,
+                    msg.ChannelType,
+                    msg.TurnNumber,
+                    msg.FailureKind);
+                ReportReminderPostFailure(msg);
+                return;
+            }
+
+            _log.Warning(
+                "Non-retryable delivery feedback while {Phase} channel={Channel} turn={Turn} kind={FailureKind}; injecting context",
+                phase,
+                msg.ChannelType,
+                msg.TurnNumber,
+                msg.FailureKind);
+            _state = _state.AddSystemNudge(DeliveryRetryHandler.BuildNudge(msg));
+            ReportReminderPostFailure(msg);
+            return;
+        }
+
+        // The session does not retry while it handles another input, so this reply stays undelivered.
+        _log.Warning(
+            "Ignoring retryable delivery feedback while {Phase} channel={Channel} turn={Turn}",
+            phase,
+            msg.ChannelType,
+            msg.TurnNumber);
+        ReportReminderPostFailure(msg);
+    }
+
+    /// <summary>
+    /// The session gave up on a reply. When a reminder fire started that turn, nobody reads the thread, so the
+    /// history row (which records admission) and the channel cannot show the failure. This is the only place
+    /// that reports it: an Error log and one alert. The reminder manager owns the history, so no row is written here.
+    /// An ordinary turn raises nothing, because a person in the thread sees that no reply arrived.
+    /// </summary>
+    private void ReportReminderPostFailure(DeliveryFailed msg)
+    {
+        var lookup = _deliveryRetry.ReminderOf(msg.TurnNumber);
+        if (lookup.Kind == ReminderLookupKind.UnknownTurn)
+        {
+            // The session does not hold the source of this turn. A quiet return would hide a lost link.
+            _log.Warning(
+                "Session cannot tell whether a reminder started turn {Turn} channel={Channel} kind={FailureKind}",
+                msg.TurnNumber,
+                msg.ChannelType,
+                msg.FailureKind);
+            return;
+        }
+
+        // The mark makes one reply raise one alert, even when the reply fails more than once.
+        if (lookup.FireKey is not { } fireKey || !_deliveryRetry.TryMarkReported(msg.TurnNumber))
+            return;
+
+        // A fire key that does not parse still gets an alert. The whole key then names the reminder.
+        string reminderId;
+        if (ReminderFireKey.TryParse(fireKey.Value, out var parsed))
+        {
+            reminderId = parsed.DefinitionId.Value;
+        }
+        else
+        {
+            reminderId = fireKey.Value;
+            _log.Warning("Source key {SourceKey} is not a reminder fire key; the alert names the whole key", fireKey.Value);
+        }
+
+        _log.Error(
+            "Reminder {ReminderId} reply was not delivered session={SessionId} channel={Channel} turn={Turn} kind={FailureKind} error={Error}",
+            reminderId,
+            _sessionId.Value,
+            msg.ChannelType,
+            msg.TurnNumber,
+            msg.FailureKind,
+            msg.ErrorMessage);
+
+        _notificationSink.Emit(OperationalAlert.Create(
+            _timeProvider,
+            "reminder.delivery.failed",
+            AlertType.ReminderDeliveryFailed,
+            $"Reminder '{reminderId}' ran, but its reply did not reach {msg.ChannelType}. Failure kind: {msg.FailureKind}.",
+            AlertSeverity.Warning,
+            source: reminderId,
+            context: new Dictionary<string, string>
+            {
+                ["reminderId"] = reminderId,
+                ["sessionId"] = _sessionId.Value,
+                ["channel"] = msg.ChannelType.ToString(),
+                ["failureKind"] = msg.FailureKind.ToString(),
+                ["error"] = msg.ErrorMessage
+            }));
     }
 
     private void HandleIncomingUserMessage(SendUserMessage cmd)
@@ -1858,6 +2015,18 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
 
         if (placement == InputPlacement.BufferDuringModel)
         {
+            // The retry of a child-delivery turn has no input, so its link comes only from the pending retry.
+            // Clear ends that link: the retry turn then records no reminder, and its final failure raises no alert.
+            // A person is in the thread, but a buffered reminder fire may have no reader, so the end of the
+            // link must be visible.
+            if (_deliveryRetry.RetriedTurnReminder is { } endedLink)
+            {
+                _log.Warning(
+                    "A new input ended the delivery retry of turn {Turn} for reminder {FireKey}",
+                    _state.TurnCount,
+                    endedLink.Value);
+            }
+
             _deliveryRetry.Clear();
             _log.Info("Buffering user message (LLM call in progress)");
         }
@@ -1883,6 +2052,11 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         _state = _state.Apply(evt, userAlreadyInHistory);
         _toolWorkflow.CompleteTurn();
         _input.ClearTurnContext();
+
+        // A session that recovers without a snapshot has no eligible turn. Mirror the live path so that
+        // late delivery feedback for the latest turn finds the turn, the reminder that started it, and
+        // the routed mark.
+        RecordEligibleTurn(evt);
     }
 
     private void RecoverParentBatch(ToolBatchStarted recorded)
@@ -2791,6 +2965,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 Content = msg.Result.ToJson()
             },
             RecordedAtMs = NowMs(),
+            RoutedSkill = true,
             SourceReminderId = selected.ReminderId,
             SourceBackgroundJobId = selected.BackgroundJobId,
             ConsumedInputIds = selected.Ids
@@ -2815,6 +2990,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 OpenChildRunIds = _state.GetOpenChildRunIds()
             });
 
+            RecordEligibleTurn(evt);
             MaybeSnapshot();
             MaybeGenerateTitle();
             DrainBufferedMessagesOrBecomeReady();
@@ -2891,7 +3067,9 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
     {
         return _state.ToSnapshot() with
         {
-            EligibleDeliveryTurnNumber = _deliveryRetry.EligibleTurnNumber
+            EligibleDeliveryTurnNumber = _deliveryRetry.EligibleTurnNumber,
+            EligibleDeliveryReminderId = _deliveryRetry.UnreportedEligibleReminder,
+            EligibleDeliveryTurnRoutedSkill = _deliveryRetry.EligibleTurnIsRoutedSkill
         };
     }
 

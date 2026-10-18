@@ -70,6 +70,18 @@ Rules:
   Netclaw preserves the stored reminder audience when the reminder executes.
   The reminder run ends when the session accepts the fire. A later failed post
   is not a reminder failure, and the reminder system does not retry it.
+  The history row records the acceptance and stays `ok`. When the session gives
+  up on the reply, it writes an Error log in the daemon log. The log names the
+  reminder. The session also raises a `reminder.delivery.failed` alert once for
+  each failed reply. The alert `Source` is the reminder ID. The alert reaches
+  only the notification webhooks that the operator configured in
+  `Notifications.Webhooks`. With no webhook, only the Error log shows the
+  failure. Look in the daemon log and the webhook channel, not in the history,
+  for a reply that did not arrive. This holds for Slack, Discord, and
+  Mattermost. It also holds when the reminder turn starts a child run, with a
+  routed skill or an async sub-agent: that turn posts only the acceptance, and
+  a later turn posts the child result. A failed post of either reply raises
+  the alert.
   A session keeps one waiting fire per reminder: if a fire arrives while an
   earlier fire of the same reminder still waits for its turn, Netclaw drops the
   newer fire and logs `reminder_fire_dropped`.
