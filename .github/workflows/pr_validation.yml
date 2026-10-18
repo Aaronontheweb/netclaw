@@ -175,11 +175,13 @@ jobs:
           - group: verb-chain
             gates: exact-verb-chain
           - group: reminder
-            gates: reminder-execution literal-twin stream-commit-gate
+            gates: reminder-execution literal-twin stream-commit-gate shutdown-notice-identity
           - group: authorization-and-directory
             gates: tool-authorization approval-directory
           - group: guard-and-authority
             gates: skill-manage-guard no-program input-one-authority
+          - group: stop-proof
+            gates: stop-proof
           - group: session-reliability
             gates: tool-batch-readiness headless-stop-rule open-child-runs child-owner
 

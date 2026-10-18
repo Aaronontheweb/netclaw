@@ -39,7 +39,7 @@ A `FakeToolExecutor` result does not prove that the real executor accepts those 
 ## Focused Mutation Tests
 
 All focused gates run in one job definition, `mutation-gates` in `pr_validation.yml`, on each pull request and merge group. They do not run on `dev` pushes.
-The job has seven Linux matrix groups that run in parallel with the normal test matrix.
+The job has eight Linux matrix groups that run in parallel with the normal test matrix.
 The job timeout is 25 minutes.
 Each Stryker invocation builds the test project and runs the initial test run again. That fixed cost is about 1.5 to 2 minutes per invocation.
 The mutant run itself takes under 1 minute for most spans. Group time is mostly the sum of the invocations of its gates.
@@ -47,16 +47,19 @@ Hosted runs of 2026-10-17 measured these gate times (minutes):
 
 | Group | Gates | Hosted time (about) |
 |-------|-------|---------------------|
-| `verb-chain` | `exact-verb-chain` (seven invocations, 53 mutants, 9 to 14.5) | 9.5 to 15 |
-| `reminder` | `reminder-execution` (4.4), `literal-twin` (2.9), `stream-commit-gate` (2.5) | 10.3 |
+| `verb-chain` | `exact-verb-chain` (seven invocations, 53 mutants, 9 to 17.5) | 9.5 to 18 |
+| `reminder` | `reminder-execution` (4.4), `literal-twin` (2.9), `stream-commit-gate` (2.5), `shutdown-notice-identity` (18 mutants, one invocation, 3.4) | 13.7 (estimate) |
 | `authorization-and-directory` | `tool-authorization` (5.8), `approval-directory` (5.2) | 11.3 |
 | `guard-and-authority` | `skill-manage-guard` (4.6), `no-program` (5.1), `input-one-authority` (3.2) | 13.3 |
+| `stop-proof` | `stop-proof` (81 mutants, two invocations, 6.9) | 8 (estimate) |
 | `session-reliability` | `tool-batch-readiness` (2.4 to 3.2), `headless-stop-rule` (2.2 to 3.2), `open-child-runs` (1.8 to 2.8), `child-owner` (3.1) | 12.2 |
 
 The `verb-chain` and `reminder` groups were one group, `verb-chain-and-reminder`. That group took 24.5 to 25 minutes, and one run reached the timeout.
 The `authorization-and-directory` and `guard-and-authority` groups were one group, `approval-and-authorization`. That group took 16.5 to 24.6 minutes on the same day and ran near the timeout.
 Each gate there runs Stryker two or three times, so a Stryker run costs 2 to 3 minutes in this group.
 The first CI run of the split took 9 minutes 37 seconds for `verb-chain` and 10 minutes 16 seconds for `reminder`.
+A hosted run of 2026-10-18 put the two gates of #2527 part 2 into `verb-chain` and `guard-and-authority`. Those groups took 21 and 20 minutes.
+`shutdown-notice-identity` took 3.4 minutes and `stop-proof` took 6.9 minutes there. `stop-proof` has its own group, and `shutdown-notice-identity` runs in `reminder`.
 The hosted runner speed varies, so the time of one gate changes by up to 5 minutes between runs.
 Measure a new gate on a cold runner and update this table.
 Each group runs its gates in sequence after one checkout and tool restore, and it reports every failed gate.
@@ -96,6 +99,8 @@ coverage. They do not replace positive and negative behavior tests.
 | `HeadlessChannel` stop rule (`EndsRun`) | `netclaw chat -p` ends a run only on a failed turn or on the first completed turn that reports no open child run; a skipped turn with an open run and a turn with one of two open runs each get the right decision (SPEC-004, "Waiting for child runs"). The gate does not cover the missing-field case: `SessionOutputDtoMapper.FromDto` maps a missing field to an empty list, outside the mutated span, and ordinary tests cover it | 3 killed | `./scripts/run-headless-stop-rule-mutations.sh` |
 | `SessionState.GetOpenChildRunIds` and `SessionState.GetExecutableChildRuns` | The list in `TurnCompleted.OpenChildRunIds` holds every run that is not `Closed`, and no run that the legacy reader quarantined, in acceptance order. A run missing from the list ends a headless run early and loses the child result. A run that stays in the list makes the run wait for ever (SPEC-004, "Waiting for child runs") | 4 killed | `./scripts/run-open-child-runs-mutations.sh` |
 | `TurnContext.HasSameRequester` | The owner of a child run keeps status and cancel in each later turn, and a requester that differs in session, audience, boundary, channel type, sender, or principal never owns it | 11 killed | `./scripts/run-child-owner-mutations.sh` |
+| The identity check of `POST /api/lifecycle/shutdown` (`// shutdown-identity:begin` to `end`) | Rule 1 of #2527: the daemon announces its stop only for a notice with its own PID and its own home. A wrong PID or home gets 409 and no alert; a missing or malformed value gets 400; a folder inside the home is not the home | all tested mutants killed (at least 18) | `./scripts/run-shutdown-notice-identity-mutations.sh` |
+| The proof in `DaemonManager.StopAsync` before the signal (`// stop-proof`, `// stop-notice`, `// stale-pid`) and the home comparison (`// home-match`) | Rule 2 of #2527: a PID gets a signal only when the daemon at the port of this home answers 200 with that PID and this home, or when it does not answer (or answers 200 with no `home`) and the environment of the process shows this home, read as that process reads it (`HOME` and `NETCLAW_HOME` of the target, never of the CLI). A 409, or a 200 with another PID or home, is never overruled; two folders that a `..` in a link target could join are two homes; a home that differs by case, by a folder level, or by a link is another home; a stale PID file signals nothing | all tested mutants killed (at least 32 in `DaemonManager`; at least 49 in `HomeIdentity`, where a `Timeout` counts as killed) | `./scripts/run-stop-proof-mutations.sh` |
 
 Run the path-access check locally:
 
@@ -160,6 +165,50 @@ error in the selected span.
 
 The local run took 1 minute 40 seconds after package restore. The separate CI
 job retains a 10-minute timeout and uploads `mcp-artifact-admission-mutation-report`.
+
+### Shutdown Notice Identity Gate
+
+Run the shutdown notice identity gate:
+
+```bash
+./scripts/run-shutdown-notice-identity-mutations.sh
+```
+
+The script selects the identity block of the shutdown endpoint, between the
+markers `// shutdown-identity:begin` and `// shutdown-identity:end`. A missing
+or duplicated marker fails before Stryker starts. The tests in
+`ShutdownNoticeIdentityMutationTests` run the real endpoint in a test host and
+must kill every mutant: a mutant that accepts a wrong PID, a wrong home, a
+folder inside the home, or a missing value would send a false `daemon.stopping`
+alert or let a CLI of one home stop the daemon of another home. The gate needs
+at least 18 mutants in the span, so a span that lost its checks also fails.
+
+CI runs it in the `reminder` group of the `mutation-gates` job. It took 3.4 minutes on a hosted runner.
+
+### Stop Proof Gate
+
+Run the stop proof gate:
+
+```bash
+./scripts/run-stop-proof-mutations.sh
+```
+
+The script runs Stryker two times: on the marked spans of `DaemonManager.cs`
+(`stale-pid`, `stop-notice`, `stop-proof`) and on the `home-match` span of
+`HomeIdentity.cs`. A missing or duplicated marker fails before Stryker starts.
+`StopProofMutationTests` start a stand-in daemon (a process that shows as
+`netclawd`, a port, and a recording listener) and call `StopAsync` for real.
+They need Linux. A span must not hold an `OperatingSystem` check or a retry
+limit that no test can tell apart on the Linux runner; keep those outside the
+markers, as the HTTP timeout, the `/proc` read, and the handling of a failed
+notice are. The gate tested 32 mutants in `DaemonManager` and 49 in
+`HomeIdentity`, and detected all of them. In `HomeIdentity`, a mutant that
+removes the 40-link bound makes a link cycle spin. Stryker reports that as
+`Timeout`, and the gate counts it as detected, as the exact verb chain gate does.
+In `DaemonManager`, only `Killed` counts.
+
+CI runs it in the `stop-proof` group of the `mutation-gates` job. That group holds this gate alone.
+The gate took 6.9 minutes on a hosted runner, and it made `guard-and-authority` take 20 minutes.
 
 ### Stream Commit Gate
 
