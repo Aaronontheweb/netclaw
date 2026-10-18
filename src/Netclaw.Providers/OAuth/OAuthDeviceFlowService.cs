@@ -201,9 +201,9 @@ public sealed class OAuthDeviceFlowService : IDeviceFlowService
 
     /// <summary>
     /// Exchange a refresh token for a new access token.
-    /// Returns null if the refresh token is invalid or revoked.
+    /// Throws <see cref="OAuthRefreshTokenRejectedException"/> when the token server rejects the refresh token.
     /// </summary>
-    public async Task<OAuthDeviceFlowResult?> RefreshTokenAsync(
+    public async Task<OAuthDeviceFlowResult> RefreshTokenAsync(
         string tokenEndpoint,
         string clientId,
         SensitiveString refreshToken,
@@ -220,9 +220,7 @@ public sealed class OAuthDeviceFlowService : IDeviceFlowService
 
         if (!response.IsSuccessStatusCode)
         {
-            if (OAuthTokenResponseParser.IsPermanentRefreshError(await response.Content.ReadAsStringAsync(ct)))
-                return null;
-
+            OAuthTokenResponseParser.ThrowIfPermanentRefreshError(await response.Content.ReadAsStringAsync(ct));
             response.EnsureSuccessStatusCode(); // throw for other errors
         }
 
@@ -231,7 +229,7 @@ public sealed class OAuthDeviceFlowService : IDeviceFlowService
         return OAuthTokenResponseParser.Parse(doc.RootElement, _timeProvider);
     }
 
-    public Task<OAuthDeviceFlowResult?> RefreshTokenAsync(
+    public Task<OAuthDeviceFlowResult> RefreshTokenAsync(
         string tokenEndpoint,
         string clientId,
         string refreshToken,

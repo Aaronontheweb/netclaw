@@ -475,19 +475,19 @@ public class OpenAiDeviceFlowServiceTests
     }
 
     [Fact]
-    public async Task RefreshToken_InvalidGrant_ReturnsNull()
+    public async Task RefreshToken_InvalidGrant_ThrowsWithTheCode()
     {
         var handler = new FakeHttpMessageHandler(_ =>
             JsonResponse(new { error = "invalid_grant" }, HttpStatusCode.BadRequest));
 
         var service = new OpenAiDeviceFlowService(new HttpClient(handler));
 
-        var result = await service.RefreshTokenAsync(
+        var ex = await Assert.ThrowsAsync<OAuthRefreshTokenRejectedException>(() => service.RefreshTokenAsync(
             "https://auth.openai.com/oauth/token",
             "client-id",
-            new SensitiveString("expired-refresh-token"), TestContext.Current.CancellationToken);
+            new SensitiveString("expired-refresh-token"), TestContext.Current.CancellationToken));
 
-        Assert.Null(result);
+        Assert.Equal("invalid_grant", ex.Code);
     }
 
     // auth.openai.com puts an object in "error", not the RFC 6749 string.
@@ -496,19 +496,19 @@ public class OpenAiDeviceFlowServiceTests
     [InlineData("refresh_token_expired")]
     [InlineData("refresh_token_invalidated")]
     [InlineData("invalid_grant")]
-    public async Task RefreshToken_OpenAiErrorObjectWithAPermanentCode_ReturnsNull(string code)
+    public async Task RefreshToken_OpenAiErrorObjectWithAPermanentCode_ThrowsWithTheCode(string code)
     {
         var handler = new FakeHttpMessageHandler(_ => JsonResponse(
             new { error = new { message = "Please try signing in again.", type = "invalid_request_error", code } },
             HttpStatusCode.Unauthorized));
         var service = new OpenAiDeviceFlowService(new HttpClient(handler));
 
-        var result = await service.RefreshTokenAsync(
+        var ex = await Assert.ThrowsAsync<OAuthRefreshTokenRejectedException>(() => service.RefreshTokenAsync(
             "https://auth.openai.com/oauth/token",
             "client-id",
-            new SensitiveString("spent-refresh-token"), TestContext.Current.CancellationToken);
+            new SensitiveString("spent-refresh-token"), TestContext.Current.CancellationToken));
 
-        Assert.Null(result);
+        Assert.Equal(code, ex.Code);
     }
 
     [Fact]

@@ -30,6 +30,17 @@ public sealed class ProviderOAuthTokenRefreshService(
     // Only code that holds the provider's refresh gate reads or writes an entry.
     private readonly ConcurrentDictionary<string, RefreshTokenState> _refreshTokens = new(StringComparer.OrdinalIgnoreCase);
 
+    // AccessToken is the access token that the provider held when the sign-in failed. A different valid
+    // access token means a new sign-in, so the failure is cleared.
+    private readonly ConcurrentDictionary<string, (string Reason, string AccessToken)> _authFailures = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>The providers whose OAuth credentials need a new sign-in, for the daemon status.</summary>
+    public IReadOnlyList<ProviderAuthFailure> GetAuthFailures()
+        => _authFailures
+            .OrderBy(failure => failure.Key, StringComparer.OrdinalIgnoreCase)
+            .Select(failure => new ProviderAuthFailure(failure.Key, failure.Value.Reason))
+            .ToList();
+
     public async Task<SensitiveString> GetValidAccessTokenAsync(
         string providerName,
         ProviderEntry entry,
@@ -62,7 +73,7 @@ public sealed class ProviderOAuthTokenRefreshService(
             $"OAuth access token for provider '{providerName}'");
 
         if (!forceRefresh && !NeedsRefresh(entry.OAuthTokenExpiry))
-            return accessToken;
+            return SignedIn(providerName, accessToken);
 
         // Coalesce concurrent refreshes for the same configured provider so a
         // burst of requests does not spend the same refresh token multiple times.
@@ -72,11 +83,12 @@ public sealed class ProviderOAuthTokenRefreshService(
         {
             // The second pass runs only when another process saved a newer refresh token while the
             // token server rejected ours. At most two token-server calls happen per call.
+            string? rejection = null;
             for (var attempt = 0; ; attempt++)
             {
                 var storeChanged = AdoptStoredTokens(providerName, entry);
-                if (attempt > 0 && !storeChanged)
-                    throw RefreshTokenRejected(providerName);
+                if (rejection is not null && !storeChanged)
+                    throw RefreshTokenRejected(providerName, rejection, entry);
 
                 accessToken = entry.OAuthAccessToken.RequireValid(
                     $"OAuth access token for provider '{providerName}'");
@@ -88,35 +100,41 @@ public sealed class ProviderOAuthTokenRefreshService(
                     && expectedAccessToken is not null
                     && !string.Equals(accessToken.Value, expectedAccessToken, StringComparison.Ordinal))
                 {
-                    return accessToken;
+                    return SignedIn(providerName, accessToken);
                 }
 
                 if (!forceRefresh && !NeedsRefresh(entry.OAuthTokenExpiry))
-                    return accessToken;
+                    return SignedIn(providerName, accessToken);
 
                 if (entry.OAuthRefreshToken.IsNullOrEmpty())
                 {
-                    EmitAuthExpired(providerName, "no_refresh_token");
+                    ReportAuthExpired(providerName, "no_refresh_token", entry);
                     throw new ProviderOAuthRefreshRequiredException(
                         $"OAuth token for provider '{providerName}' expired with no refresh token. "
                         + $"Re-authenticate '{providerName}' with `netclaw provider`.");
                 }
 
                 var presented = entry.OAuthRefreshToken;
-                var result = await deviceFlowFactory.GetFor(oauth).RefreshTokenAsync(
-                    oauth.TokenEndpoint.ToString(),
-                    oauth.ClientId,
-                    presented,
-                    ct);
-
-                if (result is null)
+                OAuthDeviceFlowResult result;
+                try
                 {
-                    if (attempt == 0)
-                        continue;
-
-                    throw RefreshTokenRejected(providerName);
+                    result = await deviceFlowFactory.GetFor(oauth).RefreshTokenAsync(
+                        oauth.TokenEndpoint.ToString(),
+                        oauth.ClientId,
+                        presented,
+                        ct);
+                }
+                catch (OAuthRefreshTokenRejectedException ex) when (attempt == 0)
+                {
+                    rejection = ex.Code;
+                    continue;
+                }
+                catch (OAuthRefreshTokenRejectedException ex)
+                {
+                    throw RefreshTokenRejected(providerName, ex.Code, entry);
                 }
 
+                _authFailures.TryRemove(providerName, out _);
                 ApplyRefreshResult(entry, result);
                 var state = _refreshTokens[providerName];
                 state.Live = entry.OAuthRefreshToken;
@@ -158,9 +176,9 @@ public sealed class ProviderOAuthTokenRefreshService(
         }
     }
 
-    private ProviderOAuthRefreshRequiredException RefreshTokenRejected(string providerName)
+    private ProviderOAuthRefreshRequiredException RefreshTokenRejected(string providerName, string code, ProviderEntry entry)
     {
-        EmitAuthExpired(providerName, "invalid_grant");
+        ReportAuthExpired(providerName, code, entry);
         return new ProviderOAuthRefreshRequiredException(
             $"OAuth refresh token for provider '{providerName}' was rejected. "
             + $"Re-authenticate '{providerName}' with `netclaw provider`.");
@@ -225,8 +243,27 @@ public sealed class ProviderOAuthTokenRefreshService(
         entry.OAuthAccountId = result.AccountId ?? existingAccountId;
     }
 
-    private void EmitAuthExpired(string providerName, string reason)
-        => _notificationSink.Emit(OperationalAlert.Create(
+    private SensitiveString SignedIn(string providerName, SensitiveString accessToken)
+    {
+        if (_authFailures.TryGetValue(providerName, out var failure)
+            && !string.Equals(failure.AccessToken, accessToken.Value, StringComparison.Ordinal))
+        {
+            _authFailures.TryRemove(KeyValuePair.Create(providerName, failure));
+        }
+
+        return accessToken;
+    }
+
+    // The alert reaches chat and webhooks only. The log line and the daemon status show the failure
+    // to an operator who has neither.
+    private void ReportAuthExpired(string providerName, string reason, ProviderEntry entry)
+    {
+        _authFailures[providerName] = (reason, entry.OAuthAccessToken?.Value ?? "");
+        _logger.LogError(
+            "Provider {Provider} needs a new OAuth sign-in. Reason: {Reason}. Run `netclaw provider` to sign in again.",
+            providerName,
+            reason);
+        _notificationSink.Emit(OperationalAlert.Create(
             _timeProvider,
             "provider.auth.expired",
             AlertType.ProviderAuthExpired,
@@ -238,6 +275,7 @@ public sealed class ProviderOAuthTokenRefreshService(
                 ["providerName"] = providerName,
                 ["reason"] = reason,
             }));
+    }
 
     // LastStored is the refresh token that this process last read from, or wrote to, secrets.json.
     // Live is the refresh token to present next. They differ after a save of refreshed tokens fails.
@@ -251,3 +289,8 @@ public sealed class ProviderOAuthTokenRefreshService(
         public HashSet<string> Spent { get; } = new(StringComparer.Ordinal);
     }
 }
+
+/// <summary>A provider whose OAuth credentials need a new sign-in.</summary>
+/// <param name="Provider">The configured provider name.</param>
+/// <param name="Reason">The rejection code from the token server, or <c>no_refresh_token</c>.</param>
+public sealed record ProviderAuthFailure(string Provider, string Reason);

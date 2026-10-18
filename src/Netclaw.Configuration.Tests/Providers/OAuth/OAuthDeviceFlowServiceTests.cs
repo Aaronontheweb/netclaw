@@ -232,34 +232,34 @@ public class OAuthDeviceFlowServiceTests
     }
 
     [Fact]
-    public async Task RefreshToken_InvalidGrant_ReturnsNull()
+    public async Task RefreshToken_InvalidGrant_ThrowsWithTheCode()
     {
         var handler = new FakeHttpMessageHandler(_ =>
             JsonResponse(new { error = "invalid_grant" }, HttpStatusCode.BadRequest));
 
         var service = new OAuthDeviceFlowService(new HttpClient(handler));
 
-        var result = await service.RefreshTokenAsync(
+        var ex = await Assert.ThrowsAsync<OAuthRefreshTokenRejectedException>(() => service.RefreshTokenAsync(
             "https://auth.example.com/token",
             "client-id",
-            new SensitiveString("expired-refresh-token"), TestContext.Current.CancellationToken);
+            new SensitiveString("expired-refresh-token"), TestContext.Current.CancellationToken));
 
-        Assert.Null(result);
+        Assert.Equal("invalid_grant", ex.Code);
     }
 
     [Fact]
-    public async Task RefreshToken_ErrorObjectWithReusedCode_ReturnsNull()
+    public async Task RefreshToken_ErrorObjectWithReusedCode_ThrowsWithTheCode()
     {
         var handler = new FakeHttpMessageHandler(_ => JsonResponse(
             new { error = new { code = "refresh_token_reused" } }, HttpStatusCode.Unauthorized));
         var service = new OAuthDeviceFlowService(new HttpClient(handler));
 
-        var result = await service.RefreshTokenAsync(
+        var ex = await Assert.ThrowsAsync<OAuthRefreshTokenRejectedException>(() => service.RefreshTokenAsync(
             "https://auth.example.com/token",
             "client-id",
-            new SensitiveString("spent-refresh-token"), TestContext.Current.CancellationToken);
+            new SensitiveString("spent-refresh-token"), TestContext.Current.CancellationToken));
 
-        Assert.Null(result);
+        Assert.Equal("refresh_token_reused", ex.Code);
     }
 
     [Fact]

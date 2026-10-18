@@ -22,29 +22,32 @@ internal static class OAuthTokenResponseParser
         "refresh_token_invalidated",
     };
 
-    public static bool IsPermanentRefreshError(string errorBody)
+    public static void ThrowIfPermanentRefreshError(string errorBody)
     {
+        string? code;
         try
         {
             using var doc = JsonDocument.Parse(errorBody);
             if (doc.RootElement.ValueKind != JsonValueKind.Object
                 || !doc.RootElement.TryGetProperty("error", out var error))
             {
-                return false;
+                return;
             }
 
-            var code = error.ValueKind switch
+            code = error.ValueKind switch
             {
                 JsonValueKind.String => error.GetString(),
                 JsonValueKind.Object when error.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String => c.GetString(),
                 _ => null,
             };
-            return code is not null && PermanentRefreshErrors.Contains(code);
         }
         catch (JsonException)
         {
-            return false;
+            return;
         }
+
+        if (code is not null && PermanentRefreshErrors.Contains(code))
+            throw new OAuthRefreshTokenRejectedException(code);
     }
 
     public static OAuthDeviceFlowResult Parse(JsonElement root, TimeProvider timeProvider)
