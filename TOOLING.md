@@ -56,7 +56,7 @@ Hosted runs of 2026-10-17 and 2026-10-18 measured these gate times (minutes):
 | `shell-assignment-and-paths` | `shell-assignment` (6.2 to 9.4), `path-access` (2.4 to 3.2) | 9 to 13 |
 | `config-read-and-admission` | `shell-config-read` (5.3 to 8.4), `tool-authorizer-order` (2.8 to 3.5), `mcp-artifact-admission` (2.2) | 10.5 to 14.5 |
 | `session-reliability` | `tool-batch-readiness` (3.5 to 3.9), `headless-stop-rule` (3.3 to 3.5), `open-child-runs` (2.9 to 3.4) | 10 to 11 |
-| `child-owner-and-report` | `child-owner` (3.1 to 3.6), `reminder-report-once` (about 3.5 to 4) | 7 to 8 |
+| `child-owner-and-report` | `child-owner` (3.1 to 3.6), `reminder-report-once` (about 3.5 to 4), `loopback-host-origin` (two invocations, not measured on a hosted runner) | 7 to 8 before `loopback-host-origin` |
 
 The `verb-chain` and `reminder` groups were one group, `verb-chain-and-reminder`. That group took 24.5 to 25 minutes, and one run reached the timeout.
 The `authorization-and-directory` and `guard-and-authority` groups were one group, `approval-and-authorization`. That group took 16.5 to 24.6 minutes on the same day and ran near the timeout.
@@ -290,7 +290,7 @@ spans (the `origin.Count` comparisons and `Sum` replacements in `FindRefusal`).
 The count of 41 excludes them.
 
 The local run took 2 to 3 minutes after package restore. CI runs it in the
-`session-reliability` group of the `mutation-gates` job. Its report directory is
+`child-owner-and-report` group of the `mutation-gates` job. Its report directory is
 `artifacts/stryker/loopback-host-origin`.
 
 ### Session Reliability Gate
