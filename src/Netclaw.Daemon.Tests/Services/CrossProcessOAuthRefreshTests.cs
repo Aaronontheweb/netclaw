@@ -260,6 +260,34 @@ public sealed class CrossProcessOAuthRefreshTests : IDisposable
         Assert.Single(_alerts.Alerts);
     }
 
+    // An older copy of secrets.json comes back, for example from a backup. It holds a refresh token
+    // that this process spent two refreshes ago. The process keeps its live token.
+    [Fact]
+    public async Task An_older_secrets_json_copy_does_not_bring_back_a_spent_token()
+    {
+        var server = new TokenServer { RevokeFamilyOnReuse = true };
+        var now = _time.GetUtcNow();
+        StoreTokens("access-0", "refresh-0", now.AddMinutes(-1));
+        var olderCopy = File.ReadAllBytes(_paths.SecretsPath);
+        var service = CreateService(new FakeHttpMessageHandler(server.Handle));
+
+        for (var i = 0; i < 2; i++)
+        {
+            await service.GetValidAccessTokenAsync("codex", Entry("access-0", "refresh-0", now.AddMinutes(-1)), OpenAiOAuth,
+                TestContext.Current.CancellationToken);
+            _time.Advance(TimeSpan.FromHours(2));
+        }
+
+        File.WriteAllBytes(_paths.SecretsPath, olderCopy);
+        var token = await service.GetValidAccessTokenAsync("codex", Entry("access-0", "refresh-0", now.AddMinutes(-1)),
+            OpenAiOAuth, TestContext.Current.CancellationToken);
+
+        Assert.Equal("access-3", token.Value);
+        Assert.Equal(["refresh-0", "refresh-1", "refresh-2"], server.Presented);
+        Assert.Equal(0, server.Reuses);
+        Assert.Equal("refresh-3", StoredRefresh("codex"));
+    }
+
     // One daemon refreshes two providers at the same moment. A save for one provider must not put
     // the other provider's spent refresh token back in secrets.json.
     [Fact]
