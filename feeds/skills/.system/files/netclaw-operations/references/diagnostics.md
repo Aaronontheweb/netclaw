@@ -85,6 +85,7 @@ debugging a daemon-wide problem → read `daemon.log`.
 |---------|-------|
 | No LLM responses | `netclaw doctor`; verify provider credentials |
 | Missing tools | `netclaw mcp list`; check MCP connection state |
+| An OAuth provider stops working | `netclaw status` shows the connector `Provider/<name>` with the status `auth-failed` and the code from the token server, for example `refresh_token_reused`. `daemon.log` has one Error for each rejection: `Provider <name> needs a new OAuth sign-in. Reason: <code>`. Run `netclaw provider` to sign in again. The connector goes away after a new sign-in or the next good refresh. |
 | An MCP tool call fails | Grep `<NETCLAW_HOME>/logs/daemon-*.log` for `MCP tool '` and `invocation failed`. Each failed call writes one Warning that names the server, the tool, and the HTTP status when the server sent one. The tool-result text gives the kind: `reported a failure:` is an error the tool declared, and `failed:` is an exception from the server or the transport. |
 | Memory recall degraded | `netclaw status` memory section |
 | Memory embedding/relevance model unavailable | Fires a `memory.embedding_model.unavailable` / `memory.relevance_model.unavailable` operational alert (once per model per daemon run) naming the model, failure reason, and consequence when `Memory.Embeddings.Enabled=true` and either ONNX model fails to provision or load; see `netclaw-memory`'s Embeddings section and `netclaw doctor`'s Memory Embeddings / Memory Relevance Gate checks |
