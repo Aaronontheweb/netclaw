@@ -75,7 +75,9 @@ use the Codex backend or this account-ID metadata.
 When the token server rejects a refresh token (`invalid_grant`,
 `refresh_token_reused`, `refresh_token_expired`, or
 `refresh_token_invalidated`), only a new sign-in helps. The daemon writes an
-Error to `daemon.log` with the provider name and the code, sends the
+Error log line with the provider name and the code. The line goes to the
+`session.log` of the session that made the call, or to `daemon.log` when no
+session made it. The daemon also sends the
 `provider.auth.expired` alert with the code in its `reason` field, and shows
 the provider as `auth-failed` in `netclaw status` and `/api/health/status`.
 Run `netclaw provider` to sign in again.
