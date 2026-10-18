@@ -933,6 +933,13 @@ add to it. This applies to `AllowedTools`, `ReadFiles`/`WriteFiles`/`AttachFiles
   not write `Tools.AudienceProfiles`. The daemon computes the profiles from the posture. An
   absent profile is normal and gets the posture default. For the Personal posture, that
   default requires approval for `shell_execute` on Personal.
+- `netclaw doctor` warns when `Tools.ShellMode` and `Security.ShellExecutionMode` have
+  different values. The check name is `Security Policy`. The daemon uses `Tools.ShellMode`
+  first, so that value wins. The warning has no auto-fix. Set both keys to the value that
+  you want. The Exposure Mode screen in `netclaw config` changes only `Daemon.ExposureMode`,
+  `Daemon.Host`, and `Daemon.TrustedProxies`. A release before this fix reset `Security` to
+  `Personal` and `HostAllowed` when that screen saved. Check `Security.DeploymentPosture` in
+  a file that was saved by an older release.
 - Do not write a default list into `netclaw.json` to "make it visible". Write only the key
   that you change.
 
