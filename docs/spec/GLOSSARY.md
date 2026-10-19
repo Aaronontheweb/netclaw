@@ -544,7 +544,27 @@ Alice asks for status in turn 2 (no quoted context)  -> same requester, allowed
 Bob asks for status in the same thread               -> other requester, denied
 ```
 
-**Code anchors:** `TurnContext.HasSameRequester`,
+One exception covers child status and cancel. A reminder turn (principal
+`VerifiedAutomation`, source kind `reminder`, transport authenticity
+`LocalProcess`) and any other turn of one session manage each other's child
+runs. The other turn can be a person turn or an automated turn, such as the
+delivery turn of a background job. A webhook turn can carry the source kind
+`reminder`, but it has the authenticity `Verified`, so it is not a reminder turn. When the requester or the turn that started the
+run is a reminder turn, the check ignores the sender ID and the principal
+classification. It still requires the same session, audience, trust boundary,
+and channel type.
+
+```text
+An operator starts a child in a TUI session
+A reminder fire in the same session asks for status  -> allowed
+A reminder fire starts a child; the operator asks    -> allowed
+A background job delivery turn asks for that status  -> allowed
+A reminder fire in another session asks for status   -> denied
+A webhook with the event header "reminder" asks      -> denied
+Alice starts a child; Bob asks (both people)         -> denied
+```
+
+**Code anchors:** `TurnContext.HasSameRequester`, `TurnContext.CanControlChildRunOf`,
 `ApprovalButtonValueCodec.CanApprove`
 
 ### Consent mode
