@@ -383,6 +383,40 @@ public sealed class ChildRunActorBoundaryTests(ITestOutputHelper output) : LlmSe
         }
     }
 
+    [Fact]
+    public async Task A_cancelled_child_approval_is_closed_for_replay_and_logs_nothing_after_a_restart()
+    {
+        // Arrange: the child waits on an approval that nobody answers. The parent cancels the child.
+        var sessionId = new SessionId("boundary/cancel-open-child-approval");
+        var control = await ConfigureJournalAsync(rejectAcceptance: false, holdAcceptance: false);
+        _clients.Parent.ToolCallsOnFirstCall = [Spawn("cancel-approval-child", "child-a")];
+        _clients.A.ToolCallsOnFirstCall = [Probe("forbidden-after-cancel")];
+        var subscriber = CreateTestProbe();
+        await JoinSessionAsync(ActorRegistry.Get<SessionManagerActorKey>(), subscriber, sessionId, OutputFilter.Full);
+        var session = await ResolveSessionAsync(sessionId);
+        await SendAsync(sessionId, "Start the child with an approval.", "original-owner");
+        await subscriber.FishForMessageAsync<ToolInteractionRequest>(
+            item => item.ToolName.Value == "authority_probe", Deadline, cancellationToken: Cancellation);
+        var accepted = await control.Acceptance.Task.WaitAsync(Deadline, Cancellation);
+        using var cancelled = JsonDocument.Parse(await session.Ask<string>(
+            new ChildRunControl(accepted.Run.RunId, true, accepted.Run.OriginalContext), Deadline, Cancellation));
+        await AwaitAssertAsync(() => Assert.Contains(control.Committed.OfType<ChildRunEvent.TerminalRecorded>(),
+            evt => evt.RunId == accepted.Run.RunId), Deadline, cancellationToken: Cancellation);
+        var live = await session.Ask<string>(new ChildRunControl(
+            accepted.Run.RunId, false, accepted.Run.OriginalContext), Deadline, Cancellation);
+        using (var liveJson = JsonDocument.Parse(live))
+            Assert.Equal(0, liveJson.RootElement.GetProperty("pending_approval_count").GetInt32());
+        await StopAsync(session);
+
+        // Act + Assert: replay of the cancel and terminal records closes the entry. The journal still holds the
+        // approval request, and replay must not log it as a request.
+        await EventFilter.Info(contains: "Tool approval requested").ExpectAsync(0, async () =>
+        {
+            await JoinAsync(sessionId);
+        }, Deadline, Cancellation);
+        Assert.Empty(_tool.Contexts);
+    }
+
     [Theory]
     [InlineData("original-owner", true)]
     [InlineData("other-requester", false)]

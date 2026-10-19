@@ -191,9 +191,10 @@ public sealed partial class LlmSessionActor
     private static bool HasSameChildAuthority(TurnContextRecord left, TurnContextRecord right)
         => CompareChildContexts(left, right, static (original, candidate) => original.HasSameAuthority(candidate));
 
-    // Status and cancel: the requester that started the child owns it in each later turn.
+    // Status and cancel: the requester that started the child owns it in each later turn. A reminder turn and a
+    // person turn of one session manage each other's runs (TurnContext.CanControlChildRunOf).
     private static bool HasSameChildRequester(TurnContextRecord left, TurnContextRecord right)
-        => CompareChildContexts(left, right, static (original, candidate) => original.HasSameRequester(candidate));
+        => CompareChildContexts(left, right, static (original, candidate) => candidate.CanControlChildRunOf(original));
 
     // A record that cannot be read matches nothing.
     private static bool CompareChildContexts(
@@ -234,7 +235,7 @@ public sealed partial class LlmSessionActor
         {
             _state = _state.Apply(committed);
             _execution.CloseChild(run.RunId);
-            _toolWorkflow.ExpireChildApprovals(run.RunId);
+            _toolWorkflow.CloseChildApprovals(committed);
             replyTo.Tell(ChildStatus(_state.ChildRuns[run.RunId]));
         });
     }
@@ -285,7 +286,7 @@ public sealed partial class LlmSessionActor
         Persist(evt, committed =>
         {
             _state = _state.Apply(committed);
-            _toolWorkflow.ExpireChildApprovals(runId);
+            _toolWorkflow.CloseChildApprovals(committed);
             _execution.ReleaseChild(runId);
             if (!child.Equals(ActorRefs.Nobody))
             {
@@ -389,7 +390,6 @@ public sealed partial class LlmSessionActor
 
     private void RecoverChildren()
     {
-        _toolWorkflow.ExpireRecoveredChildApprovals();
         foreach (var run in _state.GetExecutableChildRuns().ToArray())
         {
             if (run.Lifecycle is ChildRunLifecycle.Accepted or ChildRunLifecycle.Cancelling)
