@@ -112,7 +112,7 @@ set them:
 |-------|---------|---------|---------|
 | Prefill | `SubAgents.PrefillTimeoutSeconds` | `1800` | Max wait for the first streamed delta. Keepalives refresh it. A file may set `prefillTimeoutSeconds` to override it. |
 | Inter-delta | `Session.FirstTokenTimeoutSeconds` | `600` | Max gap between streamed deltas after the first one. |
-| No progress | `SubAgents.NoProgressTimeoutSeconds` | `1200` | Hard ceiling on time without real output. Keepalives never refresh it. |
+| No progress | `SubAgents.NoProgressTimeoutSeconds` | `1200` | Hard ceiling on time without real output. Text, tool calls, and thinking refresh it. Keepalives never refresh it. One model call that streams only thinking stops at three times this value (`thinking_only_timeout`). |
 
 Agent files no longer set a per-agent timeout. A file that still contains
 `timeoutSeconds` loads, and the loader logs one warning that names the file and
@@ -120,6 +120,38 @@ says the key is obsolete and ignored. Remove the key from the file.
 
 Profiles that used the old `timeoutSeconds` default of `60` now use the
 inter-delta budget of `600` seconds. The no-progress timer still bounds the run.
+
+Two more rules end a run with outcome `failed`:
+
+- `output_truncated`: a model reply ended on the output limit
+  (`finishReason=length`) and made no tool call. The text is cut off, so it is
+  never a result. The run does not retry. The failure text of the run result
+  holds a redacted preview of at most 300 characters of the cut-off text. A
+  reply that has a tool call still runs its tools.
+- `thinking_only_timeout`: one model call streamed only thinking, with no text
+  and no tool call, for longer than three times `SubAgents.NoProgressTimeoutSeconds`
+  (default `1200`, so 60 minutes). Thinking counts as progress for the
+  `no_substantive_output_timeout` deadline, so only this cap stops a model that
+  thinks without end. A text delta with visible characters or a tool-call delta
+  restarts the cap. A reasoning part never restarts it, also when its text is
+  empty. The cap counts from the start of the call, so prefill time counts.
+
+The main session applies the same two rules to its own model calls:
+
+- A cut-off text reply with no tool call ends the turn with an error that says
+  the reply was truncated. The session does not post the cut-off text and does
+  not store it in history. A live viewer can see the streamed text before the
+  error arrives.
+- One call that streams only thinking ends the turn at three times
+  `Session.NoProgressTimeoutSeconds` (default `1200`, so 60 minutes). The error
+  says that the model streamed only thinking.
+- Both errors have category `ModelBehavior`. Headless output reports
+  `[turn:failed] category=model kind=ModelBehavior`. The provider worked, so do
+  not look for an infrastructure fault.
+- For a cut-off reply, ask for a shorter answer, or raise the model output limit.
+- For the thinking cap, a larger output limit does not help. Ask for a simpler
+  task, or use a model that thinks less. To allow longer thinking, raise
+  `NoProgressTimeoutSeconds`: the cap is three times that value.
 
 ### Observability
 

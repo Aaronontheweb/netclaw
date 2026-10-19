@@ -12,7 +12,9 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Hosting;
+using Netclaw.Actors.Jobs;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Reminders;
 using Netclaw.Actors.Sessions;
 using Netclaw.Actors.SubAgents;
 using Netclaw.Actors.Tools;
@@ -148,6 +150,136 @@ public sealed class ChildOwnerActorSpecs(ITestOutputHelper output) : LlmSessionT
                 Assert.Contains(NotAvailable, cancel, StringComparison.Ordinal);
                 Assert.DoesNotContain(control.Committed, evt => evt is ChildRunEvent.CancellationRequested);
             }
+        }
+        finally
+        {
+            childGate.TrySetResult();
+        }
+    }
+
+    /// <summary>
+    /// Issue #2524. A reminder turn and any other turn of one session manage each other's child runs, and two
+    /// turns that are not reminder turns keep the six-fact rule. The fire has the source shape of
+    /// ReminderExecutionActor.InitializeCurrentSessionAsync (sender reminder-system, principal VerifiedAutomation,
+    /// source kind reminder).
+    /// Source: openspec/changes/reminder-turn-manages-own-children, background-subagent-runs
+    /// "A reminder turn shares child runs with the other turns of its own session".
+    /// Row 1 is the swap-1 exercise (a person started the run). Rows 3 and 4 follow the owner answer of
+    /// 18 October 2026: a person, also another sender, controls a run that a reminder turn started.
+    /// Rows 5 and 6: the delivery turn of a background job is not a person, and the rule still holds.
+    /// Rows 7 and 8: a webhook turn can carry the source kind "reminder" because the webhook sender sets it.
+    /// Such a turn is not a reminder turn, so it cannot reach the run of a person, and a person cannot reach its run.
+    /// Rows 7 and 8 need a reminder test that also requires the authenticity LocalProcess.
+    /// </summary>
+    [Theory]
+    [InlineData("person", "reminder", true)]
+    [InlineData("reminder", "reminder", true)]
+    [InlineData("reminder", "person", true)]
+    [InlineData("reminder", "other-person", true)]
+    [InlineData("reminder", "background-job", true)]
+    [InlineData("background-job", "reminder", true)]
+    [InlineData("person", "webhook-reminder", false)]
+    [InlineData("webhook-reminder", "person", false)]
+    public async Task Child_control_that_involves_a_reminder_turn_follows_the_rule_in_its_own_session(
+        string starter, string controller, bool allowed)
+    {
+        // Arrange
+        var sessionId = new SessionId($"child-owner/reminder-{starter}-{controller}");
+        var control = await ConfigureJournalAsync();
+        var childGate = NewGate();
+        _clients.A.NextResponseGate = childGate;
+        _clients.Parent.PlannedResponses.Enqueue([Spawn("reminder-spawn")]);
+        _clients.Parent.PlannedResponses.Enqueue([new TextContent("Child started.")]);
+        await JoinAsync(sessionId);
+
+        try
+        {
+            await SendAsync(sessionId, "Start a child.", SourceOf(starter, "child-reminder:1000"));
+            var accepted = await control.Acceptance.Task.WaitAsync(Deadline, Cancellation);
+            await _clients.A.FirstCallEntered.Task.WaitAsync(Deadline, Cancellation);
+            await AwaitAssertAsync(() => Assert.Single(control.Committed.OfType<TurnRecorded>()),
+                Deadline, cancellationToken: Cancellation);
+            var runId = accepted.Run.RunId.Value;
+            _clients.Parent.PlannedResponses.Enqueue([CheckRun("status-call", runId, cancel: false)]);
+            _clients.Parent.PlannedResponses.Enqueue([CheckRun("cancel-call", runId, cancel: true)]);
+            _clients.Parent.PlannedResponses.Enqueue([new TextContent("Checked.")]);
+
+            // Act
+            await SendAsync(sessionId, "Check the child, then cancel it.", SourceOf(controller, "child-reminder:2000"));
+            await AwaitAssertAsync(() => Assert.Contains(control.Committed.OfType<ToolCallRecorded>(),
+                evt => evt.ToolResult.ToolCallId?.Value == "cancel-call"), Deadline, cancellationToken: Cancellation);
+
+            // Assert
+            var status = ToolResult(control, "status-call");
+            var cancel = ToolResult(control, "cancel-call");
+            _output.WriteLine($"starter={starter} controller={controller} status={status}");
+            _output.WriteLine($"starter={starter} controller={controller} cancel={cancel}");
+            if (allowed)
+            {
+                Assert.DoesNotContain(NotAvailable, status, StringComparison.Ordinal);
+                Assert.Contains($"\"run_id\":\"{runId}\"", status, StringComparison.Ordinal);
+                Assert.DoesNotContain(NotAvailable, cancel, StringComparison.Ordinal);
+                Assert.Contains(control.Committed.OfType<ChildRunEvent.CancellationRequested>(),
+                    evt => evt.RunId == accepted.Run.RunId);
+            }
+            else
+            {
+                Assert.Contains(NotAvailable, status, StringComparison.Ordinal);
+                Assert.Contains(NotAvailable, cancel, StringComparison.Ordinal);
+                Assert.DoesNotContain(control.Committed, evt => evt is ChildRunEvent.CancellationRequested);
+            }
+        }
+        finally
+        {
+            childGate.TrySetResult();
+        }
+    }
+
+    /// <summary>
+    /// A turn in session B cannot reach a child run of session A when one side is a reminder turn. These tests pass
+    /// today and must keep passing after the fix.
+    /// Scope: session B does not hold the run, so the lookup in ControlChild fails before the comparison. These
+    /// tests prove that structural isolation. They do not prove the session compare in
+    /// TurnContext.CanControlChildRunOf, because a run id is random and session B cannot hold the run of session A.
+    /// <c>TurnContextChildControlTests</c> and <c>ChildOwnerRelationPropertyTests</c> cover that compare.
+    /// </summary>
+    [Theory]
+    [InlineData("person", "reminder")]
+    [InlineData("reminder", "person")]
+    public async Task Child_control_that_involves_a_reminder_turn_cannot_cross_sessions(string starter, string controller)
+    {
+        // Arrange
+        var sessionA = new SessionId($"child-owner/cross-{starter}-a");
+        var sessionB = new SessionId($"child-owner/cross-{starter}-b");
+        var control = await ConfigureJournalAsync();
+        var childGate = NewGate();
+        _clients.A.NextResponseGate = childGate;
+        _clients.Parent.PlannedResponses.Enqueue([Spawn("cross-spawn")]);
+        _clients.Parent.PlannedResponses.Enqueue([new TextContent("Child started.")]);
+        await JoinAsync(sessionA);
+        await JoinAsync(sessionB);
+
+        try
+        {
+            await SendAsync(sessionA, "Start a child.", SourceOf(starter, "child-reminder:1000"));
+            var accepted = await control.Acceptance.Task.WaitAsync(Deadline, Cancellation);
+            await _clients.A.FirstCallEntered.Task.WaitAsync(Deadline, Cancellation);
+            await AwaitAssertAsync(() => Assert.Single(control.Committed.OfType<TurnRecorded>()),
+                Deadline, cancellationToken: Cancellation);
+            var runId = accepted.Run.RunId.Value;
+            _clients.Parent.PlannedResponses.Enqueue([CheckRun("cross-status", runId, cancel: false)]);
+            _clients.Parent.PlannedResponses.Enqueue([CheckRun("cross-cancel", runId, cancel: true)]);
+            _clients.Parent.PlannedResponses.Enqueue([new TextContent("Checked.")]);
+
+            // Act
+            await SendAsync(sessionB, "Check the child of the other session.", SourceOf(controller, "child-reminder:3000"));
+            await AwaitAssertAsync(() => Assert.Contains(control.Committed.OfType<ToolCallRecorded>(),
+                evt => evt.ToolResult.ToolCallId?.Value == "cross-cancel"), Deadline, cancellationToken: Cancellation);
+
+            // Assert
+            Assert.Contains(NotAvailable, ToolResult(control, "cross-status"), StringComparison.Ordinal);
+            Assert.Contains(NotAvailable, ToolResult(control, "cross-cancel"), StringComparison.Ordinal);
+            Assert.DoesNotContain(control.Committed, evt => evt is ChildRunEvent.CancellationRequested);
         }
         finally
         {
@@ -292,6 +424,53 @@ public sealed class ChildOwnerActorSpecs(ITestOutputHelper output) : LlmSessionT
         Provenance = new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Trusted),
         ReceivedAt = TimeProvider.System.GetUtcNow(),
         AdoptedSpeakerIds = adopted ? [sender] : []
+    };
+
+    private static MessageSource SourceOf(string kind, string fireKey) =>
+        kind switch
+        {
+            "reminder" => ReminderOf(fireKey),
+            "background-job" => BackgroundJobOf(),
+            "webhook-reminder" => WebhookReminderOf(),
+            "other-person" => Operator("bob"),
+            _ => Operator("local")
+        };
+
+    // The source shape of ReminderExecutionActor.InitializeCurrentSessionAsync for a TUI-style origin.
+    private static MessageSource ReminderOf(string fireKey) => new()
+    {
+        ChannelType = ChannelType.SignalR, SenderId = new SenderId("reminder-system"),
+        MessageId = fireKey, TurnId = new TurnId(fireKey), ReminderId = new ReminderId(fireKey),
+        Audience = TrustAudience.Personal, Boundary = TrustBoundary.Personal,
+        Principal = PrincipalClassification.VerifiedAutomation,
+        Provenance = new SourceProvenance(TransportAuthenticity.LocalProcess, PayloadTaint.Trusted)
+        { SourceKind = new SourceKind("reminder") },
+        ReceivedAt = TimeProvider.System.GetUtcNow()
+    };
+
+    // The source shape of BackgroundJobManagerActor.DeliverResultToSession for a TUI-style origin.
+    private static MessageSource BackgroundJobOf() => new()
+    {
+        ChannelType = ChannelType.SignalR, SenderId = new SenderId("background-job-system"),
+        MessageId = "bg-job:test-1", TurnId = new TurnId("bg-job:test-1"), BackgroundJobId = new BackgroundJobId("bg-job:test-1"),
+        Audience = TrustAudience.Personal, Boundary = TrustBoundary.Personal,
+        Principal = PrincipalClassification.VerifiedAutomation,
+        Provenance = new SourceProvenance(TransportAuthenticity.LocalProcess, PayloadTaint.Trusted)
+        { SourceKind = new SourceKind("background-job") },
+        ReceivedAt = TimeProvider.System.GetUtcNow()
+    };
+
+    // The source shape of WebhookExecutionActor, with the event header "reminder". The webhook sender sets the
+    // source kind. The audience, boundary, and channel match the session, so only the reminder test can deny it.
+    private static MessageSource WebhookReminderOf() => new()
+    {
+        ChannelType = ChannelType.SignalR, SenderId = new SenderId("webhook:github"),
+        MessageId = "github-delivery-1", TurnId = new TurnId("github-delivery-1"),
+        Audience = TrustAudience.Personal, Boundary = TrustBoundary.Personal,
+        Principal = PrincipalClassification.VerifiedAutomation,
+        Provenance = new SourceProvenance(TransportAuthenticity.Verified, PayloadTaint.Trusted)
+        { SourceKind = new SourceKind("reminder") },
+        ReceivedAt = TimeProvider.System.GetUtcNow()
     };
 
     private static FunctionCallContent Spawn(string callId) => new(callId, "spawn_agent",

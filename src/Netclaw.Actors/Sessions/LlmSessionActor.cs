@@ -214,6 +214,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         });
         Recover<InputClosed>(RecoverParentClosure);
         Recover<ChildRunAccepted>(evt => _state = _state.Apply(evt));
+        // Replay does not close child approvals here. RecoveryCompleted closes every child entry that replay left open.
         Recover<ChildRunEvent>(evt => _state = _state.Apply(evt));
         Recover<LegacyCoordinationEvent>(ApplyLegacyCoordination);
         Recover<ToolCallRecorded>(ApplyToolCallRecorded);
@@ -250,6 +251,12 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
 
             // Always read fresh from disk — identity file edits take effect immediately
             SetSystemPrompt();
+
+            // A child owner never survives a restart. Close the child entries that remain before a stashed command
+            // runs, then log the approvals that stay open. Replay itself logs none (see ApplyToolApprovalRequested).
+            _toolWorkflow.ExpireRecoveredChildApprovals();
+            foreach (var open in _toolWorkflow.OpenApprovals())
+                LogToolApprovalRequested(open.AuthorizationAttemptId.Value, open.Request.CallId, open.Request.ToolName, recovered: true);
 
             TransitionTo(SessionPhase.Ready);
             RestoreWaitingInputs();
@@ -597,6 +604,23 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 return;
 
             TimeoutException timeoutCause;
+            if (msg.ThinkingCap)
+            {
+                // One model call streamed only thinking for the whole cap. Thinking
+                // resets the no-progress deadline, so only this cap ends the call.
+                // The provider streamed without fault and the model gave no answer,
+                // so the model gets the blame (ModelBehavior, not Timeout).
+                var cap = _config.NoProgressTimeout * ProcessingWatchdog.ThinkingCapMultiplier;
+                _execution.StopModelForTimeout();
+                _log.Error("Processing watchdog expired for operation {OperationName} (opId={OperationId}, thinkingCap={Cap}s)",
+                    msg.OperationName, msg.OperationId, cap.TotalSeconds);
+                FailCurrentTurn(
+                    $"The model streamed only thinking for {cap.TotalSeconds:F0} seconds. It produced no answer and no tool call. Netclaw stopped the call.",
+                    new TimeoutException($"Session LLM call streamed only thinking for {cap.TotalSeconds:F0}s without text or a tool call"),
+                    ErrorCategory.ModelBehavior);
+                return;
+            }
+
             if (msg.NoProgress)
             {
                 // Keepalive-immune deadline: the stream produced no substantive
@@ -672,6 +696,24 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             }
         }
 
+        // A reply that ended on the output limit is cut off. Its text is a stub, not
+        // an answer, so the turn fails instead of posting the stub. A tool call is
+        // handled above. A thinking-only or empty reply takes the retry path above.
+        // The stream ended on the model's own terms, so the model gets the blame:
+        // the same rule as EmptyReplyFailureCategory for a Length finish.
+        if (response.FinishReason == ChatFinishReason.Length)
+        {
+            TurnLog().Warning(
+                "turn_reply_truncated textChars={TextChars} thinkingChars={ThinkingChars}",
+                analysis.TextChars,
+                analysis.ThinkingChars);
+            FailCurrentTurn(
+                "The model reply was truncated: the model reached its output limit before it finished. The cut-off text was not posted. Try again with a smaller request.",
+                new InvalidOperationException("The LLM reply ended with finishReason=length and no tool call."),
+                ErrorCategory.ModelBehavior);
+            return;
+        }
+
         HandleTextResponse(lastMessage, response.Usage, msg.StreamedText, msg.StreamedThinking);
     }
 
@@ -694,7 +736,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
     private void HandleLlmResponseDeltaReceived(LlmResponseDeltaReceived msg)
     {
         if (!_execution.AcceptModelProgress(
-                msg.CallId, msg.Substantive, _config.PrefillTimeout, _config.FirstTokenTimeout))
+                msg.CallId, msg.Activity, _config.PrefillTimeout, _config.FirstTokenTimeout))
             return;
 
         switch (msg.Content)
@@ -3120,13 +3162,10 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             persistApprovalState,
             recovered: _phase.Current == SessionPhase.Recovering);
 
-        _log.Info(
-            "Tool approval requested authorizationAttemptId={AuthorizationAttemptId} " +
-            "sessionId={SessionId} callId={CallId} toolName={ToolName}",
-            pending.AuthorizationAttemptId.Value,
-            _sessionId.Value,
-            evt.CallId,
-            evt.ToolName);
+        // Replay re-applies requests that a later record may answer, cancel, or lose. RecoveryCompleted logs the
+        // approvals that stay open.
+        if (_phase.Current != SessionPhase.Recovering)
+            LogToolApprovalRequested(pending.AuthorizationAttemptId.Value, evt.CallId, evt.ToolName, recovered: false);
 
         if (evt.SourceChildRunId is null && persistApprovalState && pending.TurnContext is { } turnContext)
             _input.SetTurnContext(turnContext);
@@ -3136,6 +3175,16 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 evt.CallId,
                 restoreFailure);
     }
+
+    private void LogToolApprovalRequested(string authorizationAttemptId, string callId, string toolName, bool recovered)
+        => _log.Info(
+            "Tool approval requested authorizationAttemptId={AuthorizationAttemptId} " +
+            "sessionId={SessionId} callId={CallId} toolName={ToolName} recovered={Recovered}",
+            authorizationAttemptId,
+            _sessionId.Value,
+            callId,
+            toolName,
+            recovered);
 
     private void ClearApprovalTurnState()
     {
