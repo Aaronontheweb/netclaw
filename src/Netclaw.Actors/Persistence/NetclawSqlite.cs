@@ -16,6 +16,15 @@ namespace Netclaw.Actors.Persistence;
 /// not fsync while it holds the write lock. On a host with a shared ext4 journal, that fsync waits for
 /// the journal commit of other writers. A checkpoint still syncs. A power loss or a kernel crash can lose
 /// the last commits, but it cannot corrupt the database. A failed pragma throws from Open.
+/// <para>
+/// Two connection sources do not use this factory:
+/// </para>
+/// <list type="bullet">
+/// <item>The Akka SQL plugin opens its own connections. It gets the pragma from a linq2db interceptor
+/// (<c>SynchronousNormalInterceptor</c> in Netclaw.Daemon).</item>
+/// <item>The reminder store (Aaron.Akka.Reminders.Sqlite) has no hook, so the pragma does not cover it.
+/// It shares the plugin pool, so some of its connections get NORMAL. Which ones is not deterministic.</item>
+/// </list>
 /// </remarks>
 public static class NetclawSqlite
 {

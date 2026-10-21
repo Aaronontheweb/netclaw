@@ -36,6 +36,14 @@ public sealed class SchemaMigrator
         await using var conn = NetclawSqlite.CreateConnection(connectionString);
         await conn.OpenAsync(cancellationToken);
 
+        // synchronous=NORMAL is only safe in WAL mode, and the migrator is the first opener of a new
+        // database. WAL cannot change inside a transaction, so set it before any migration runs.
+        await using (var walCommand = conn.CreateCommand())
+        {
+            walCommand.CommandText = "PRAGMA journal_mode=WAL;";
+            await walCommand.ExecuteNonQueryAsync(cancellationToken);
+        }
+
         await EnsureSchemaVersionTableAsync(conn, cancellationToken);
         await EnsureLegacySessionsTableCompatibilityAsync(conn, cancellationToken);
 

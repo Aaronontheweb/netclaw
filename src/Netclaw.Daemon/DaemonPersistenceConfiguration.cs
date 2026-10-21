@@ -44,13 +44,28 @@ internal static class DaemonPersistenceConfiguration
 
         var sqliteTimeout = TimeSpan.FromSeconds(timeoutSeconds);
         var callTimeout = sqliteTimeout + CircuitBreakerMargin;
-        // The DataOptions overload keeps the same plugin defaults as the connection-string overload. Only
-        // DataOptions can carry the interceptor that sets synchronous=NORMAL on each plugin connection.
+        // Only DataOptions can carry the interceptor that sets synchronous=NORMAL on each plugin
+        // connection. The options overload sets the same defaults as the connection-string overload
+        // (identifier "sql", default plugin, auto-initialize). The HOCON provider-name must still name
+        // SQLite.MS, because the plugin reads it from the HOCON and not from DataOptions.
+        const string providerName = "SQLite.MS";
         var dataOptions = new DataOptions()
-            .UseConnectionString("SQLite.MS", connectionString)
+            .UseConnectionString(providerName, connectionString)
             .UseInterceptor(SynchronousNormalInterceptor.Instance);
+        var journalOptions = new SqlJournalOptions
+        {
+            ConnectionString = connectionString,
+            ProviderName = providerName,
+            DataOptions = dataOptions
+        };
+        var snapshotOptions = new SqlSnapshotOptions
+        {
+            ConnectionString = connectionString,
+            ProviderName = providerName,
+            DataOptions = dataOptions
+        };
         return builder
-            .WithSqlPersistence(dataOptions)
+            .WithSqlPersistence(journalOptions, snapshotOptions)
             .AddHocon($$"""
                 akka.persistence.journal.sql.circuit-breaker.call-timeout = {{(int)callTimeout.TotalSeconds}}s
                 akka.persistence.snapshot-store.sql.circuit-breaker.call-timeout = {{(int)callTimeout.TotalSeconds}}s
