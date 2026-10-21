@@ -245,6 +245,32 @@ Use the [engineering glossary](../../../docs/spec/GLOSSARY.md) for shared terms.
 - **THEN** the session rejects that input
 - **AND** it starts no model call for that input
 
+#### Scenario: Journal failure of a non-input event during a turn stops the session
+
+- **GIVEN** a turn is active
+- **WHEN** the journal cannot store a non-input event, such as a tool batch start
+- **THEN** the session sends an error output to the channel
+- **AND** the error tells the user that some actions may already have run
+- **AND** the session then sends a failed turn completion
+- **AND** the session stops
+- **AND** the next message from the user starts a new session that completes a turn
+
+#### Scenario: Journal rejection of a non-input event during a turn fails the turn
+
+- **GIVEN** a turn is active
+- **WHEN** the journal rejects a non-input event
+- **THEN** the session sends an error output to the channel
+- **AND** the session then sends a failed turn completion
+- **AND** the session keeps running
+- **AND** the next message from the user starts a new turn in the same session
+
+#### Scenario: Journal failure while no turn is active is only logged
+
+- **GIVEN** no turn is active
+- **WHEN** the journal cannot store a non-input event, such as a generated title
+- **THEN** the session logs the failure
+- **AND** the session sends no error output to the channel
+
 #### Scenario: A lost acknowledgment does not duplicate input
 
 - **GIVEN** the journal stores input with a stable source ID
