@@ -41,7 +41,11 @@ public sealed class SchemaMigrator
         await using (var walCommand = conn.CreateCommand())
         {
             walCommand.CommandText = "PRAGMA journal_mode=WAL;";
-            await walCommand.ExecuteNonQueryAsync(cancellationToken);
+            // SQLite reports the mode it kept instead of an error when it cannot switch.
+            var mode = (string?)await walCommand.ExecuteScalarAsync(cancellationToken);
+            if (!string.Equals(mode, "wal", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    $"SQLite kept journal mode '{mode}' for {sqlitePath}. Netclaw requires WAL mode.");
         }
 
         await EnsureSchemaVersionTableAsync(conn, cancellationToken);

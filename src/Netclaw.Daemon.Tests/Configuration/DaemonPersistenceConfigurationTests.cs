@@ -96,9 +96,8 @@ public sealed class DaemonPersistenceConfigurationTests(ITestOutputHelper output
         }
     }
 
-    // The plugin picks its linq2db provider from this key. A missing key resolves to an empty name,
-    // and the plugin then cannot build a data connection. The daemon sets it through the DataOptions
-    // overload, so the test reads the effective value.
+    // The plugin builds its connections from DataOptions, but table auto-init reads this key. An empty
+    // name drops the SQLite index statements from auto-init. The test reads the effective value.
     [Fact]
     public void Journal_and_snapshot_store_use_the_sqlite_ms_provider()
     {
