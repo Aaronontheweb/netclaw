@@ -62,6 +62,28 @@ public sealed class SchemaMigratorTests : IDisposable
         Assert.Equal([_paths.SqliteDbPath], Directory.GetFiles(_paths.BasePath, "*.db"));
     }
 
+    // Every Netclaw writer expects WAL mode. The migrator creates the file first on a new install,
+    // so it must not depend on another component to switch the journal mode.
+    [Fact]
+    public async Task MigrateAsync_on_a_new_database_leaves_it_in_wal_mode()
+    {
+        Assert.False(File.Exists(_paths.SqliteDbPath));
+        var migrator = new SchemaMigrator(_paths, NullLogger<SchemaMigrator>.Instance);
+
+        await migrator.MigrateAsync(_paths.SqliteDbPath, TestContext.Current.CancellationToken);
+
+        await using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = _paths.SqliteDbPath,
+            Mode = SqliteOpenMode.ReadWriteCreate
+        }.ToString());
+        await connection.OpenAsync(TestContext.Current.CancellationToken);
+        await using var command = connection.CreateCommand();
+        command.CommandText = "PRAGMA journal_mode";
+
+        Assert.Equal("wal", await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+    }
+
     [Fact]
     public async Task MigrateAsync_legacy_sessions_schema_is_upgraded_and_data_preserved()
     {

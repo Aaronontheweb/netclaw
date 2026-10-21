@@ -66,6 +66,10 @@ public abstract class DaemonPersistenceTestBase : Akka.Hosting.TestKit.TestKit, 
         }
         finally
         {
+            // The plugin and the probe pool connections by the exact connection string. Windows cannot
+            // delete a database file while a pooled connection holds it.
+            using (var poolKey = new SqliteConnection(ConnectionString))
+                SqliteConnection.ClearPool(poolKey);
             _directory.Dispose();
         }
     }
@@ -89,6 +93,28 @@ public sealed class DaemonPersistenceConfigurationTests(ITestOutputHelper output
                 callTimeout > busyWait,
                 $"{pluginId} call-timeout is {callTimeout}. SQLite waits {busyWait} on a busy lock. " +
                 "A lock wait must not fail the persist.");
+        }
+    }
+
+    // The plugin picks its linq2db provider from this key. A missing key resolves to an empty name,
+    // and the plugin then cannot build a data connection. The daemon sets it through the DataOptions
+    // overload, so the test reads the effective value.
+    [Fact]
+    public void Journal_and_snapshot_store_use_the_sqlite_ms_provider()
+    {
+        _ = Akka.Persistence.Persistence.Instance.Apply(Sys);
+        var config = Sys.Settings.Config;
+
+        foreach (var (pluginId, fallbackId) in new[]
+                 {
+                     (JournalPluginId, JournalFallbackId),
+                     (SnapshotPluginId, SnapshotFallbackId)
+                 })
+        {
+            var providerName = config.GetConfig(pluginId)
+                .WithFallback(config.GetConfig(fallbackId))
+                .GetString("provider-name");
+            Assert.Equal("SQLite.MS", providerName);
         }
     }
 }

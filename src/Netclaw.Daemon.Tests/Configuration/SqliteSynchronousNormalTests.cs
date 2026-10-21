@@ -1,5 +1,5 @@
 // -----------------------------------------------------------------------
-// <copyright file="DaemonSqliteSynchronousTests.cs" company="Petabridge, LLC">
+// <copyright file="SqliteSynchronousNormalTests.cs" company="Petabridge, LLC">
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
@@ -22,7 +22,7 @@ namespace Netclaw.Daemon.Tests.Configuration;
 /// </summary>
 public sealed class DaemonPersistenceSynchronousTests(ITestOutputHelper output) : DaemonPersistenceTestBase(output)
 {
-    private const long SynchronousNormal = 1;
+    internal const long SynchronousNormal = 1;
 
     // The plugin keeps its connections in the pool of the exact connection string. After the plugin has
     // written, a probe with the same string gets a pooled native connection that the plugin opened.
@@ -108,6 +108,6 @@ public sealed class SessionCatalogSynchronousTests : IDisposable
         await using var command = probe.CreateCommand();
         command.CommandText = "PRAGMA synchronous";
 
-        Assert.Equal(1L, await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
+        Assert.Equal(DaemonPersistenceSynchronousTests.SynchronousNormal, await command.ExecuteScalarAsync(TestContext.Current.CancellationToken));
     }
 }
