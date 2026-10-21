@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Netclaw.Actors.Persistence;
 using Netclaw.Actors.Text;
 using Netclaw.Configuration;
 
@@ -2146,7 +2147,7 @@ public sealed class SQLiteMemoryStore
         Func<SqliteConnection, CancellationToken, Task<T>> work,
         CancellationToken ct)
     {
-        await using var conn = new SqliteConnection(_connectionString);
+        await using var conn = NetclawSqlite.CreateConnection(_connectionString);
         await conn.OpenAsync(ct);
         return await work(conn, ct);
     }
@@ -2155,7 +2156,7 @@ public sealed class SQLiteMemoryStore
         Func<SqliteConnection, CancellationToken, Task> work,
         CancellationToken ct)
     {
-        await using var conn = new SqliteConnection(_connectionString);
+        await using var conn = NetclawSqlite.CreateConnection(_connectionString);
         await conn.OpenAsync(ct);
         await work(conn, ct);
     }

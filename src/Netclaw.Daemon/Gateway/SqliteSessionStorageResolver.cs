@@ -9,6 +9,7 @@ using System.Text;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using Netclaw.Actors.Persistence;
 using Netclaw.Actors.Protocol;
 using Netclaw.Configuration;
 using Netclaw.Tools;
@@ -99,7 +100,7 @@ public sealed class SqliteSessionStorageResolver : ISessionStorageResolver
             sessionId,
             _sessionsDirectory);
 
-        using var connection = new SqliteConnection(_connectionString);
+        using var connection = NetclawSqlite.CreateConnection(_connectionString);
         connection.Open();
         using var transaction = connection.BeginTransaction(deferred: false);
 

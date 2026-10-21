@@ -6,6 +6,7 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
 using Netclaw.Actors.Channels;
+using Netclaw.Actors.Persistence;
 using Netclaw.Actors.Protocol;
 using Netclaw.Actors.Telemetry;
 using Netclaw.Configuration;
@@ -74,7 +75,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
         {
             var logPath = _storageResolver.Resolve(sessionId).LogPath.Value;
 
-            using var conn = new SqliteConnection(_connectionString);
+            using var conn = NetclawSqlite.CreateConnection(_connectionString);
             conn.Open();
 
             EnsureSchemaUpToDate(conn, _logger);
@@ -109,7 +110,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
 
         try
         {
-            using var conn = new SqliteConnection(_connectionString);
+            using var conn = NetclawSqlite.CreateConnection(_connectionString);
             conn.Open();
 
             EnsureSchemaUpToDate(conn, _logger);
@@ -137,7 +138,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
 
         try
         {
-            using var conn = new SqliteConnection(_connectionString);
+            using var conn = NetclawSqlite.CreateConnection(_connectionString);
             conn.Open();
 
             EnsureSchemaUpToDate(conn, _logger);
@@ -212,7 +213,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
     {
         try
         {
-            using var conn = new SqliteConnection(_connectionString);
+            using var conn = NetclawSqlite.CreateConnection(_connectionString);
             conn.Open();
 
             EnsureSchemaUpToDate(conn, _logger);
@@ -254,7 +255,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
 
         try
         {
-            using var conn = new SqliteConnection(_connectionString);
+            using var conn = NetclawSqlite.CreateConnection(_connectionString);
             conn.Open();
 
             EnsureSchemaUpToDate(conn, _logger);
@@ -307,7 +308,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
     {
         try
         {
-            using var conn = new SqliteConnection(_connectionString);
+            using var conn = NetclawSqlite.CreateConnection(_connectionString);
             conn.Open();
 
             EnsureSchemaUpToDate(conn, _logger);
@@ -335,7 +336,7 @@ public sealed class SessionCatalogService : ISessionLifecycleObserver
 
         try
         {
-            using var conn = new SqliteConnection(_connectionString);
+            using var conn = NetclawSqlite.CreateConnection(_connectionString);
             conn.Open();
 
             EnsureSchemaUpToDate(conn, _logger);

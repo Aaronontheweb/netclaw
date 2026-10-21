@@ -5,7 +5,11 @@
 // -----------------------------------------------------------------------
 using Akka.Hosting;
 using Akka.Persistence.Sql.Hosting;
+using LinqToDB;
+using LinqToDB.Interceptors;
 using Microsoft.Data.Sqlite;
+using Netclaw.Actors.Persistence;
+using System.Data.Common;
 
 namespace Netclaw.Daemon;
 
@@ -40,11 +44,42 @@ internal static class DaemonPersistenceConfiguration
 
         var sqliteTimeout = TimeSpan.FromSeconds(timeoutSeconds);
         var callTimeout = sqliteTimeout + CircuitBreakerMargin;
+        // The DataOptions overload keeps the same plugin defaults as the connection-string overload. Only
+        // DataOptions can carry the interceptor that sets synchronous=NORMAL on each plugin connection.
+        var dataOptions = new DataOptions()
+            .UseConnectionString("SQLite.MS", connectionString)
+            .UseInterceptor(SynchronousNormalInterceptor.Instance);
         return builder
-            .WithSqlPersistence(connectionString: connectionString, providerName: "SQLite.MS")
+            .WithSqlPersistence(dataOptions)
             .AddHocon($$"""
                 akka.persistence.journal.sql.circuit-breaker.call-timeout = {{(int)callTimeout.TotalSeconds}}s
                 akka.persistence.snapshot-store.sql.circuit-breaker.call-timeout = {{(int)callTimeout.TotalSeconds}}s
                 """, HoconAddMode.Prepend);
+    }
+}
+
+/// <summary>
+/// Runs <c>PRAGMA synchronous=NORMAL</c> on each connection that the Akka SQL plugin opens. See
+/// <see cref="NetclawSqlite"/> for the reason. A failed pragma throws from the open call.
+/// </summary>
+internal sealed class SynchronousNormalInterceptor : ConnectionInterceptor
+{
+    public static readonly SynchronousNormalInterceptor Instance = new();
+
+    private SynchronousNormalInterceptor() { }
+
+    public override void ConnectionOpened(ConnectionEventData eventData, DbConnection connection)
+    {
+        using var command = connection.CreateCommand();
+        command.CommandText = NetclawSqlite.SynchronousNormalSql;
+        command.ExecuteNonQuery();
+    }
+
+    public override async Task ConnectionOpenedAsync(
+        ConnectionEventData eventData, DbConnection connection, CancellationToken cancellationToken)
+    {
+        await using var command = connection.CreateCommand();
+        command.CommandText = NetclawSqlite.SynchronousNormalSql;
+        await command.ExecuteNonQueryAsync(cancellationToken);
     }
 }

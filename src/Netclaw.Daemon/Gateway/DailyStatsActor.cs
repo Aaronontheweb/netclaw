@@ -6,6 +6,7 @@
 using Akka.Actor;
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Netclaw.Actors.Persistence;
 using Netclaw.Configuration;
 
 namespace Netclaw.Daemon.Gateway;
@@ -147,7 +148,7 @@ public sealed class DailyStatsActor : ReceiveActor, IWithTimers
 
         try
         {
-            using var conn = new SqliteConnection(_connectionString);
+            using var conn = NetclawSqlite.CreateConnection(_connectionString);
             conn.Open();
 
             using var tx = conn.BeginTransaction();
@@ -222,7 +223,7 @@ public sealed class DailyStatsActor : ReceiveActor, IWithTimers
 
         try
         {
-            using var conn = new SqliteConnection(_connectionString);
+            using var conn = NetclawSqlite.CreateConnection(_connectionString);
             conn.Open();
 
             using var cmd = conn.CreateCommand();
@@ -278,7 +279,7 @@ public sealed class DailyStatsActor : ReceiveActor, IWithTimers
 
         try
         {
-            using var conn = new SqliteConnection(_connectionString);
+            using var conn = NetclawSqlite.CreateConnection(_connectionString);
             conn.Open();
 
             using var cmd = conn.CreateCommand();

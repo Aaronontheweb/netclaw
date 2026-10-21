@@ -5,6 +5,7 @@
 // -----------------------------------------------------------------------
 using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging;
+using Netclaw.Actors.Persistence;
 using Netclaw.Configuration;
 using System.Reflection;
 
@@ -32,7 +33,7 @@ public sealed class SchemaMigrator
             Mode = SqliteOpenMode.ReadWriteCreate
         }.ToString();
 
-        await using var conn = new SqliteConnection(connectionString);
+        await using var conn = NetclawSqlite.CreateConnection(connectionString);
         await conn.OpenAsync(cancellationToken);
 
         await EnsureSchemaVersionTableAsync(conn, cancellationToken);
