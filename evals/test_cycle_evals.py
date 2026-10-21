@@ -12,7 +12,7 @@ import unittest
 from unittest.mock import patch
 
 from background_fixture import handler_for
-from cycle_evals import CASES, CORRECTION, CycleFixture, main, primary_receipts, verdict
+from cycle_evals import CASES, CORRECTION, CORRECTION_RECEIPT, CycleFixture, main, primary_receipts, verdict
 
 SETTLEMENT = ("Netclaw stopped this turn because the model repeated a tool call that was already refused. "
               "The result is partial. The last refused operation did not execute. "
@@ -608,7 +608,7 @@ class PrimaryReceiptTests(unittest.TestCase):
     def primary_log(self, case):
         snapshot, _, _ = evidence(case)
         success = "Exit code: 0\ncycle-stalled\n"
-        correction = CORRECTION
+        correction = CORRECTION_RECEIPT
         rejected = ("Error: Required meta argument '_rationale' must be a non-empty string. "
                     "Supply one sentence that states the tool call intent. The tool was NOT executed.")
         results = ([f"Exit code: 0\n{count}\n" for count in (1, 2, 3)] if case == "changed_result" else
@@ -646,10 +646,17 @@ class PrimaryReceiptTests(unittest.TestCase):
 
     def test_terminal_repeated_block_cannot_have_any_receipt(self):
         snapshot, records = self.primary_log("terminal")
-        for result in ("Exit code: 0\ncycle-stalled\n", CORRECTION):
+        for result in ("Exit code: 0\ncycle-stalled\n", CORRECTION_RECEIPT):
             with self.subTest(result=result):
                 extra = self.record("TOOL_RESULT: shell_execute call_id=script-4 result=" + result)
                 self.assertFalse(primary_receipts(snapshot, "".join(records) + extra))
+
+    def test_bare_correction_without_the_runtime_next_action_line_is_not_a_receipt(self):
+        # The runtime writes CORRECTION plus the "Next action" line. This test pins that real format.
+        snapshot, records = self.primary_log("correction")
+        bare = "".join(records).replace(CORRECTION_RECEIPT, CORRECTION)
+        self.assertNotEqual("".join(records), bare)
+        self.assertFalse(primary_receipts(snapshot, bare))
 
     def test_correction_must_state_that_the_call_did_not_execute(self):
         snapshot, records = self.primary_log("correction")

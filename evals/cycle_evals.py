@@ -17,6 +17,10 @@ from background_fixture import Fixture, handler_for, message_text
 CASES = {"correction", "terminal", "compaction", "changed_result", "metadata_repair"}
 CORRECTION = ("Netclaw stopped this tool call because it would continue a repeated action-and-outcome cycle. "
               "The same action completed twice without a changed result. This call did not execute.")
+# The runtime appends this line to each BreakToolCycle refusal. The source is ToolRemediationPresenter.Present
+# in src/Netclaw.Actors/Tools/ToolRemediationPresenter.cs. SessionToolExecutionPipeline applies it. The C# text
+# is private, so keep this copy equal to it. The headless log holds the full receipt, so exact checks use it.
+CORRECTION_RECEIPT = CORRECTION + "\nNext action: choose a different action, load a missing tool, or finish the task."
 ROOT = "/home/netclaw/.netclaw/workspaces/cycle-eval"
 SCORE_GROUPS = ("runtime_contract", "post_handoff_safety", "model_task")
 
@@ -224,7 +228,7 @@ def primary_receipts(snapshot, headless_log):
     if case not in CASES or len(ids) != (5 if case == "terminal" else 4) or len(set(ids)) != len(ids):
         return False
     success = "Exit code: 0\ncycle-stalled\n"
-    correction = CORRECTION
+    correction = CORRECTION_RECEIPT
     missing_rationale = ("Error: Required meta argument '_rationale' must be a non-empty string. "
                          "Supply one sentence that states the tool call intent. The tool was NOT executed.")
     expected = ([f"Exit code: 0\n{count}\n" for count in (1, 2, 3)] if case == "changed_result" else
