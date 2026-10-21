@@ -2463,6 +2463,8 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
     {
         if (@event is InputAdmitted)
             TryReplyNack("The input journal failed. The session did not start a model call.");
+        else
+            EmitPersistFailureError(cause);
 
         base.OnPersistFailure(cause, @event, sequenceNr);
     }
@@ -2471,8 +2473,24 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
     {
         if (@event is InputAdmitted)
             TryReplyNack("The input journal rejected the message. The session did not start a model call.");
+        else
+            EmitPersistFailureError(cause);
 
         base.OnPersistRejected(cause, @event, sequenceNr);
+    }
+
+    // base.OnPersistFailure and OnPersistRejected stop the actor. Without this output the channel
+    // thread gets no reply, and the user cannot tell that the turn is lost. InputAdmitted has its own Nack.
+    private void EmitPersistFailureError(Exception cause)
+    {
+        EmitOutput(new ErrorOutput
+        {
+            SessionId = _sessionId,
+            Message = "The session could not save this turn, so it stopped. Send your message again to continue.",
+            Category = cause is TimeoutException ? ErrorCategory.Timeout : ErrorCategory.Unknown,
+            CorrelationId = Guid.NewGuid(),
+            Cause = cause
+        });
     }
 
     // ── Helpers ──
