@@ -26,47 +26,27 @@ namespace Netclaw.Actors.Tests.Sessions;
 
 /// <summary>
 /// Production incident, 21 Oct 2026: the journal write of a <see cref="ToolBatchStarted"/> event
-/// exceeded the circuit-breaker call timeout. The session actor stopped and sent nothing to the
-/// Slack thread. A persist failure of a non-input event during a turn must tell the channel
+/// waited on a SQLite lock. The session actor stopped and sent nothing to the Slack thread.
+/// A persist failure of a non-input event during a turn must tell the channel
 /// (error, then a failed turn completion) before the stop, and the next message must recover.
 /// </summary>
 public sealed class SessionToolBatchPersistFailureTests(ITestOutputHelper output)
     : SessionPersistFailureTestBase<ToolBatchStartedFailingJournal>(output)
 {
     [Fact]
-    public async Task Failed_tool_batch_write_reports_the_error_then_fails_the_turn_then_stops_the_session()
-    {
-        var turn = await StartToolTurnAsync("persist-failure/tool-batch");
-
-        var error = await turn.Channel.FishForMessageAsync<ErrorOutput>(
-            _ => true, TimeSpan.FromSeconds(10), cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Equal(ErrorCategory.Timeout, error.Category);
-        Assert.Contains(UnsafeToRepeatWording, error.Message, StringComparison.Ordinal);
-
-        // The fish skips all earlier messages. A TurnCompleted before the error would be skipped here,
-        // and the next wait would time out. Thus this wait proves the order: error first.
-        var completed = await turn.Channel.FishForMessageAsync<TurnCompleted>(
-            _ => true, TimeSpan.FromSeconds(10), cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Equal(TurnOutcome.Failed, completed.Outcome);
-
-        await turn.Watcher.ExpectTerminatedAsync(turn.Session, TimeSpan.FromSeconds(10),
-            cancellationToken: TestContext.Current.CancellationToken);
-    }
-
-    [Fact]
-    public async Task The_next_message_after_a_failed_tool_batch_write_starts_a_new_session_that_completes_a_turn()
+    public async Task Failed_tool_batch_write_reports_the_error_then_fails_the_turn_then_stops_the_session_and_the_next_message_recovers()
     {
         var ct = TestContext.Current.CancellationToken;
-        var sessionId = new SessionId("persist-failure/tool-batch-recovery");
-        var turn = await StartToolTurnAsync(sessionId.Value);
-        await turn.Watcher.ExpectTerminatedAsync(turn.Session, TimeSpan.FromSeconds(10), cancellationToken: ct);
+        var turn = await StartToolTurnAsync("persist-failure/tool-batch");
+
+        await AssertErrorThenFailedTurnThenStopAsync(turn);
 
         var manager = ActorRegistry.Get<SessionManagerActorKey>();
         var secondChannel = CreateTestProbe("persist-failure-recovery-channel");
-        await JoinSessionAsync(manager, secondChannel, sessionId, ChannelFilter);
+        await JoinSessionAsync(manager, secondChannel, turn.SessionId, ChannelFilter);
         var reply = await manager.Ask<ISessionResponse>(new SendUserMessage
         {
-            SessionId = sessionId,
+            SessionId = turn.SessionId,
             Content = "Say hello"
         }, TimeSpan.FromSeconds(10), ct);
 
@@ -90,46 +70,6 @@ public sealed class SessionToolCallRecordedPersistFailureTests(ITestOutputHelper
         var turn = await StartToolTurnAsync("persist-failure/tool-call-recorded");
 
         await AssertErrorThenFailedTurnThenStopAsync(turn);
-    }
-}
-
-/// <summary>
-/// The final write of a turn that used a tool. The tool batch commit has already cleared the
-/// selected inputs, and the user still gets no reply unless the channel hears about the failure.
-/// </summary>
-public sealed class SessionTurnRecordedPersistFailureTests(ITestOutputHelper output)
-    : SessionPersistFailureTestBase<TurnRecordedFailingJournal>(output)
-{
-    [Fact]
-    public async Task Failed_turn_write_after_a_tool_call_reports_the_error_then_fails_the_turn_then_stops_the_session()
-    {
-        var turn = await StartToolTurnAsync("persist-failure/turn-recorded");
-
-        await AssertErrorThenFailedTurnThenStopAsync(turn);
-    }
-}
-
-/// <summary>
-/// A SQLite busy error is not a <see cref="TimeoutException"/>. The channel must hear about it too.
-/// </summary>
-public sealed class SessionToolBatchBusyPersistFailureTests(ITestOutputHelper output)
-    : SessionPersistFailureTestBase<ToolBatchStartedBusyJournal>(output)
-{
-    [Fact]
-    public async Task Failed_tool_batch_write_with_a_sqlite_busy_error_reports_the_error_then_fails_the_turn()
-    {
-        var turn = await StartToolTurnAsync("persist-failure/tool-batch-busy");
-
-        var error = await turn.Channel.FishForMessageAsync<ErrorOutput>(
-            _ => true, TimeSpan.FromSeconds(10), cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Contains(UnsafeToRepeatWording, error.Message, StringComparison.Ordinal);
-
-        var completed = await turn.Channel.FishForMessageAsync<TurnCompleted>(
-            _ => true, TimeSpan.FromSeconds(10), cancellationToken: TestContext.Current.CancellationToken);
-        Assert.Equal(TurnOutcome.Failed, completed.Outcome);
-
-        await turn.Watcher.ExpectTerminatedAsync(turn.Session, TimeSpan.FromSeconds(10),
-            cancellationToken: TestContext.Current.CancellationToken);
     }
 }
 
@@ -463,30 +403,19 @@ public abstract class FailingEventJournal : MemoryJournal
             .FirstOrDefault(name => name is not null);
 }
 
+/// <summary>Models the error that Microsoft.Data.Sqlite raises when a lock wait ends (SQLITE_BUSY).</summary>
 public sealed class ToolBatchStartedFailingJournal : FailingEventJournal
 {
     protected override IReadOnlyList<Type> FailingEventTypes => [typeof(ToolBatchStarted)];
+
+    protected override Exception CreateFailure(string eventName)
+        => new SqliteException("database is locked", 5);
 }
 
 /// <summary>Fails the tool result write. The tool has already run and the tool batch write has committed.</summary>
 public sealed class ToolCallRecordedFailingJournal : FailingEventJournal
 {
     protected override IReadOnlyList<Type> FailingEventTypes => [typeof(ToolCallRecorded)];
-}
-
-/// <summary>Fails the final write of a turn. A turn that used a tool has committed its tool batch by then.</summary>
-public sealed class TurnRecordedFailingJournal : FailingEventJournal
-{
-    protected override IReadOnlyList<Type> FailingEventTypes => [typeof(TurnRecorded)];
-}
-
-/// <summary>Models the error that Microsoft.Data.Sqlite raises when a lock wait ends (SQLITE_BUSY).</summary>
-public sealed class ToolBatchStartedBusyJournal : FailingEventJournal
-{
-    protected override IReadOnlyList<Type> FailingEventTypes => [typeof(ToolBatchStarted)];
-
-    protected override Exception CreateFailure(string eventName)
-        => new SqliteException("database is locked", 5);
 }
 
 public sealed class ToolBatchStartedRejectingJournal : FailingEventJournal

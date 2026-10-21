@@ -74,35 +74,28 @@ public abstract class DaemonPersistenceTestBase : Akka.Hosting.TestKit.TestKit, 
 public sealed class DaemonPersistenceConfigurationTests(ITestOutputHelper output) : DaemonPersistenceTestBase(output)
 {
     [Fact]
-    public void Journal_circuit_breaker_waits_longer_than_the_sqlite_busy_wait()
+    public void Circuit_breakers_wait_longer_than_the_sqlite_busy_wait()
     {
         var busyWait = SqliteBusyWait(ConnectionString);
 
-        var callTimeout = EffectiveCallTimeout(JournalPluginId, JournalFallbackId);
-
-        Assert.True(
-            callTimeout > busyWait,
-            $"The journal circuit-breaker call-timeout is {callTimeout}. SQLite waits {busyWait} on a busy lock. " +
-            "A lock wait must not fail the persist.");
-    }
-
-    [Fact]
-    public void Snapshot_store_circuit_breaker_waits_longer_than_the_sqlite_busy_wait()
-    {
-        var busyWait = SqliteBusyWait(ConnectionString);
-
-        var callTimeout = EffectiveCallTimeout(SnapshotPluginId, SnapshotFallbackId);
-
-        Assert.True(
-            callTimeout > busyWait,
-            $"The snapshot-store circuit-breaker call-timeout is {callTimeout}. SQLite waits {busyWait} on a busy lock. " +
-            "A lock wait must not fail the snapshot save.");
+        foreach (var (pluginId, fallbackId) in new[]
+                 {
+                     (JournalPluginId, JournalFallbackId),
+                     (SnapshotPluginId, SnapshotFallbackId)
+                 })
+        {
+            var callTimeout = EffectiveCallTimeout(pluginId, fallbackId);
+            Assert.True(
+                callTimeout > busyWait,
+                $"{pluginId} call-timeout is {callTimeout}. SQLite waits {busyWait} on a busy lock. " +
+                "A lock wait must not fail the persist.");
+        }
     }
 }
 
 /// <summary>
 /// The breaker follows the "Default Timeout" key of the connection string. A fixed breaker value
-/// would pass the default-timeout tests, but fail an operator who sets a different SQLite timeout.
+/// would pass the default-timeout test, but fail an operator who sets a different SQLite timeout.
 /// </summary>
 public sealed class DaemonPersistenceShortTimeoutTests(ITestOutputHelper output) : DaemonPersistenceTestBase(output)
 {
@@ -114,7 +107,6 @@ public sealed class DaemonPersistenceShortTimeoutTests(ITestOutputHelper output)
     public void Circuit_breakers_derive_their_call_timeout_from_the_default_timeout_key()
     {
         Assert.Equal(ConfiguredBusyWait, SqliteBusyWait(ConnectionString));
-        var defaultDerived = TimeSpan.FromSeconds(30) + DaemonPersistenceConfiguration.CircuitBreakerMargin;
 
         foreach (var (pluginId, fallbackId) in new[]
                  {
@@ -123,8 +115,7 @@ public sealed class DaemonPersistenceShortTimeoutTests(ITestOutputHelper output)
                  })
         {
             var callTimeout = EffectiveCallTimeout(pluginId, fallbackId);
-            Assert.True(callTimeout > ConfiguredBusyWait, $"{pluginId} call-timeout is {callTimeout}.");
-            Assert.True(callTimeout < defaultDerived, $"{pluginId} call-timeout is {callTimeout}.");
+            Assert.Equal(ConfiguredBusyWait + DaemonPersistenceConfiguration.CircuitBreakerMargin, callTimeout);
         }
     }
 }
