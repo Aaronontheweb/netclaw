@@ -2462,36 +2462,51 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
     protected override void OnPersistFailure(Exception cause, object @event, long sequenceNr)
     {
         if (@event is InputAdmitted)
+        {
             TryReplyNack("The input journal failed. The session did not start a model call.");
+        }
+        else if (HasActiveTurn)
+        {
+            // Base stops the actor, and a stopped actor sends the channel nothing. Tell the channel first.
+            // The failed event can be one of several that a tool batch wrote, so the user must check the actions.
+            EmitFailedTurnOutputs(PersistStoppedMessage, cause, PersistFailureCategory(cause));
+        }
         else
-            EmitPersistFailureError(cause);
+        {
+            _log.Warning(cause,
+                "Persist failed for {Event} while no turn was active; the session stops and the next message starts a new one",
+                @event.GetType().Name);
+        }
 
         base.OnPersistFailure(cause, @event, sequenceNr);
     }
 
     protected override void OnPersistRejected(Exception cause, object @event, long sequenceNr)
     {
+        // Base only logs a rejection; the actor keeps running. A turn that nothing ends would hold
+        // the session until the processing watchdog fires, so fail the turn here.
         if (@event is InputAdmitted)
             TryReplyNack("The input journal rejected the message. The session did not start a model call.");
+        else if (HasActiveTurn)
+            FinishFailedTurn(PersistRejectedMessage, cause, PersistFailureCategory(cause));
         else
-            EmitPersistFailureError(cause);
+            _log.Warning(cause, "Persist was rejected for {Event} while no turn was active", @event.GetType().Name);
 
         base.OnPersistRejected(cause, @event, sequenceNr);
     }
 
-    // base.OnPersistFailure and OnPersistRejected stop the actor. Without this output the channel
-    // thread gets no reply, and the user cannot tell that the turn is lost. InputAdmitted has its own Nack.
-    private void EmitPersistFailureError(Exception cause)
-    {
-        EmitOutput(new ErrorOutput
-        {
-            SessionId = _sessionId,
-            Message = "The session could not save this turn, so it stopped. Send your message again to continue.",
-            Category = cause is TimeoutException ? ErrorCategory.Timeout : ErrorCategory.Unknown,
-            CorrelationId = Guid.NewGuid(),
-            Cause = cause
-        });
-    }
+    private const string PersistStoppedMessage =
+        "The session could not save its progress and stopped. Some actions may already have run. Check them before you send your message again.";
+
+    private const string PersistRejectedMessage =
+        "The session could not save its progress, so this turn failed. Some actions may already have run. Check them before you send your message again.";
+
+    private static ErrorCategory PersistFailureCategory(Exception cause)
+        => cause is TimeoutException ? ErrorCategory.Timeout : ErrorCategory.Unknown;
+
+    // A turn owns selected inputs or a child continuation until its InputClosed event lands. The phase is too
+    // wide: Processing and Compacting can also run with no selected input, and then no user waits for a reply.
+    private bool HasActiveTurn => _input.SelectedCount > 0 || _toolWorkflow.HasChildContinuation;
 
     // ── Helpers ──
 
@@ -3692,6 +3707,13 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         _toolWorkflow.ClearFailedTurn();
         _state = _state.AddErrorReply(errorMessage);
 
+        EmitFailedTurnOutputs(errorMessage, cause, category);
+
+        DrainBufferedMessagesOrBecomeReady();
+    }
+
+    private void EmitFailedTurnOutputs(string errorMessage, Exception cause, ErrorCategory category)
+    {
         var correlationId = Guid.NewGuid();
 
         TurnLog().Error(cause,
@@ -3716,8 +3738,6 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             SourceReminderId = _input.Authority.Source?.ReminderId,
             OpenChildRunIds = _state.GetOpenChildRunIds()
         });
-
-        DrainBufferedMessagesOrBecomeReady();
     }
 
     private void EmitOutput(SessionOutput output, OutputFilter requiredFlag = OutputFilter.None)

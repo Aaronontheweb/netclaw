@@ -13,6 +13,11 @@ namespace Netclaw.Daemon;
 /// Composes the daemon SQLite persistence for Akka. Program.cs and the tests call the same method,
 /// so a test reads the configuration that the daemon uses.
 /// </summary>
+/// <remarks>
+/// The circuit breaker does not cancel the SQL command. A lock wait shorter than the SQLite timeout only
+/// delays the write. A longer lock wait fails the write with a SQLite busy error, which this class cannot
+/// prevent. The breaker clock also counts the time that a write spends in the write queue.
+/// </remarks>
 internal static class DaemonPersistenceConfiguration
 {
     /// <summary>
@@ -27,10 +32,13 @@ internal static class DaemonPersistenceConfiguration
     public static AkkaConfigurationBuilder WithDaemonSqlPersistence(
         this AkkaConfigurationBuilder builder, string connectionString)
     {
-        // The breaker does not cancel the SQL command. A breaker that is shorter than the SQLite busy
-        // wait fails the persist while the command still waits on a lock. A failed persist stops the
-        // session actor. With a longer breaker, a lock wait only delays the write.
-        var sqliteTimeout = TimeSpan.FromSeconds(new SqliteConnectionStringBuilder(connectionString).DefaultTimeout);
+        var timeoutSeconds = new SqliteConnectionStringBuilder(connectionString).DefaultTimeout;
+        if (timeoutSeconds <= 0)
+            throw new ArgumentException(
+                "The SQLite connection string sets Default Timeout to " + timeoutSeconds + ". SQLite would wait forever on a lock, and no circuit-breaker timeout is longer than that. Set a positive Default Timeout.",
+                nameof(connectionString));
+
+        var sqliteTimeout = TimeSpan.FromSeconds(timeoutSeconds);
         var callTimeout = sqliteTimeout + CircuitBreakerMargin;
         return builder
             .WithSqlPersistence(connectionString: connectionString, providerName: "SQLite.MS")
