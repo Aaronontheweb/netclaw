@@ -176,12 +176,13 @@ public sealed class CrossProcessOAuthRefreshTests : IDisposable
         restoreSecrets();
         _time.Advance(TimeSpan.FromHours(2));
 
+        // The 500 gets one retry. Both requests present the live token, never the spent one.
         server.FailNextWith500 = true;
-        await Assert.ThrowsAnyAsync<HttpRequestException>(() =>
-            service.GetValidAccessTokenAsync("codex", entry, OpenAiOAuth, TestContext.Current.CancellationToken));
-
-        var token = await service.GetValidAccessTokenAsync("codex", entry, OpenAiOAuth, TestContext.Current.CancellationToken);
+        var token = await FakeClockDriver.AdvanceUntilCompleteAsync(
+            service.GetValidAccessTokenAsync("codex", entry, OpenAiOAuth, TestContext.Current.CancellationToken),
+            () => _time.Advance(TimeSpan.FromSeconds(2)));
         Assert.Equal("access-2", token.Value);
+        Assert.Equal(["refresh-0", "refresh-1", "refresh-1"], server.Presented);
     }
 
     [Fact]
