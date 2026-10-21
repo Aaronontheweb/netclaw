@@ -43,6 +43,57 @@ public sealed class ShellApprovalMatcherTests
     public static bool IsPosix => !OperatingSystem.IsWindows();
     public static bool IsWindows => OperatingSystem.IsWindows();
 
+    /// <summary>
+    /// A grant for one bare program word covers only that word alone. It covers
+    /// no subcommand of the same program.
+    /// </summary>
+    /// <remarks>
+    /// <see cref="ToolApprovalEntryComparer.CoversCommandWords"/> refuses a
+    /// one-word grant against a longer call, so a click that stores <c>uv</c>
+    /// authorizes only a bare <c>uv</c>. The matcher reports the later
+    /// <c>uv run</c> call as a token near miss.
+    /// </remarks>
+    [Fact]
+    public void Single_word_program_grant_covers_no_subcommand_call()
+    {
+        var grant = ApprovalEntry.CreateTokenPrefix(ApprovalShell.Bash, ["uv"]);
+        var subcommand = new ApprovalCandidate("uv run", Directory: null)
+        {
+            Shell = ApprovalShell.Bash,
+            VerbTokens = ["uv", "run"],
+        };
+        var bare = new ApprovalCandidate("uv", Directory: null)
+        {
+            Shell = ApprovalShell.Bash,
+            VerbTokens = ["uv"],
+        };
+
+        Assert.True(ApprovalPatternMatching.MatchesShellApproval(bare, "/work", [grant]));
+        Assert.False(ApprovalPatternMatching.MatchesShellApproval(subcommand, "/work", [grant]));
+
+        var evaluation = ApprovalPatternMatching.EvaluateShellApproval(
+            subcommand, "/work", [grant], maximumNearMisses: 1);
+        Assert.Null(evaluation.MatchedEntry);
+        Assert.Equal(
+            ShellApprovalNearMissReason.TokenMismatch,
+            Assert.Single(evaluation.NearMisses).Reason);
+    }
+
+    [Fact]
+    public void Env_assignment_does_not_share_the_unset_command_grant()
+    {
+        var unset = _matcher.AnalyzeInvocation(new ToolName("shell_execute"),
+            Args("env -u DOTNET_SKILLS_REPO uv run pytest -q"));
+        var assignment = _matcher.AnalyzeInvocation(new ToolName("shell_execute"),
+            Args("env DOTNET_SKILLS_REPO=/work/skills uv run pytest -q"));
+        var unsetCandidate = Assert.Single(unset.Candidates);
+        var assignmentCandidate = Assert.Single(assignment.Candidates);
+        var grant = ApprovalEntry.CreateTokenPrefix(ApprovalShell.Bash, unsetCandidate.VerbTokens!);
+
+        Assert.True(ApprovalPatternMatching.MatchesShellApproval(unsetCandidate, "/work", [grant]));
+        Assert.False(ApprovalPatternMatching.MatchesShellApproval(assignmentCandidate, "/work", [grant]));
+    }
+
     [Theory]
     [InlineData("pwsh -NoProfile -Command 'git status'", "pwsh")]
     [InlineData("powershell.exe -File script.ps1", "powershell.exe")]

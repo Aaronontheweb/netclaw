@@ -560,6 +560,61 @@ public sealed class RepositoryWorktreeApprovalTests(ShellApprovalMatrixFixture f
         }
     }
 
+    [Fact]
+    public async Task Repository_verb_grant_keeps_an_arbitrary_external_redirect_outside_its_scope()
+    {
+        var root = CreateTestRoot("netclaw-repository-redirect-");
+        try
+        {
+            var main = Path.Combine(root.FullName, "main");
+            var session = Directory.CreateDirectory(Path.Combine(root.FullName, "session"));
+            RunGit(root.FullName, "init", main);
+
+            await using var inside = await CreateHarnessAsync(
+                "repository-redirect-inside",
+                main,
+                main,
+                session.FullName,
+                "uv export --frozen > uv.lock.audit.txt",
+                Approvals.PersistentRepository("uv export"),
+                AssignmentTestHost);
+            var insideDecision = await inside.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+            Assert.Equal(ToolAuthorizationOutcome.Allowed, insideDecision.Outcome);
+
+            // Only the POSIX null device has the sink exemption.
+            if (!OperatingSystem.IsWindows())
+            {
+                await using var nullDevice = await CreateHarnessAsync(
+                    "repository-redirect-null-device",
+                    main,
+                    main,
+                    session.FullName,
+                    "uv export --frozen 2>/dev/null",
+                    Approvals.PersistentRepository("uv export"),
+                    AssignmentTestHost);
+                var nullDeviceDecision = await nullDevice.EvaluateDecisionAsync(
+                    TestContext.Current.CancellationToken);
+                Assert.Equal(ToolAuthorizationOutcome.Allowed, nullDeviceDecision.Outcome);
+            }
+
+            await using var outside = await CreateHarnessAsync(
+                "repository-redirect-outside-file",
+                main,
+                main,
+                session.FullName,
+                $"uv export --frozen > '{Path.Combine(root.FullName, "audit-reqs.txt")}'",
+                Approvals.PersistentRepository("uv export"),
+                AssignmentTestHost);
+            var outsideDecision = await outside.EvaluateDecisionAsync(TestContext.Current.CancellationToken);
+
+            Assert.NotEqual(ToolAuthorizationOutcome.Allowed, outsideDecision.Outcome);
+        }
+        finally
+        {
+            root.Delete(recursive: true);
+        }
+    }
+
     private Task<ShellApprovalHarness> CreateHarnessAsync(
         string id,
         string project,

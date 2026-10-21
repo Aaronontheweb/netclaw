@@ -595,7 +595,7 @@ public sealed class ToolAccessPolicy
     {
         foreach (var (candidate, pathFacts) in candidates)
         {
-            if (!candidate.RunsNoProgram)
+            if (!candidate.RunsNoProgram && !candidate.UsesFileToolRedirects)
                 continue;
 
             foreach (var fact in RedirectFacts(pathFacts))
@@ -631,20 +631,90 @@ public sealed class ToolAccessPolicy
     }
 
     /// <summary>
-    /// Returns each file tool call that a redirect of a command that runs no
-    /// program stands for, when that tool has the <c>Approval</c> mode for the
-    /// audience and the path.
+    /// Separates proved scratch redirects from command scopes without extending a stored grant.
     /// </summary>
+    internal ShellApprovalAnalysis WithManagedTemporaryRedirects(
+        ShellApprovalAnalysis approval,
+        ToolExecutionContext context)
+    {
+        if (context.Audience != TrustAudience.Personal
+            || ShellEnvironment.Grammar != ShellGrammar.Bash
+            || context.Invocation.SessionStorage is not { } storage
+            || !CanonicalPath.TryCreate(storage.ManagedTemporary.Directory.Value,
+                relativeBase: null, ShellEnvironment.PathStyle, out var root))
+        {
+            return approval;
+        }
+
+        var candidates = new List<ApprovalCandidate>();
+        foreach (var group in approval.Candidates.GroupBy(static candidate => candidate.SourceOccurrence))
+        {
+            var occurrence = group.Key;
+            if (occurrence is null
+                || group.Any(static candidate => candidate.RunsNoProgram
+                    || candidate.Unresolved != ShellUnresolvedPart.None)
+                || occurrence.WorkingDirectory is not ShellValueDomain.Exact commandDirectory
+                || !HasManagedTemporaryRedirects(occurrence, root)
+                || _shellApprovalMatcher.ExtractCommandScopesForOccurrence(occurrence, commandDirectory.Value)
+                    is not { Count: > 0 } commandCandidates)
+            {
+                candidates.AddRange(group);
+                continue;
+            }
+
+            // Literal twins can carry the source assignment qualifier. Reprojection changes only the scope.
+            var source = group.First();
+            candidates.AddRange(commandCandidates.Select(candidate =>
+                source with { Directory = candidate.Directory, UsesFileToolRedirects = true }));
+        }
+
+        return approval with { Candidates = Array.AsReadOnly(candidates.ToArray()) };
+    }
+
+    private bool HasManagedTemporaryRedirects(CommandOccurrence occurrence, CanonicalPath root)
+    {
+        var hasScratchTarget = false;
+        foreach (var redirect in occurrence.Redirects)
+        {
+            if (redirect is not FileRedirectAnalysis file)
+            {
+                if (redirect is DescriptorDuplicateRedirectAnalysis or DescriptorMoveRedirectAnalysis
+                    or DescriptorCloseRedirectAnalysis or HereDocumentRedirectAnalysis or HereStringRedirectAnalysis)
+                    continue;
+                return false;
+            }
+
+            if (!file.IsComplete
+                || file.Mode != FileRedirectMode.Input && !ShellRedirectPolicyFacts.IsFileWritingMode(file.Mode)
+                || file.Target is not ShellValueDomain.Exact exact
+                || !CanonicalPath.TryCreate(exact.Value, relativeBase: null, ShellEnvironment.PathStyle, out var target))
+                return false;
+            if (ShellRedirectPolicyFacts.IsNullDevice(target))
+                continue;
+
+            // Only this run's link-free scratch path can leave the command grant's scope.
+            if (target.IsSamePath(root)
+                || FileSystemAuthority.EvaluateMembership(target,
+                    [new PathBoundary.Folder(root, LinkRule.BelowRoot)]) != PathDecision.Allowed
+                || !FileSystemAuthority.IsLinkFreeFromVolumeRoot(target, LinkRule.FromVolumeRootExceptTemporaryAlias))
+                return false;
+            hasScratchTarget = true;
+        }
+
+        return hasScratchTarget;
+    }
+
+    /// <summary>Returns the file-tool calls whose redirects require consent for this audience and path.</summary>
     internal IReadOnlyList<FileToolCall> GetRedirectsThatNeedConsent(
         ShellApprovalAnalysis approval,
         ToolExecutionContext context)
     {
-        if (!approval.Candidates.Any(static candidate => candidate.RunsNoProgram))
+        if (!approval.Candidates.Any(static candidate => candidate.RunsNoProgram || candidate.UsesFileToolRedirects))
             return [];
 
         var facts = ShellPolicyPathFacts.Create(approval.Candidates, ShellEnvironment.PathStyle);
         return approval.Candidates
-            .SelectMany((candidate, index) => candidate.RunsNoProgram
+            .SelectMany((candidate, index) => candidate.RunsNoProgram || candidate.UsesFileToolRedirects
                 ? RedirectsThatNeedConsent(facts[index], context)
                 : [])
             .Distinct()
@@ -668,16 +738,15 @@ public sealed class ToolAccessPolicy
     }
 
     /// <summary>
-    /// Keeps a prompt for a command that runs no program when the file tool of
-    /// one of its redirects needs consent and no grant of that tool covers it.
+    /// Retains exact consent for redirects that need a file-tool grant.
     /// </summary>
     /// <remarks>
     /// SECURITY: a redirect is a file write (or a read) without the file tool.
     /// When the operator set <c>file_write</c> or <c>file_read</c> to
-    /// <c>Approval</c>, the redirect must not skip that consent. The candidate
-    /// becomes exact: its name lists each write and read that needs consent,
-    /// the prompt shows the full command, and it offers only "Once" and
-    /// "Deny". The candidate keeps its mark, so
+    /// <c>Approval</c>, each file operation retains its own exact candidate.
+    /// A composed redirect also retains an exact command candidate.
+    /// The prompt shows the full command and offers only "Once" and "Deny".
+    /// Each candidate keeps its mark, so
     /// <see cref="ScreenNoProgramRedirects"/> still judges each redirect of
     /// the command before the prompt.
     /// </remarks>
@@ -689,28 +758,34 @@ public sealed class ToolAccessPolicy
         ToolExecutionContext context,
         IReadOnlySet<FileToolCall> granted)
     {
-        if (!approval.Candidates.Any(static candidate => candidate.RunsNoProgram))
+        if (!approval.Candidates.Any(static candidate => candidate.RunsNoProgram || candidate.UsesFileToolRedirects))
             return approval;
 
         var facts = ShellPolicyPathFacts.Create(approval.Candidates, ShellEnvironment.PathStyle);
         var candidates = approval.Candidates
-            .Select((candidate, index) =>
+            .SelectMany((candidate, index) =>
             {
-                if (!candidate.RunsNoProgram)
-                    return candidate;
+                if (!candidate.RunsNoProgram && !candidate.UsesFileToolRedirects)
+                    return new[] { candidate };
 
                 var names = RedirectsThatNeedConsent(facts[index], context)
                     .Where(call => !granted.Contains(call))
                     .Select(static call => $"{(call.Tool == FileReadTool.ToolName ? "read" : "write")} {call.Path}")
                     .ToArray();
-                return names.Length == 0
-                    ? candidate
-                    : candidate with
-                    {
-                        Verb = string.Join(", ", names),
-                        VerbTokens = null,
-                        Unresolved = ShellUnresolvedPart.Command
-                    };
+                if (names.Length == 0)
+                    return new[] { candidate };
+
+                var fileCandidates = names.Select(name => candidate with
+                {
+                    Verb = name,
+                    VerbTokens = null,
+                    Unresolved = ShellUnresolvedPart.Command
+                });
+                // A Once answer must bind the command as well as its file operations, even with a stored command grant.
+                if (!candidate.UsesFileToolRedirects)
+                    return fileCandidates;
+
+                return fileCandidates.Prepend(candidate with { VerbTokens = null, Unresolved = ShellUnresolvedPart.Command });
             })
             .ToArray();
         return approval with { Candidates = Array.AsReadOnly(candidates) };
