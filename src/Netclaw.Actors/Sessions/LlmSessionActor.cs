@@ -2286,6 +2286,13 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         Command<WorkingContextSnapshotFailed>(HandleWorkingContextSnapshotFailed);
         Command<WorkingContextSnapshotFatal>(message => throw message.Cause);
 
+        // Only a turn that still runs fails. Any other phase means the turn ended before this command ran.
+        Command<PersistRejectedTurnFailure>(msg =>
+        {
+            if (_phase.Current == SessionPhase.Processing)
+                FailCurrentTurn(PersistRejectedMessage, msg.Cause, PersistFailureCategory(msg.Cause));
+        });
+
         // Title generation result — can arrive in any behavior, always safe to apply
         Command<TitleGenerationCompleted>(msg =>
         {
@@ -2465,7 +2472,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         {
             TryReplyNack("The input journal failed. The session did not start a model call.");
         }
-        else if (HasActiveTurn)
+        else if (TurnIsRunning)
         {
             // Base stops the actor, and a stopped actor sends the channel nothing. Tell the channel first.
             // The failed event can be one of several that a tool batch wrote, so the user must check the actions.
@@ -2487,13 +2494,26 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         // the session until the processing watchdog fires, so fail the turn here.
         if (@event is InputAdmitted)
             TryReplyNack("The input journal rejected the message. The session did not start a model call.");
-        else if (HasActiveTurn)
-            FinishFailedTurn(PersistRejectedMessage, cause, PersistFailureCategory(cause));
+        else if (_phase.Current == SessionPhase.Processing)
+        {
+            // A rejected InputClosed cannot close itself: a second close would be rejected the same way.
+            if (@event is InputClosed)
+                FinishFailedTurn(PersistRejectedMessage, cause, PersistFailureCategory(cause));
+            else
+            {
+                // Akka flushes a Persist call only after a command. A Persist call here would not reach the
+                // journal, so the turn failure (which closes the inputs in the journal) runs as a command.
+                // Without the close, a replay would run the failed input again.
+                Self.Tell(new PersistRejectedTurnFailure(cause));
+            }
+        }
         else
             _log.Warning(cause, "Persist was rejected for {Event} while no turn was active", @event.GetType().Name);
 
         base.OnPersistRejected(cause, @event, sequenceNr);
     }
+
+    private sealed record PersistRejectedTurnFailure(Exception Cause) : INoSerializationVerificationNeeded;
 
     private const string PersistStoppedMessage =
         "The session could not save its progress and stopped. Some actions may already have run. Check them before you send your message again.";
@@ -2504,9 +2524,9 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
     private static ErrorCategory PersistFailureCategory(Exception cause)
         => cause is TimeoutException ? ErrorCategory.Timeout : ErrorCategory.Unknown;
 
-    // A turn owns selected inputs or a child continuation until its InputClosed event lands. The phase is too
-    // wide: Processing and Compacting can also run with no selected input, and then no user waits for a reply.
-    private bool HasActiveTurn => _input.SelectedCount > 0 || _toolWorkflow.HasChildContinuation;
+    // The first tool batch commit clears the selected inputs, so a selection does not show that a turn runs.
+    // The stop path loses any running turn, whichever event failed, so Processing and Compacting both count.
+    private bool TurnIsRunning => _phase.Current is SessionPhase.Processing or SessionPhase.Compacting;
 
     // ── Helpers ──
 
