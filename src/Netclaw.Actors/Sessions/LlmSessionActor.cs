@@ -2286,11 +2286,14 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         Command<WorkingContextSnapshotFailed>(HandleWorkingContextSnapshotFailed);
         Command<WorkingContextSnapshotFatal>(message => throw message.Cause);
 
-        // Only a turn that still runs fails. Any other phase means the turn ended before this command ran.
+        // A stashed cancel or watchdog message can end the rejected turn first, and the buffer can then start
+        // the next turn in Processing. The turn id tells the two turns apart, so a new healthy turn stays alive.
         Command<PersistRejectedTurnFailure>(msg =>
         {
-            if (_phase.Current == SessionPhase.Processing)
+            if (_phase.Current == SessionPhase.Processing && _input.Telemetry.TurnId == msg.TurnId)
                 FailCurrentTurn(PersistRejectedMessage, msg.Cause, PersistFailureCategory(msg.Cause));
+            else
+                _log.Info("Skipped the persist-rejected turn failure; the rejected turn {TurnId} already ended", msg.TurnId);
         });
 
         // Title generation result — can arrive in any behavior, always safe to apply
@@ -2504,7 +2507,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 // Akka flushes a Persist call only after a command. A Persist call here would not reach the
                 // journal, so the turn failure (which closes the inputs in the journal) runs as a command.
                 // Without the close, a replay would run the failed input again.
-                Self.Tell(new PersistRejectedTurnFailure(cause));
+                Self.Tell(new PersistRejectedTurnFailure(cause, _input.Telemetry.TurnId));
             }
         }
         else
@@ -2513,7 +2516,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         base.OnPersistRejected(cause, @event, sequenceNr);
     }
 
-    private sealed record PersistRejectedTurnFailure(Exception Cause) : INoSerializationVerificationNeeded;
+    private sealed record PersistRejectedTurnFailure(Exception Cause, TurnId? TurnId) : INoSerializationVerificationNeeded;
 
     private const string PersistStoppedMessage =
         "The session could not save its progress and stopped. Some actions may already have run. Check them before you send your message again.";
