@@ -29,18 +29,22 @@ internal abstract record AdmissionDecision
 
 // AdoptsAuthority: the batch starts a turn for its own requester. The flow then holds the authority of the first
 // input in the batch, and the actor must derive trust for it before the next model call.
-// JoinsAutomationTurn: the batch joins a running turn whose requester is automation (a reminder, a background
-// job, a webhook). Every later input of that kind has the same fixed system sender, so it joins the same way.
+// JoinsAutomationTurn: automated input joins a running turn. Either the requester of the turn is automation (a
+// reminder, a background job, a webhook), whose later inputs have the same fixed system sender, or every input of
+// the batch is a child result notice, which is automated input by its kind and brings no new person input.
 internal sealed record BufferedInputBatch(
     IReadOnlyList<SendUserMessage> Messages,
     bool StartsNewTurn,
     bool AdoptsAuthority,
     bool JoinsAutomationTurn);
 
+// NoticeRunIds: the child runs that the notices of the running turn name, in input order. They stay for the whole
+// turn, also after a tool batch closes the selected inputs, and end when the turn is recorded.
 internal readonly record struct SelectedInputFacts(
     IReadOnlyList<InputId> Ids,
     ReminderId? ReminderId,
-    BackgroundJobId? BackgroundJobId);
+    BackgroundJobId? BackgroundJobId,
+    IReadOnlyList<SubAgentRunId> NoticeRunIds);
 
 internal readonly record struct TurnAuthorityFacts(
     TurnContext? Context,
@@ -73,6 +77,7 @@ internal sealed class SessionInputFlow
 {
     private readonly List<(SendUserMessage Message, bool IsReplay)> _buffer = [];
     private readonly List<InputId> _selectedIds = [];
+    private readonly List<SubAgentRunId> _noticeRunIds = [];
     private readonly InFlightTurnDedup _inFlightDedup = new();
     // The executable context can clear while source attribution and telemetry remain for late diagnostics.
     private MessageSource? _source;
@@ -91,7 +96,7 @@ internal sealed class SessionInputFlow
     public TurnTelemetryFacts Telemetry => _telemetry;
     // Input closure events copy IDs before journal callbacks clear or remove the selection.
     public SelectedInputFacts SelectedInputs =>
-        new(_selectedIds.ToArray(), _source?.ReminderId, _source?.BackgroundJobId);
+        new(_selectedIds.ToArray(), _source?.ReminderId, _source?.BackgroundJobId, _noticeRunIds.ToArray());
 
     public bool IsBackgroundJobDuplicate(BackgroundJobId? backgroundJobId, SessionState state)
     {
@@ -113,6 +118,9 @@ internal sealed class SessionInputFlow
             return state.IsLegacyInputQuarantined(admittedId)
                 ? new AdmissionDecision.Reject("The legacy input is quarantined and cannot execute.")
                 : new AdmissionDecision.Existing();
+
+        if (command.Notice is { } notice)
+            return PrepareNoticeAdmission(command, notice, state, sessionId, admittedAtMs);
 
         var context = TurnContext.FromMessageSource(
             sessionId,
@@ -187,6 +195,38 @@ internal sealed class SessionInputFlow
                && ReminderFireKey.TryParse(input.SourceMessageId, out key);
     }
 
+    // The owner built the notice from the state of a run. The reducer validates it against that state before the write,
+    // so a second notice for a run, or a notice with another authority, fails here and never reaches the journal.
+    private static AdmissionDecision PrepareNoticeAdmission(
+        SendUserMessage command,
+        ChildNoticeInput notice,
+        SessionState state,
+        SessionId sessionId,
+        long admittedAtMs)
+    {
+        var evt = new InputAdmitted
+        {
+            SessionId = sessionId,
+            InputId = InputId.New(),
+            UserMessage = new SerializableChatMessage { Role = ChatRole.User, Content = command.Content ?? string.Empty },
+            TurnContext = notice.Context,
+            ChildNotice = notice.Notice,
+            AdmittedAtMs = admittedAtMs
+        };
+        if (!TurnContext.TryFromRecord(evt.TurnContext, out _, out var reason))
+            return new AdmissionDecision.Reject(reason ?? "invalid stored authority");
+        try
+        {
+            _ = state.Apply(evt);
+        }
+        catch (InvalidOperationException error)
+        {
+            return new AdmissionDecision.Reject(error.Message);
+        }
+
+        return new AdmissionDecision.Persist(evt);
+    }
+
     public SendUserMessage AdmissionCommitted(
         InputAdmitted admitted,
         SendUserMessage command,
@@ -195,7 +235,12 @@ internal sealed class SessionInputFlow
         // The journal callback applies the event before this owner reserves or places the input.
         var authority = RecordedAuthority(admitted);
         _inFlightDedup.ReserveBackgroundJob(command.Source?.BackgroundJobId);
-        var accepted = command with { AdmittedInputId = admitted.InputId, AdmittedAuthority = authority };
+        var accepted = command with
+        {
+            AdmittedInputId = admitted.InputId,
+            AdmittedAuthority = authority,
+            Source = command.Source ?? (admitted.ChildNotice is null ? null : RecordedSource(admitted, authority))
+        };
         PlaceAccepted(accepted, placement);
         return accepted;
     }
@@ -238,7 +283,9 @@ internal sealed class SessionInputFlow
                 MediaReferences = admitted.UserMessage.MediaReferences,
                 Source = source,
                 AdmittedInputId = admitted.InputId,
-                AdmittedAuthority = authority
+                AdmittedAuthority = authority,
+                // The journal keeps the kind. A rebuilt notice stays automated input.
+                Notice = admitted.ChildNotice is { } notice ? new ChildNoticeInput(notice, admitted.TurnContext) : null
             }, false));
             restored++;
         }
@@ -298,6 +345,8 @@ internal sealed class SessionInputFlow
         _selectedIds.Clear();
         _selectedIds.Add(id);
         _source = command.Source;
+        _noticeRunIds.Clear();
+        AddNoticeRun(command.Notice?.Notice);
         _context = context;
         _trust = deriver?.DeriveFromTurnContext(context);
         _telemetry = new TurnTelemetryFacts(
@@ -314,6 +363,7 @@ internal sealed class SessionInputFlow
         _emittedText = false;
         _selectedIds.Clear();
         _source = source;
+        _noticeRunIds.Clear();
         RestoreTurnAuthority(context, deriver);
     }
 
@@ -351,7 +401,8 @@ internal sealed class SessionInputFlow
                 Content = item.UserMessage.Content ?? string.Empty,
                 MediaReferences = item.UserMessage.MediaReferences,
                 AdmittedInputId = item.InputId,
-                AdmittedAuthority = RecordedAuthority(item)
+                AdmittedAuthority = RecordedAuthority(item),
+                Notice = item.ChildNotice is { } notice ? new ChildNoticeInput(notice, item.TurnContext) : null
             }, false));
         }
 
@@ -364,6 +415,8 @@ internal sealed class SessionInputFlow
         var resumed = pending.Select(static item => item.InputId).ToHashSet();
         _buffer.RemoveAll(item => item.Message.AdmittedInputId is { } id && resumed.Contains(id));
         _selectedIds.AddRange(pending.Select(static item => item.InputId));
+        foreach (var item in pending)
+            AddNoticeRun(item.ChildNotice);
         return pending.Select(static item => item.UserMessage).ToArray();
     }
 
@@ -406,8 +459,11 @@ internal sealed class SessionInputFlow
 
         if (adoptsAuthority)
             AdoptAuthority(messages[0], BufferedAuthority(messages[0]));
+        foreach (var message in messages)
+            AddNoticeRun(message.Notice?.Notice);
         var joinsAutomationTurn = !adoptsAuthority
-            && owner is { } running && SessionToolWorkflow.IsAutomation(running.RequesterPrincipal);
+            && ((owner is { } running && SessionToolWorkflow.IsAutomation(running.RequesterPrincipal))
+                || messages.All(static message => message.Notice is not null));
         return new BufferedInputBatch(messages, startsNewTurn, adoptsAuthority, joinsAutomationTurn);
     }
 
@@ -417,11 +473,34 @@ internal sealed class SessionInputFlow
     private void AdoptAuthority(SendUserMessage first, TurnContext authority)
     {
         _source = first.Source;
+        _noticeRunIds.Clear();
         _context = authority;
         // The old trust belongs to another authority. Tool exposure fails closed until DeriveAdoptedTrust runs.
         _trust = null;
         _telemetry = new TurnTelemetryFacts(authority.TurnId, first.Source?.MessageId, first.Source?.ChannelType);
     }
+
+    private void AddNoticeRun(ChildNotice? notice)
+    {
+        if (notice is not null)
+            AddNoticeRun(notice.RunId);
+    }
+
+    private void AddNoticeRun(SubAgentRunId runId)
+    {
+        if (!_noticeRunIds.Contains(runId))
+            _noticeRunIds.Add(runId);
+    }
+
+    // Replay rebuilds the noticed runs of the open journal turn from the inputs that its tool batches consumed. An
+    // approval re-drive on a new actor instance then keeps the reminder link of the noticed run, as the live actor does.
+    public void RestoreNoticeRuns(IEnumerable<SubAgentRunId> runIds)
+    {
+        foreach (var runId in runIds)
+            AddNoticeRun(runId);
+    }
+
+    public void ClearNoticeRuns() => _noticeRunIds.Clear();
 
     public void DeriveAdoptedTrust(TrustContextDeriver? deriver)
         => _trust = _context is { } context ? deriver?.DeriveFromTurnContext(context) : null;
@@ -471,6 +550,8 @@ internal sealed class SessionInputFlow
     {
         _inFlightDedup.CompleteBackgroundJob(evt.SourceBackgroundJobId);
         _selectedIds.Clear();
+        // A delivery retry repeats the recorded turn with no input, so it takes the link from the pending retry.
+        _noticeRunIds.Clear();
     }
 
     public void InputsClosed(InputClosed evt) => _selectedIds.RemoveAll(evt.InputIds.Contains);
