@@ -1053,9 +1053,7 @@ static IReadOnlyList<string> ConfigureDaemonServices(
         akkaBuilder = akkaBuilder.WithNetclawActorLogging(daemonLogLevel);
 
         var connectionString = $"Data Source={sqlitePath}";
-        akkaBuilder = akkaBuilder.WithSqlPersistence(
-            connectionString: connectionString,
-            providerName: "SQLite.MS");
+        akkaBuilder = akkaBuilder.WithDaemonSqlPersistence(connectionString);
 
         var reminderStorage = new NetclawAkkaHostingExtensions.ReminderStorageOptions
         {

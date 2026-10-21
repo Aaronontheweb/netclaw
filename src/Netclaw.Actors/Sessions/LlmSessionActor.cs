@@ -2380,6 +2380,16 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         Command<WorkingContextSnapshotFailed>(HandleWorkingContextSnapshotFailed);
         Command<WorkingContextSnapshotFatal>(message => throw message.Cause);
 
+        // A stashed cancel or watchdog message can end the rejected turn first, and the buffer can then start
+        // the next turn in Processing. The turn id tells the two turns apart, so a new healthy turn stays alive.
+        Command<PersistRejectedTurnFailure>(msg =>
+        {
+            if (_phase.Current == SessionPhase.Processing && _input.Telemetry.TurnId == msg.TurnId)
+                FailCurrentTurn(PersistRejectedMessage, msg.Cause, PersistFailureCategory(msg.Cause));
+            else
+                _log.Info("Skipped the persist-rejected turn failure; the rejected turn {TurnId} already ended", msg.TurnId);
+        });
+
         // Title generation result — can arrive in any behavior, always safe to apply
         Command<TitleGenerationCompleted>(msg =>
         {
@@ -2556,18 +2566,64 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
     protected override void OnPersistFailure(Exception cause, object @event, long sequenceNr)
     {
         if (@event is InputAdmitted)
+        {
             TryReplyNack("The input journal failed. The session did not start a model call.");
+        }
+        else if (TurnIsRunning)
+        {
+            // Base stops the actor, and a stopped actor sends the channel nothing. Tell the channel first.
+            // The failed event can be one of several that a tool batch wrote, so the user must check the actions.
+            EmitFailedTurnOutputs(PersistStoppedMessage, cause, PersistFailureCategory(cause));
+        }
+        else
+        {
+            _log.Warning(cause,
+                "Persist failed for {Event} while no turn was active; the session stops and the next message starts a new one",
+                @event.GetType().Name);
+        }
 
         base.OnPersistFailure(cause, @event, sequenceNr);
     }
 
     protected override void OnPersistRejected(Exception cause, object @event, long sequenceNr)
     {
+        // Base only logs a rejection; the actor keeps running. A turn that nothing ends would hold
+        // the session until the processing watchdog fires, so fail the turn here.
         if (@event is InputAdmitted)
             TryReplyNack("The input journal rejected the message. The session did not start a model call.");
+        else if (_phase.Current == SessionPhase.Processing)
+        {
+            // A rejected InputClosed cannot close itself: a second close would be rejected the same way.
+            if (@event is InputClosed)
+                FinishFailedTurn(PersistRejectedMessage, cause, PersistFailureCategory(cause));
+            else
+            {
+                // Akka flushes a Persist call only after a command. A Persist call here would not reach the
+                // journal, so the turn failure (which closes the inputs in the journal) runs as a command.
+                // Without the close, a replay would run the failed input again.
+                Self.Tell(new PersistRejectedTurnFailure(cause, _input.Telemetry.TurnId));
+            }
+        }
+        else
+            _log.Warning(cause, "Persist was rejected for {Event} while no turn was active", @event.GetType().Name);
 
         base.OnPersistRejected(cause, @event, sequenceNr);
     }
+
+    private sealed record PersistRejectedTurnFailure(Exception Cause, TurnId? TurnId) : INoSerializationVerificationNeeded;
+
+    private const string PersistStoppedMessage =
+        "The session could not save its progress and stopped. Some actions may already have run. Check them before you send your message again.";
+
+    private const string PersistRejectedMessage =
+        "The session could not save its progress, so this turn failed. Some actions may already have run. Check them before you send your message again.";
+
+    private static ErrorCategory PersistFailureCategory(Exception cause)
+        => cause is TimeoutException ? ErrorCategory.Timeout : ErrorCategory.Unknown;
+
+    // The first tool batch commit clears the selected inputs, so a selection does not show that a turn runs.
+    // The stop path loses any running turn, whichever event failed, so Processing and Compacting both count.
+    private bool TurnIsRunning => _phase.Current is SessionPhase.Processing or SessionPhase.Compacting;
 
     // ── Helpers ──
 
@@ -3758,6 +3814,13 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         _toolWorkflow.ClearFailedTurn();
         _state = _state.AddErrorReply(errorMessage);
 
+        EmitFailedTurnOutputs(errorMessage, cause, category);
+
+        DrainBufferedMessagesOrBecomeReady();
+    }
+
+    private void EmitFailedTurnOutputs(string errorMessage, Exception cause, ErrorCategory category)
+    {
         var correlationId = Guid.NewGuid();
 
         TurnLog().Error(cause,
@@ -3782,8 +3845,6 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             SourceReminderId = _input.Authority.Source?.ReminderId,
             OpenChildRunIds = _state.GetOpenChildRunIds()
         });
-
-        DrainBufferedMessagesOrBecomeReady();
     }
 
     private void EmitOutput(SessionOutput output, OutputFilter requiredFlag = OutputFilter.None)
