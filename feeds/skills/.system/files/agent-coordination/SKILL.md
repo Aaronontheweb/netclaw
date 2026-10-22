@@ -3,7 +3,7 @@ name: agent-coordination
 description: "Coordinate substantial code tasks, architecture plans, independent research, and defect repairs through scoped child tasks and reviewed artifacts."
 metadata:
   author: netclaw
-  version: "1.4.0"
+  version: "1.5.0"
 ---
 
 # Agent Coordination
@@ -99,6 +99,7 @@ Do not create a tight status poll loop. Normal completion uses the notice.
 Status and cancellation retain the owner-session and original eligible requester boundary under current policy.
 A reminder turn may check and cancel any child run of its own session with the same audience, boundary, and channel type, including a run that a person started.
 Any other turn of that session, with the same audience, boundary, and channel type, may check and cancel a child run that a reminder turn started.
+An approval notice turn may check and cancel any child run of its own session with the same audience, boundary, and channel type.
 A turn cannot reach a child run of another session.
 For child diagnosis, read the exact `log` path from `result.md` with ordinary file tools.
 The file `task.md` in the same folder records what you asked.
@@ -112,7 +113,8 @@ Load `netclaw-operations` and read `references/child-runs.md` for the full diagn
 
 A child can wait for the operator to answer a consent prompt. You cannot answer it.
 An approval notice then tells you about the request, and `spawn_agent` is refused until the last request closes.
-Do not cancel, respawn, or poll a waiting child. Tell the operator to answer the prompt.
+Do not respawn or poll a waiting child. Tell the operator to answer the prompt.
+Cancel a waiting child only when the operator asks for it or the task no longer needs it.
 A child prompt has buttons only. Tell the operator to use the buttons. Do not ask for a text reply such as "A".
 A cancel or the end of a child withdraws its open prompts. The prompt then states the reason, and nothing runs.
 Load `netclaw-operations` and read `references/child-runs.md` for the notice and pause rules.

@@ -23,8 +23,9 @@ While a request is open, the session is paused: `spawn_agent` is refused, and re
 A person's message still runs, and the pause stays. A slash command that a person types can still start a child.
 The `spawn_agent` refusal starts with `spawn_agent is paused.` and names only your own waiting runs.
 A waiting child is not stalled. It waits for the operator with no time limit.
-Do not cancel, respawn, or poll a waiting child. Tell the operator to answer the prompt, or to cancel the child.
-`check_agent_run` does not work in a notice turn for a run that a person started. The operator cancels in their own turn.
+Do not respawn or poll a waiting child. Tell the operator to answer the prompt, or to cancel the child.
+In a notice turn, `check_agent_run` can read the status of a child run of this session, and cancel it.
+Cancel a waiting child only when the operator asks for it or the task no longer needs it. The cancel closes its prompt.
 A notice turn cannot raise a consent prompt. A call that needs consent is denied there.
 When the last request closes, a closing notice says `spawn_agent is available again.` and lists the answers.
 A child prompt stays in the channel and in the TUI after the parent turn ends or fails. It stays until an answer or a close.

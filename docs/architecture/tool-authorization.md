@@ -1009,6 +1009,11 @@ Child ownership (status and cancel):
   audience, boundary, and channel type. It ignores the sender ID and the principal (issue #2524, owner decisions of
   16 and 18 October 2026). Thus a reminder turn and any other turn of one session manage each other's child runs.
   The other turn can be a person turn or an automated turn, such as the delivery turn of a background job.
+- An approval notice turn (`TurnContext.IsChildConsentNotice`) as the requester gets the same four-fact rule. The
+  parent can then read the status of a child that waits for consent, and cancel it. A cancel only reduces what runs,
+  and the notice digest covers all runs of the session. A cancel withdraws the open prompts of the run
+  (`CancelledByParent`), and the pause lifts when no request stays open. The notice gets no other authority. A run
+  that a notice turn started keeps the six-fact rule.
 - The check ignores the turn ID, provenance, delivery targets, adopted-context fields, and the
   interactive approval flag. These fields describe one message, and they change between turns of one person.
 - Data: the `OriginalContext` of the run is durable in the session journal. The context of the request is call-local.
@@ -1028,6 +1033,9 @@ Child ownership (status and cancel):
 | background-job delivery turn in S | reminder fire in S, same audience, boundary, and channel type | allowed |
 | reminder fire in a shared channel session S | Bob, any person of S | allowed |
 | reminder fire in S | later reminder fire in S | allowed |
+| Alice, in session S, child waits for consent | approval notice turn in S | allowed |
+| person in session A | approval notice turn in session B | denied |
+| approval notice turn in S | Bob, same session | denied |
 | person in session A | reminder fire in session B | denied |
 | reminder fire in session A | person turn in session B | denied |
 | person | reminder fire with another audience, boundary, or channel type | denied |

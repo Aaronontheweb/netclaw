@@ -72,9 +72,12 @@ public sealed record TurnContext
     // always has the sender "reminder-system" and the principal VerifiedAutomation. The session, the audience,
     // the boundary, and the channel type must still match, so a turn never reaches a run of another session.
     // The session is the unit of trust for a reminder. All other pairs of turns keep the six-fact rule.
+    // An approval notice turn as the requester gets the same session rule, so the parent can stop a child that waits
+    // for consent. A cancel only reduces what runs. The notice digest covers all runs of the session and names no
+    // single owner. The notice gets no other authority, and a person turn never controls the run of another person.
     // HasSameRequester stays strict, because input batching also uses it.
     internal bool CanControlChildRunOf(TurnContext owner)
-        => IsReminderTurn || owner.IsReminderTurn
+        => IsReminderTurn || owner.IsReminderTurn || IsChildConsentNotice
             ? SessionId == owner.SessionId
               && Audience == owner.Audience
               && Boundary == owner.Boundary

@@ -6,7 +6,8 @@ set -euo pipefail
 # fact, the reminder test, or the choice between the relaxed rule and the six-fact
 # rule. TurnContextChildControlTests must kill every mutant: a reminder turn and a
 # person turn of one session manage each other's runs, and no turn reaches a run of
-# another session.
+# another session. TurnContextChildConsentNoticeTests kills the mutant of the notice
+# requester: an approval notice turn controls a run of its own session.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_file="$repo_root/src/Netclaw.Actors/Channels/TurnContext.cs"
@@ -44,7 +45,7 @@ read -r span_start span_end first_line last_line < <(
 )
 
 report="$output_path/reports/mutation-report.json"
-expected_count=15
+expected_count=16
 jq -e --arg source "$source_file" \
   --argjson first "$first_line" --argjson last "$last_line" \
   --argjson count "$expected_count" '

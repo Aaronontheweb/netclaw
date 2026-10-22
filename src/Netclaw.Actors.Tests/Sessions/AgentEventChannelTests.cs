@@ -144,7 +144,7 @@ public sealed class AgentEventChannelTests
         Assert.Contains("The operator answers these prompts in the channel. You cannot answer them.", text, StringComparison.Ordinal);
         Assert.Contains("The children are not stalled.", text, StringComparison.Ordinal);
         Assert.Contains("Until all requests close, spawn_agent is refused and automated turns wait.", text, StringComparison.Ordinal);
-        Assert.Contains("check_agent_run does not work in this turn for a run that a person started.", text, StringComparison.Ordinal);
+        Assert.Contains("check_agent_run can read the status of a run of this session, or cancel it.", text, StringComparison.Ordinal);
         Assert.Contains("Ask the operator to answer the prompts, or to cancel a child.", text, StringComparison.Ordinal);
         Assert.DoesNotContain("spawn_agent is available again", text, StringComparison.Ordinal);
     }

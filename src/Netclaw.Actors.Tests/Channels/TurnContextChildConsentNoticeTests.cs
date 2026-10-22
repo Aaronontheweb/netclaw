@@ -22,17 +22,20 @@ public sealed class TurnContextChildConsentNoticeTests
     private static readonly SessionId Session = new("slack/C1/1700.1");
 
     /// <summary>
-    /// The notice turn is automation. It is a notice, and under the six-fact rule it cannot control a run that a
-    /// person started. A run that a reminder started is a run of the session, so the notice turn can see it.
+    /// The notice turn is automation. It is a notice, and as the requester it controls a child run of its own session,
+    /// also a run that a person started, so the parent can stop a child that waits for consent (live case of 22 October
+    /// 2026). It reaches no run of another session, and a person never controls a run that a notice turn started.
     /// Planted bug: the check reads one fact only, or the notice borrows the requester of the run owner.
     /// </summary>
     [Fact]
-    public void A_notice_context_is_a_notice_and_controls_no_run_that_a_person_started()
+    public void A_notice_context_is_a_notice_and_controls_a_run_of_its_own_session()
     {
         var notice = Context("child-consent", "child-consent", TransportAuthenticity.LocalProcess);
 
         Assert.True(notice.IsChildConsentNotice);
-        Assert.False(notice.CanControlChildRunOf(Person()));
+        Assert.True(notice.CanControlChildRunOf(Person()));
+        Assert.False((notice with { SessionId = new SessionId("slack/C1/1700.2") }).CanControlChildRunOf(Person()));
+        Assert.False(Person().CanControlChildRunOf(notice));
         Assert.True(notice.CanControlChildRunOf(Context("reminder", "reminder-system", TransportAuthenticity.LocalProcess)));
     }
 

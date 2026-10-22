@@ -65,7 +65,7 @@ public sealed class ChildConsentNoticeTurnSpecs(ITestOutputHelper output) : Chil
             var text = notice.UserMessage.Content ?? string.Empty;
             Assert.Contains($"run={alice.Run.RunId.Value}", text, StringComparison.Ordinal);
             Assert.Contains($"run={bob.Run.RunId.Value}", text, StringComparison.Ordinal);
-            Assert.Contains("check_agent_run does not work in this turn for a run that a person started.", text, StringComparison.Ordinal);
+            Assert.Contains("check_agent_run can read the status of a run of this session, or cancel it.", text, StringComparison.Ordinal);
             Assert.Equal(AliceTarget, notice.TurnContext.DefaultDeliveryTarget);
             Assert.Equal(AliceRequestedTarget, notice.TurnContext.RequestedDeliveryTarget);
             Assert.Equal(alice.Run.OriginalContext.Audience, notice.TurnContext.Audience);
