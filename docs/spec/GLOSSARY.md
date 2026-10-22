@@ -83,6 +83,53 @@ shell job is not a child run.
 **Code anchors:** `TurnCompleted.OpenChildRunIds`, `ChildRunLifecycle`,
 `HeadlessChannel`
 
+### Agent event
+
+An agent event is a typed fact between the agents of one session, for example
+"child approval requested". It has an envelope with a sender, a target, and a
+send time. Only the session that owns a child run builds an event about that
+run. An event never carries consent and never holds text that an agent wrote.
+The model sees a notice that the runtime renders from events. Planned in
+`child-approval-events-and-parent-pause`.
+
+**Code anchors (planned):** `AgentEvent`, `AgentEnvelope`, `AgentEventRenderer`
+
+### Child consent pause
+
+The child consent pause is the state of a whole session while any child
+consent request of the session is open. The session refuses `spawn_agent`, and
+automated input waits. The current turn can finish. A person's message starts a
+turn, but it does not end the pause. No request expires. Only the close of
+every open child request (an answer, a refusal, or a withdrawal) ends the pause.
+Planned in `child-approval-events-and-parent-pause`.
+
+**Code anchor (planned):** `SessionToolWorkflow`
+
+### Parked child run
+
+A parked child run is a child run that waits for consent with no actor. Its
+conversation and its parked calls are in its child journal, and the parent run
+record says that it is parked. The parent snapshot keeps its open requests.
+When every parked request has an answer, the session recreates the child from
+its journal, under the authority of the run record, and runs only the parked
+calls, each once. Planned in `child-approval-events-and-parent-pause`.
+
+**Code anchors (planned):** `ChildRunLifecycle.Parked`, `ChildRunEvent.Parked`
+
+### Child journal
+
+A child journal is the Akka.Persistence journal of one child run, with the
+persistence ID `subagent-{escaped session ID}/{run ID}`. A run writes it at its
+first park only, so a run that never parks has none. Its first event freezes
+the system prompt, the resolved provider and model, the tool set, the project
+instructions, the operating rules, and the findings flag. The parent purges it
+last: after the run end, `result.md`, and the result notice, with a closing
+event and then a delete of all messages. Match the prefix of one session with
+an ordinal comparison, because the escaped ID can hold `%`. Planned in
+`child-approval-events-and-parent-pause`.
+
+**Code anchor (planned):** `SubAgentRunProtocol`
+
 ### Working context
 
 The working context is actor-local state that helps later model turns. It
