@@ -1673,20 +1673,32 @@ stdout_response_not_contains() {
     return 0
 }
 
-# The parent's own text. A headless run prints the child's whole answer on one
-# "[tool:result] child_run_result" line. That text is the child's, not the
-# parent's. A pattern about the parent reply must not match it. Tool call lines
-# stay excluded as in stdout_response_contains.
+# The parent's own text. Since #2515 the parent reads the child answer from
+# result.md with file_read, and the CLI prints that result as a block of many
+# lines. That text is the child's, not the parent's. A pattern about the parent
+# reply must not match it. trial_evidence.py removes the exact result text that
+# the CLI session log records. Tool call lines stay excluded as in
+# stdout_response_contains. A check_agent_run result of a terminal run holds the
+# full child answer in its "summary" field. It is one JSON line, so the line is
+# excluded too. Exit 2: the child text could not be removed, so the trial is
+# inconclusive.
 stdout_parent_text() {
-    grep -av -e '^\[tool:call\]' -e '^\[tool:result\] child_run_result ' "$STDOUT_FILE" 2>/dev/null
+    local text
+    text=$(python3 "$TRIAL_EVIDENCE_PY" parent-stdout --stdout "$STDOUT_FILE" \
+        --cli-log "$TRIAL_RAW/cli-session.log") || return 2
+    grep -av -e '^\[tool:call\]' -e '^\[tool:result\] check_agent_run ' <<<"$text" || true
 }
 
 stdout_parent_text_contains() {
-    stdout_parent_text | grep -qia "$1"
+    local text
+    text=$(stdout_parent_text) || return 2
+    grep -qia "$1" <<<"$text"
 }
 
 stdout_parent_text_not_contains() {
-    if stdout_parent_text | grep -qia "$1"; then
+    local text
+    text=$(stdout_parent_text) || return 2
+    if grep -qia "$1" <<<"$text"; then
         return 1
     fi
     return 0
@@ -2400,20 +2412,21 @@ assert_subagent_headless_ambiguous_task() {
         stdout_parent_text_not_contains 'need.*more.*information'
 }
 
-# Prints the JSON body of each child_run_result TOOL_RESULT entry in a CLI
-# session log, one line for each entry. spawn_agent returns only
-# state "accepted". The child's answer arrives in a later turn as a
-# child_run_result record with the fields run_id, scope_id, source_operation,
-# outcome, reason, and output. The child log keeps only a short preview of the
-# child's final text, so read the child's answer here.
-cli_child_run_results() {
-    sed -nE 's/^\[[0-9]{4}-[0-9]{2}-[0-9]{2}T[^]]*\] TOOL_RESULT: child_run_result call_id=[^ ]+ result=//p' "$1"
+# Prints one JSON line for each child result that the parent read, from a CLI
+# session log. The fields are run_id, agent, outcome, output, call_id, and path.
+# spawn_agent returns only state "accepted". Since #2515 the runtime writes the
+# child answer to <run folder>/result.md and sends the parent a notice that
+# holds no child output. The parent reads the file with file_read. A result
+# counts only for a run that spawn_agent accepted, a file_read of that run's
+# result.md, and a result text for the same run. The child log keeps only a
+# short preview of the child's final text, so read the child's answer here.
+cli_child_results() {
+    python3 "$TRIAL_EVIDENCE_PY" child-results --cli-log "$1"
 }
 
 # Prints the answer text ("output") of each child run that spawn_agent started.
 cli_child_answers() {
-    cli_child_run_results "$1" \
-        | jq -Rr 'fromjson? | select(.source_operation == "spawn_agent") | .output // empty'
+    cli_child_results "$1" | jq -r '.output // empty'
 }
 
 # Prints the text of the last ASSISTANT_FINAL record in a CLI session log.
@@ -2433,8 +2446,9 @@ cli_final_reply() {
 #   - the parent did not change an agent file, by any tool or path form;
 #   - the parent returns an email that follows the deployment mission: a
 #     subject line and the mission call line.
-# The child and the parent are judged apart. The child result is a child_run_result
-# record. The parent reply is the last ASSISTANT_FINAL record.
+# The child and the parent are judged apart. The child result is the result.md
+# text that the parent read with file_read. The parent reply is the last
+# ASSISTANT_FINAL record.
 #
 # This case does NOT test which one wins when the parent task and the child role
 # conflict. A child that writes the email and a child that returns its brief both
@@ -2461,13 +2475,11 @@ assert_subagent_specialization_precedence() {
         || agents_diff_rc=$?
     [[ "$agents_diff_rc" -eq 0 ]] || return "$agents_diff_rc"
 
-    # Child side: a completed child_run_result holds a non-blank answer. The
-    # spawn_agent result is only "accepted" and holds no answer.
+    # Child side: the parent read a completed child result with a non-blank
+    # answer. The spawn_agent result is only "accepted" and holds no answer.
     local completed_children
-    completed_children=$(cli_child_run_results "$cli_log" | jq -Rr '
-        fromjson?
-        | select(.source_operation == "spawn_agent" and .outcome == "completed"
-                 and ((.output // "") | test("\\S")))
+    completed_children=$(cli_child_results "$cli_log" | jq -r '
+        select(.outcome == "completed" and ((.output // "") | test("\\S")))
         | .run_id')
     [[ -n "$completed_children" ]] || return 1
 
@@ -2794,9 +2806,19 @@ assert_subagent_session_scratch_disposable() {
         'SubAgent \[disposable-diagnostic\] completed (success=True, outcome=Completed' \
         "$child_log" || return 1
 
-    local child_relative expected_temp_dir
+    # Since #2559 the managed temp folder of a child run is
+    # /tmp/netclaw-<uid>/<key>/c<h> in the container (SessionStoragePaths).
+    # <key> is the first 16 hex characters of the SHA-256 of the envelope root.
+    # <h> is the first 8 hex characters of the SHA-256 of the run id. The child
+    # log path gives both inputs, so the key folder and the run folder are
+    # bound to this child run. Only the uid comes from the child answer.
+    local child_relative run_folder run_id envelope_root key run_hash
     child_relative="${child_log#"$EVAL_HOME/data/"}"
-    expected_temp_dir="/home/netclaw/.netclaw/${child_relative%/logs/session.log}/tmp"
+    run_folder="${child_relative%/logs/session.log}"
+    run_id="${run_folder##*/}"
+    envelope_root="/home/netclaw/.netclaw/${run_folder%/subagents/*}"
+    key=$(printf '%s' "$envelope_root" | sha256sum | cut -c1-16)
+    run_hash=$(printf '%s' "$run_id" | sha256sum | cut -c1-8)
 
     # Since #2078 the child log writes an authorization start and result per
     # tool call. It no longer writes "tool start" or "tool [...] result" lines.
@@ -2812,19 +2834,44 @@ assert_subagent_session_scratch_disposable() {
     [[ "${#call_previews[@]}" -eq 1 ]] || return 1
     [[ "${call_previews[0]}" == *"tempfile.gettempdir()"* ]] || return 1
 
+    # The child answer must name the managed temp folder of this run.
+    local child_answers expected_temp_dir
+    local -a temp_dirs
+    child_answers=$(cli_child_answers "$TRIAL_RAW/cli-session.log")
+    mapfile -t temp_dirs < <(grep -aoE "/tmp/netclaw-[0-9]+/$key/c$run_hash([^[:alnum:]_]|$)" <<<"$child_answers" \
+        | sed -E "s#(/c$run_hash).*#\1#" | sort -u)
+    if [[ "${#temp_dirs[@]}" -ne 1 ]]; then
+        echo "scratch: the child answer that the parent read names no managed temp folder of run $run_id" >&2
+        return 1
+    fi
+    expected_temp_dir="${temp_dirs[0]}"
+
     # The command wrote its real output to a probe file in gettempdir(). The
     # child log holds no command output, and the child could report the temp
     # path from its context without running anything. The probe is on disk
     # evidence: it exists only if gettempdir() resolved to the managed folder,
-    # and it holds the path that the command saw. A missing file reads as an
-    # empty string and fails the comparison.
-    local probe="${child_log%/logs/session.log}/tmp/eval-probe"
-    [[ "$(< "$probe")" == "$expected_temp_dir" ]] || return 1
+    # and it holds the path that the command saw. The folder is in the
+    # container, not below EVAL_HOME, so docker exec reads it. A missing probe
+    # fails this trial only. A docker failure makes it inconclusive. docker exec
+    # itself exits 1 for a missing container, so the probe test uses its own
+    # code 3, and only code 3 means "no probe".
+    local probe="$expected_temp_dir/eval-probe" probe_rc=0 probe_text
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" sh -c '[ -f "$1" ] || exit 3' sh "$probe" \
+        || probe_rc=$?
+    if [[ "$probe_rc" -eq 3 ]]; then
+        echo "scratch: the probe file $probe is missing in the container" >&2
+        return 1
+    elif [[ "$probe_rc" -ne 0 ]]; then
+        echo "scratch: docker exec could not check $probe (exit $probe_rc)" >&2
+        return 2
+    fi
+    probe_text=$(docker exec --user netclaw "$EVAL_CONTAINER_NAME" cat "$probe") || return 2
+    if [[ "$probe_text" != "$expected_temp_dir" ]]; then
+        echo "scratch: the probe file $probe holds '$probe_text', not the folder path" >&2
+        return 1
+    fi
 
-    # The child answer and the parent reply must both return the probed path.
-    local child_answers
-    child_answers=$(cli_child_answers "$TRIAL_RAW/cli-session.log")
-    grep -aFq "$expected_temp_dir" <<<"$child_answers" || return 1
+    # The parent reply must also return the probed path.
     jq -r '.response // ""' "$STDOUT_FILE" | grep -aFq "$expected_temp_dir"
 }
 
