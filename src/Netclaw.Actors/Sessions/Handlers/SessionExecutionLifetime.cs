@@ -110,6 +110,7 @@ internal sealed class SessionExecutionLifetime(ITimerScheduler timers, IActorRef
     private Task? _toolTask;
     private bool _toolStopRequested;
     private IActorRef? _restartDrainReplyTo;
+    private string _restartDrainReason = string.Empty;
     private DateTimeOffset? _restartInterruptionAt;
     // The reminder wakes a session that only owes a child result. Its pending inputs, if any, wait behind an approval
     // and do not resume.
@@ -120,6 +121,7 @@ internal sealed class SessionExecutionLifetime(ITimerScheduler timers, IActorRef
     private bool _idlePassivationAfterWaitingInput;
 
     public bool RestartDrainRequested => _restartDrainReplyTo is not null;
+    public string RestartDrainReason => _restartDrainReason;
 
     // The idle handler closed a parked batch while an acknowledged input waited behind it. The input runs first,
     // because nothing would rebuild it after passivation. The idle decision completes when that work ends.
@@ -137,19 +139,22 @@ internal sealed class SessionExecutionLifetime(ITimerScheduler timers, IActorRef
 
     public RestartAction RequestRestart(
         IActorRef replyTo,
+        string reason,
         SessionPhase phase,
-        bool hasActiveTurn,
         bool hasBufferedContinuation,
         bool canParkDurableApprovals)
     {
         _restartDrainReplyTo = replyTo;
+        _restartDrainReason = reason;
         if (phase == SessionPhase.Ready)
             return RestartAction.EnterPassivation;
 
         if (TryStopDurableApprovalWaits(phase, hasBufferedContinuation, canParkDurableApprovals))
             return RestartAction.StopToolTask;
 
-        if (phase == SessionPhase.Processing && HasLiveModel && hasActiveTurn)
+        // A tool batch clears the selected inputs, but the model call after it is still a live call of the turn.
+        // The grace period applies to each live model call, so that a tool loop cannot hold the drain (#2601).
+        if (phase == SessionPhase.Processing && HasLiveModel)
         {
             timers.StartSingleTimer(
                 RestartModelGraceTimerKey,
@@ -171,10 +176,9 @@ internal sealed class SessionExecutionLifetime(ITimerScheduler timers, IActorRef
            && canParkDurableApprovals
            && RequestToolStop();
 
-    public long? PlanRestartModelStop(RestartModelGraceExpired message, SessionPhase phase, bool hasActiveTurn)
+    public long? PlanRestartModelStop(RestartModelGraceExpired message, SessionPhase phase)
         => RestartDrainRequested
            && phase == SessionPhase.Processing
-           && hasActiveTurn
            && CanDispatchPreparedModel(message.CallId)
             ? message.CallId
             : null;
@@ -220,6 +224,21 @@ internal sealed class SessionExecutionLifetime(ITimerScheduler timers, IActorRef
     }
 
     public void ClearRestartReminderEligibility() => _restartInterruptionAt = null;
+
+    /// <summary>
+    /// The notice that tells the person that a restart drain stopped the turn, or null when the restart reminder
+    /// resumes the turn. The turn resumes only when the reminder replays the inputs of the turn, so
+    /// <paramref name="pendingTurnInputCount"/> counts the selected inputs of the stopped turn that stay pending.
+    /// <paramref name="drainReason"/> is <see cref="Protocol.PrepareForDaemonRestart.Reason"/>.
+    /// </summary>
+    internal static string? RestartStoppedTurnNotice(
+        ReminderEligibility eligibility,
+        int pendingTurnInputCount,
+        string drainReason)
+        => eligibility == ReminderEligibility.Eligible && pendingTurnInputCount > 0
+            ? null
+            : $"Netclaw stopped this turn because the daemon is {(drainReason == "daemon-stop" ? "stopping" : "restarting")}. "
+              + "The turn did not finish, and it will not continue by itself. Send a message to continue.";
 
     public PassivationStart BeginPassivation(bool hasTrackedJobs, bool managerAvailable, bool observerAvailable)
     {
