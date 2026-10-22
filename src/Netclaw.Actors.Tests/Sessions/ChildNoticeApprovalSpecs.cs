@@ -129,60 +129,54 @@ public sealed class ChildNoticeApprovalSpecs(ITestOutputHelper output) : ChildNo
         await SendAsync(sessionId, "probe:p1", Operator(Alice));
         var prompt = await FishApprovalAsync(first, "probe-p1");
 
-        try
+        // The first child ends with success while its result write is held, so its run is terminal without a notice.
+        Preparation.HoldNext();
+        oneGate.TrySetResult();
+        await Preparation.Entered.Task.WaitAsync(Deadline, Cancellation);
+
+        // The crash ends the second child. The recovery records it as lost and admits its notice behind the prompt.
+        // The recovery prepares the first result again, and the spec holds that write too. The spec never releases
+        // either held write: their sessions stop, and a late write could land after the cleanup of the temp folder.
+        // The session that the reminder wakes prepares the first result without a hold and admits its notice.
+        await StopAsync(await ResolveSessionAsync(sessionId));
+        Preparation.HoldNext();
+        await JoinAsync(sessionId);
+        await AwaitAssertAsync(() => Assert.Single(NoticesFor(journal, two.Run.RunId)), Deadline, cancellationToken: Cancellation);
+        Assert.Empty(NoticesFor(journal, one.Run.RunId));
+        AssertNoAbandonment(journal);
+
+        // The daemon drains the idle session. The held run owes a result, so the drain returns a restart reminder.
+        var session = await ResolveSessionAsync(sessionId);
+        var stopped = CreateTestProbe();
+        stopped.Watch(session);
+        var drained = await AskManagerAsync<DaemonRestartPrepared>(new PrepareForDaemonRestart(sessionId, "daemon-stop"));
+        var reminder = drained.RestartReminder;
+        if (reminder is null)
+            Assert.Fail("The drain returned no restart reminder, but a run owes its result.");
+        await stopped.ExpectTerminatedAsync(session, Deadline, cancellationToken: Cancellation);
+        var requestsBeforeReminder = Clients.Parent.ReceivedMessages.Count;
+
+        // Act: the reminder wakes the recovered session. A join after it shows the phase that the reminder left.
+        AssertAck(await SendRestartReminderAsync(sessionId, reminder));
+        await JoinAsync(sessionId);
+
+        // Assert: the prompt is still parked, so no turn runs.
+        var phase = await PhaseOfAsync(sessionId);
+        Assert.True(phase == "Ready", $"The reminder started a turn while the approval was parked. Phase: {phase}.");
+        Assert.Equal(requestsBeforeReminder, Clients.Parent.ReceivedMessages.Count);
+        Assert.Empty(ApprovalTool.Contexts);
+        AssertNoAbandonment(journal);
+
+        // The answer ends the wait. Then both notices run once.
+        AssertAck(await AnswerAsync(sessionId, prompt.CallId, Alice));
+        await AwaitAssertAsync(() => Assert.Single(ApprovalTool.Contexts), Deadline, cancellationToken: Cancellation);
+        await AwaitAssertAsync(() =>
         {
-            // The first child ends with success while its result write is held, so its run is terminal without a notice.
-            Preparation.HoldNext();
-            oneGate.TrySetResult();
-            await Preparation.Entered.Task.WaitAsync(Deadline, Cancellation);
-
-            // The crash ends the second child. The recovery records it as lost and admits its notice behind the prompt.
-            // The recovery prepares the first result again, and the spec holds that write too.
-            await StopAsync(await ResolveSessionAsync(sessionId));
-            Preparation.HoldNext();
-            await JoinAsync(sessionId);
-            await AwaitAssertAsync(() => Assert.Single(NoticesFor(journal, two.Run.RunId)), Deadline, cancellationToken: Cancellation);
-            Assert.Empty(NoticesFor(journal, one.Run.RunId));
-            AssertNoAbandonment(journal);
-
-            // The daemon drains the idle session. The held run owes a result, so the drain returns a restart reminder.
-            var session = await ResolveSessionAsync(sessionId);
-            var stopped = CreateTestProbe();
-            stopped.Watch(session);
-            var drained = await AskManagerAsync<DaemonRestartPrepared>(new PrepareForDaemonRestart(sessionId, "daemon-stop"));
-            var reminder = drained.RestartReminder;
-            if (reminder is null)
-                Assert.Fail("The drain returned no restart reminder, but a run owes its result.");
-            await stopped.ExpectTerminatedAsync(session, Deadline, cancellationToken: Cancellation);
-            var requestsBeforeReminder = Clients.Parent.ReceivedMessages.Count;
-
-            // Act: the reminder wakes the recovered session. A join after it shows the phase that the reminder left.
-            AssertAck(await SendRestartReminderAsync(sessionId, reminder));
-            await JoinAsync(sessionId);
-
-            // Assert: the prompt is still parked, so no turn runs.
-            var phase = await PhaseOfAsync(sessionId);
-            Assert.True(phase == "Ready", $"The reminder started a turn while the approval was parked. Phase: {phase}.");
-            Assert.Equal(requestsBeforeReminder, Clients.Parent.ReceivedMessages.Count);
-            Assert.Empty(ApprovalTool.Contexts);
-            AssertNoAbandonment(journal);
-
-            // The answer ends the wait. Then both notices run once.
-            AssertAck(await AnswerAsync(sessionId, prompt.CallId, Alice));
-            await AwaitAssertAsync(() => Assert.Single(ApprovalTool.Contexts), Deadline, cancellationToken: Cancellation);
-            Preparation.Release.TrySetResult();
-            await AwaitAssertAsync(() =>
-            {
-                Assert.Single(NoticesFor(journal, one.Run.RunId));
-                Assert.Single(NoticesFor(journal, two.Run.RunId));
-                Assert.All(new[] { one, two }, accepted => Assert.Equal(1,
-                    ConsumptionCount(journal, NoticesFor(journal, accepted.Run.RunId).Single().InputId)));
-            }, Deadline, cancellationToken: Cancellation);
-        }
-        finally
-        {
-            Preparation.Release.TrySetResult();
-        }
+            Assert.Single(NoticesFor(journal, one.Run.RunId));
+            Assert.Single(NoticesFor(journal, two.Run.RunId));
+            Assert.All(new[] { one, two }, accepted => Assert.Equal(1,
+                ConsumptionCount(journal, NoticesFor(journal, accepted.Run.RunId).Single().InputId)));
+        }, Deadline, cancellationToken: Cancellation);
     }
 
     private static void AssertNoAbandonment(AcceptanceFault journal)
