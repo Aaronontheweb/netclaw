@@ -248,7 +248,10 @@ CLI_TOOL_RECORD = re.compile(r"(\S+) call_id=(\S+) (args|result)=(.*)\Z", re.DOT
 # holds no child output, so the file_read result is the only record of the
 # child answer that the parent received.
 CHILD_RESULT_HEADER = "# Child result\n"
-CHILD_RESULT_FILE = re.compile(r"/subagents/([0-9a-f]+)/result\.md\Z")
+CHILD_RESULT_FILE = re.compile(r"(?:^|/)subagents/([0-9a-f]+)/result\.md\Z")
+# A ranged file_read (StartLine or Limit above 0) puts "{n,6}\t" before each
+# line (FileReadTool.ReadLinesAsync). A whole-file read does not.
+RANGED_LINE_NUMBER = re.compile(r"^\s*\d+\t", re.MULTILINE)
 CHILD_RESULT_FIELD = re.compile(r"^- (agent|run|outcome): (.*)$", re.MULTILINE)
 CHILD_RESULT_OUTPUT = "\n## Output\n"
 CHILD_RESULT_WORKING_CONTEXT = "\n## Working context\n"
@@ -281,16 +284,30 @@ def cli_tool_records(text):
             yield kind, match.group(1), match.group(2), match.group(4)
 
 
-def call_path(arguments):
-    """Return the Path argument of a tool call, or None."""
+def call_arguments(arguments):
+    """Return the arguments of a tool call as a dict. Text that is not a JSON object gives {}."""
     try:
         values = json.loads(arguments)
     except ValueError:
-        return None
-    if not isinstance(values, dict):
-        return None
+        return {}
+    return values if isinstance(values, dict) else {}
+
+
+def call_path(arguments):
+    """Return the Path argument of a tool call, or None."""
+    values = call_arguments(arguments)
     path = values.get("Path", values.get("path"))
     return path if isinstance(path, str) else None
+
+
+def is_ranged_read(arguments):
+    """True when file_read gets StartLine or Limit above 0, as FileReadTool treats them."""
+    values = call_arguments(arguments)
+    for name in ("StartLine", "Limit"):
+        value = values.get(name, values.get(name[0].lower() + name[1:]))
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            return True
+    return False
 
 
 def accepted_spawn_runs(text):
@@ -347,12 +364,12 @@ def child_results(text):
             path = call_path(payload)
             match = CHILD_RESULT_FILE.search(path) if path else None
             if match and match.group(1) in runs:
-                reads[call_id] = (match.group(1), path)
+                reads[call_id] = (match.group(1), path, is_ranged_read(payload))
             continue
         if call_id not in reads:
             continue
-        run_id, path = reads.pop(call_id)
-        parsed = parse_child_result(payload)
+        run_id, path, ranged = reads.pop(call_id)
+        parsed = parse_child_result(RANGED_LINE_NUMBER.sub("", payload) if ranged else payload)
         if parsed is None or parsed["run_id"] != run_id:
             continue
         results.append({**parsed, "call_id": call_id, "path": path})

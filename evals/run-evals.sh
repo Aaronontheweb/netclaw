@@ -1678,13 +1678,15 @@ stdout_response_not_contains() {
 # lines. That text is the child's, not the parent's. A pattern about the parent
 # reply must not match it. trial_evidence.py removes the exact result text that
 # the CLI session log records. Tool call lines stay excluded as in
-# stdout_response_contains. Exit 2: the child text could not be removed, so the
-# trial is inconclusive.
+# stdout_response_contains. A check_agent_run result of a terminal run holds the
+# full child answer in its "summary" field. It is one JSON line, so the line is
+# excluded too. Exit 2: the child text could not be removed, so the trial is
+# inconclusive.
 stdout_parent_text() {
     local text
     text=$(python3 "$TRIAL_EVIDENCE_PY" parent-stdout --stdout "$STDOUT_FILE" \
         --cli-log "$TRIAL_RAW/cli-session.log") || return 2
-    grep -av '^\[tool:call\]' <<<"$text" || true
+    grep -av -e '^\[tool:call\]' -e '^\[tool:result\] check_agent_run ' <<<"$text" || true
 }
 
 stdout_parent_text_contains() {
@@ -2850,10 +2852,13 @@ assert_subagent_session_scratch_disposable() {
     # evidence: it exists only if gettempdir() resolved to the managed folder,
     # and it holds the path that the command saw. The folder is in the
     # container, not below EVAL_HOME, so docker exec reads it. A missing probe
-    # fails this trial only. A docker failure makes it inconclusive.
+    # fails this trial only. A docker failure makes it inconclusive. docker exec
+    # itself exits 1 for a missing container, so the probe test uses its own
+    # code 3, and only code 3 means "no probe".
     local probe="$expected_temp_dir/eval-probe" probe_rc=0 probe_text
-    docker exec --user netclaw "$EVAL_CONTAINER_NAME" test -f "$probe" || probe_rc=$?
-    if [[ "$probe_rc" -eq 1 ]]; then
+    docker exec --user netclaw "$EVAL_CONTAINER_NAME" sh -c '[ -f "$1" ] || exit 3' sh "$probe" \
+        || probe_rc=$?
+    if [[ "$probe_rc" -eq 3 ]]; then
         echo "scratch: the probe file $probe is missing in the container" >&2
         return 1
     elif [[ "$probe_rc" -ne 0 ]]; then

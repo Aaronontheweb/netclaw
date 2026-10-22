@@ -103,19 +103,20 @@ def result_path(run=RUN, envelope=ENVELOPE_ROOT):
     return f"{envelope}/subagents/{run}/result.md"
 
 
-def read_args(path):
-    return json.dumps({"Path": path, "_rationale": "Read the child result."}, separators=(",", ":"))
+def read_args(path, **extra):
+    return json.dumps({"Path": path, **extra, "_rationale": "Read the child result."}, separators=(",", ":"))
 
 
 def read_records(output, outcome="completed", agent="headless-analyst", run=RUN, path=None, text=None,
-                 envelope=ENVELOPE_ROOT, call_id="call_read"):
+                 envelope=ENVELOPE_ROOT, call_id="call_read", extra_args=None):
     """The file_read call and result of a child result in the CLI session log.
 
     `text` replaces the whole result text, for a test about the format.
+    `extra_args` adds call arguments such as StartLine and Limit.
     """
     text = result_md(output, outcome, agent, run, envelope) if text is None else text
     return (record("TOOL_CALL", f"file_read call_id={call_id} args="
-                   + read_args(path or result_path(run, envelope)))
+                   + read_args(path or result_path(run, envelope), **(extra_args or {})))
             + record("TOOL_RESULT", f"file_read call_id={call_id} result=" + text))
 
 
@@ -220,6 +221,31 @@ class ChildResultTests(unittest.TestCase):
                           "output": BRIEF.strip(), "call_id": "call_read", "path": result_path()},
                          results[0])
 
+    def test_ranged_read_with_line_numbers_gives_the_child_result(self):
+        # Bug caught: a file_read with StartLine or Limit puts "{n,6}\t" before
+        # each line (FileReadTool.ReadLinesAsync). The parse saw no header and
+        # dropped the result.
+        text = result_md(BRIEF)
+        numbered = "\n".join(f"{n:6}\t{line}" for n, line in enumerate(text.split("\n")[:-1], start=1))
+        for extra in ({"StartLine": 1, "Limit": 200}, {"Limit": 200}, {"StartLine": 1}):
+            with self.subTest(extra=extra):
+                log = accepted_result() + read_records(BRIEF, text=numbered, extra_args=extra)
+                results = trial_evidence.child_results(log)
+                self.assertEqual(1, len(results))
+                self.assertEqual(BRIEF.strip(), results[0]["output"])
+
+    def test_numbered_text_of_a_whole_file_read_is_not_a_child_result(self):
+        # A whole-file read prints no line numbers. Numbered text there is not result.md.
+        numbered = "\n".join(f"{n:6}\t{line}" for n, line in enumerate(result_md(BRIEF).split("\n"), start=1))
+        for extra in ({}, {"StartLine": 0, "Limit": 0}):
+            with self.subTest(extra=extra):
+                log = accepted_result() + read_records(BRIEF, text=numbered, extra_args=extra)
+                self.assertEqual([], trial_evidence.child_results(log))
+
+    def test_relative_result_path_counts(self):
+        log = accepted_result() + read_records(BRIEF, path=f"subagents/{RUN}/result.md")
+        self.assertEqual(1, len(trial_evidence.child_results(log)))
+
     def test_notice_turn_without_a_read_gives_no_child_result(self):
         log = self.LOG.replace("TOOL_RESULT: file_read", "TOOL_RESULT: file_list")
         self.assertEqual([], trial_evidence.child_results(log))
@@ -255,8 +281,9 @@ class HeadlessTests(unittest.TestCase):
     """
 
     def run_check(self, *, parent=PARENT_ANSWER, child=CHILD_ANSWER_WITH_INCLUDE, call=True, done=True,
-                  child_result=True, session_log=None):
+                  child_result=True, session_log=None, status_line=""):
         stdout = (SPAWN_CALL if call else "") + ACCEPTED_LINE + "Delegated to **headless-analyst**.\n" + WAITING_LINE
+        stdout += status_line
         stdout += DONE_LINE if done else ""
         stdout += child_block(child) if child_result else ""
         stdout += parent
@@ -272,6 +299,9 @@ class HeadlessTests(unittest.TestCase):
     def check(self, **kwargs):
         return self.run_check(**kwargs).returncode == 0
 
+    def code(self, **kwargs):
+        return self.run_check(**kwargs).returncode
+
     def test_child_answer_with_which_and_include_passes(self):
         # Bug caught: 'which.*include' scanned the child answer. Before #2515
         # it was on the child_run_result line. Since #2515 it is a file_read
@@ -286,24 +316,36 @@ class HeadlessTests(unittest.TestCase):
 
     def test_parent_question_about_what_to_include_fails(self):
         # The patterns still catch a parent that asks the user.
-        self.assertFalse(self.check(parent="Which items should I include in the notes? Each is an assumption.\n"))
-        self.assertFalse(self.check(parent="What do you want me to include? An assumption is not possible.\n"))
+        self.assertEqual(1, self.code(parent="Which items should I include in the notes? Each is an assumption.\n"))
+        self.assertEqual(1, self.code(parent="What do you want me to include? An assumption is not possible.\n"))
 
     def test_parent_request_for_clarification_fails(self):
-        self.assertFalse(self.check(parent=PARENT_ANSWER + "Please clarify the audience.\n"))
-        self.assertFalse(self.check(parent=PARENT_ANSWER + "I need a bit more information first.\n"))
+        self.assertEqual(1, self.code(parent=PARENT_ANSWER + "Please clarify the audience.\n"))
+        self.assertEqual(1, self.code(parent=PARENT_ANSWER + "I need a bit more information first.\n"))
 
     def test_child_text_does_not_give_the_assumption_word_to_the_parent(self):
         # The positive pattern was a parent-text check before the async spawn:
         # the child answer was not in the stdout. It stays one.
-        self.assertFalse(self.check(parent="Done. See the notes above.\n", child="### Assumptions\n\n1. Include it."))
+        self.assertEqual(1, self.code(parent="Done. See the notes above.\n", child="### Assumptions\n\n1. Include it."))
 
     def test_child_answer_with_a_clarification_phrase_passes(self):
         self.assertTrue(self.check(child=CHILD_ANSWER_WITH_INCLUDE + "No need to clarify; please clarify nothing."))
 
     def test_run_without_a_delegation_or_a_finished_child_fails(self):
-        self.assertFalse(self.check(call=False))
-        self.assertFalse(self.check(done=False))
+        self.assertEqual(1, self.code(call=False))
+        self.assertEqual(1, self.code(done=False))
+
+    def test_terminal_check_agent_run_summary_is_not_parent_text(self):
+        # A check_agent_run result of a terminal run holds the full child
+        # answer in "summary" (LlmSessionActor.ChildStatus), on one line.
+        status = json.dumps({"run_id": RUN, "state": "terminal", "terminal": True, "outcome": "completed",
+                             "summary": "Pressed keys, which I chose to include. Please clarify nothing."},
+                            separators=(",", ":"))
+        line = f"[tool:result] check_agent_run \u2192 {status}\n"
+        self.assertTrue(self.check(status_line=line))
+        # The parent text still needs its own assumption word.
+        self.assertEqual(1, self.code(status_line=line.replace("Pressed", "Assumption: pressed"),
+                                      parent="Done. See the notes above.\n"))
 
     def test_child_read_that_the_stdout_does_not_hold_is_inconclusive(self):
         # The session log and the stdout disagree, so the child text cannot be
@@ -358,6 +400,9 @@ class PrecedenceTests(unittest.TestCase):
     def check(self, **kwargs):
         return self.run_check(**kwargs).returncode == 0
 
+    def code(self, **kwargs):
+        return self.run_check(**kwargs).returncode
+
     def test_bold_subject_line_in_the_parent_reply_passes(self):
         # Bug caught: a check that wants a line that starts with "Subject:".
         for reply in (BOLD_REPLY, BOLD_INLINE_REPLY, PLAIN_REPLY):
@@ -374,22 +419,22 @@ class PrecedenceTests(unittest.TestCase):
         self.assertTrue(self.check(child=EMAIL))
 
     def test_parent_reply_without_a_subject_line_fails(self):
-        self.assertFalse(self.check(reply="Done. The email is in the child result above.\n" + CTA + "\n"))
+        self.assertEqual(1, self.code(reply="Done. The email is in the child result above.\n" + CTA + "\n"))
 
     def test_parent_reply_without_the_mission_call_line_fails(self):
-        self.assertFalse(self.check(reply="**Subject:** Reducing toil\n\nHi Casey,\n\nCan we talk?\n"))
+        self.assertEqual(1, self.code(reply="**Subject:** Reducing toil\n\nHi Casey,\n\nCan we talk?\n"))
 
     def test_child_text_does_not_count_for_the_parent(self):
         # Bug caught: the old check read the child result and the parent reply
         # as one text. A child email and a parent reply with no email gave a pass.
-        self.assertFalse(self.check(child=EMAIL, reply="The worker returned the email above."))
+        self.assertEqual(1, self.code(child=EMAIL, reply="The worker returned the email above."))
 
     def test_parent_text_does_not_count_for_the_child(self):
-        self.assertFalse(self.check(child="", reply=PLAIN_REPLY))
+        self.assertEqual(1, self.code(child="", reply=PLAIN_REPLY))
 
     def test_child_that_did_not_complete_fails(self):
-        self.assertFalse(self.check(outcome="failed"))
-        self.assertFalse(self.check(stdout=SPAWN_CALL))
+        self.assertEqual(1, self.code(outcome="failed"))
+        self.assertEqual(1, self.code(stdout=SPAWN_CALL))
 
     def test_child_answer_in_the_result_file_read_passes(self):
         # Bug caught: the old check read the child_run_result record. Since
@@ -401,44 +446,44 @@ class PrecedenceTests(unittest.TestCase):
 
     def test_accepted_spawn_result_without_a_child_result_fails(self):
         # The run ended before the child answered: no result.md read.
-        self.assertFalse(self.check(session_child=accepted_result()))
+        self.assertEqual(1, self.code(session_child=accepted_result()))
 
     def test_notice_without_a_read_of_the_result_file_fails(self):
         # The child ended and the notice came, but the parent did not read
         # result.md. The parent did not get the child answer.
         session = (accepted_result() + record("SUBAGENT_DONE", "name=headless-analyst success=True "
                                               "outcome=completed duration=41.5s"))
-        self.assertFalse(self.check(session_child=session))
+        self.assertEqual(1, self.code(session_child=session))
 
     def test_child_answer_in_the_old_formats_fails(self):
         # The spawn_agent result before the async spawn, and the
         # child_run_result record before #2515. A build that emits them and no
         # result.md read is not the build under test.
-        self.assertFalse(self.check(session_child=old_spawn_result(BRIEF)))
-        self.assertFalse(self.check(session_child=accepted_result() + old_child_run_result(BRIEF)))
+        self.assertEqual(1, self.code(session_child=old_spawn_result(BRIEF)))
+        self.assertEqual(1, self.code(session_child=accepted_result() + old_child_run_result(BRIEF)))
 
     def test_child_result_that_failed_or_is_blank_fails(self):
         for output, outcome in ((BRIEF, "failed"), ("  \n", "completed"), ("", "completed")):
             with self.subTest(outcome=outcome, output=output):
-                self.assertFalse(self.check(child=output, outcome=outcome))
+                self.assertEqual(1, self.code(child=output, outcome=outcome))
 
     def test_child_result_of_a_run_that_spawn_agent_did_not_accept_does_not_count(self):
         other = "1" * 32
         session = accepted_result() + read_records(BRIEF, run=other)
-        self.assertFalse(self.check(session_child=session))
+        self.assertEqual(1, self.code(session_child=session))
 
     def test_result_text_of_another_run_does_not_count(self):
         # The path names the accepted run, but the text is the result of another run.
         session = accepted_result() + read_records(BRIEF, text=result_md(BRIEF, run="1" * 32))
-        self.assertFalse(self.check(session_child=session))
+        self.assertEqual(1, self.code(session_child=session))
 
     def test_read_of_another_file_with_the_child_text_does_not_count(self):
         session = accepted_result() + read_records(
             BRIEF, path=f"{ENVELOPE_ROOT}/subagents/{RUN}/artifacts/result.md")
-        self.assertFalse(self.check(session_child=session))
+        self.assertEqual(1, self.code(session_child=session))
 
     def test_run_without_a_delegation_fails(self):
-        self.assertFalse(self.check(stdout="", child=BRIEF))
+        self.assertEqual(1, self.code(stdout="", child=BRIEF))
 
     # The agent files are judged by the folder state after the trial, not by the
     # text of the tool calls. Each change below leaves the stdout without any
@@ -462,17 +507,17 @@ class PrecedenceTests(unittest.TestCase):
                       'headless-analyst.md","_rationale":"x"})\n')
         for stdout in (EDIT_LINE, shell_edit, ""):
             with self.subTest(stdout=stdout[:30]):
-                self.assertFalse(self.check(stdout=stdout + ASYNC_STDOUT, change_agents=edit))
+                self.assertEqual(1, self.code(stdout=stdout + ASYNC_STDOUT, change_agents=edit))
 
     def test_added_agent_file_fails(self):
         # A new file with the same name field can shadow the fixture.
         def add(agents):
             (agents / "a-analyst.md").write_text("---\nname: headless-analyst\n---\nWrite emails.\n")
 
-        self.assertFalse(self.check(change_agents=add))
+        self.assertEqual(1, self.code(change_agents=add))
 
     def test_removed_agent_file_fails(self):
-        self.assertFalse(self.check(change_agents=lambda agents: (agents / "headless-analyst.md").unlink()))
+        self.assertEqual(1, self.code(change_agents=lambda agents: (agents / "headless-analyst.md").unlink()))
 
     def test_missing_agents_folder_fails(self):
         # Bug caught: diff exits 2 for a missing folder, so a parent that ran
@@ -558,24 +603,30 @@ SPAWN_ARGS = {"agent": "disposable-diagnostic",
 
 class ScratchTests(unittest.TestCase):
     def run_check(self, *, child_log=CHILD_LOG, answer=None, reply=None, spawn_calls=None,
-                  child_runs=1, parent_log=PARENT_LOG, parent_newer=False, probe=MANAGED_TMP,
-                  session_child=None, exec_rc=""):
+                  child_runs=1, parent_log=PARENT_LOG, parent_newer=False, probe=None,
+                  session_child=None, exec_rc="", no_probe=False, envelope_name=ENVELOPE, first_run=RUN_ID,
+                  first_temp=None):
         """Build the home folder and the container temp folder of a trial, and run the assertion.
 
         `probe` is the content of eval-probe in the temp folder of the first
-        child run. None means that the command left no probe file.
-        `session_child` replaces the child records of the CLI session log.
-        `exec_rc` makes `docker exec` return that code without a run.
+        child run (default: that folder). `no_probe` means that the command left
+        no probe file. `session_child` replaces the child records of the CLI
+        session log. `exec_rc` makes `docker exec` return that code without a
+        run. `envelope_name`, `first_run`, and `first_temp` set the envelope,
+        the run id, and the temp folder of the first child run.
         """
-        answer = answer if answer is not None else f"```\n{MANAGED_TMP}\n```"
-        reply = reply if reply is not None else f"The subagent returned:\n{MANAGED_TMP}"
+        first_temp = first_temp or MANAGED_TMP
+        probe = None if no_probe else (probe if probe is not None else first_temp)
+        answer = answer if answer is not None else f"```\n{first_temp}\n```"
+        reply = reply if reply is not None else f"The subagent returned:\n{first_temp}"
         calls = [SPAWN_ARGS] if spawn_calls is None else spawn_calls
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             home = root / "home"
             container_tmp = root / "container-tmp"
             container_tmp.mkdir()
-            envelope = home / "data" / "sessions" / ENVELOPE
+            envelope = home / "data" / "sessions" / envelope_name
+            envelope_root = f"/home/netclaw/.netclaw/sessions/{envelope_name}"
             marker = root / "marker"
             marker.write_text("")
             os.utime(marker, (1000, 1000))
@@ -585,12 +636,12 @@ class ScratchTests(unittest.TestCase):
                 if parent_newer:
                     os.utime(envelope / "logs" / "session.log", (4_000_000_000, 4_000_000_000))
             for index in range(child_runs):
-                run_dir = envelope / "subagents" / other_run_id(index)
+                run_dir = envelope / "subagents" / (first_run if index == 0 else other_run_id(index))
                 (run_dir / "logs").mkdir(parents=True)
                 (run_dir / "logs" / "session.log").write_text(child_log)
                 # Since #2559 the temp folder is in the container /tmp, not in the run folder.
                 # Every run wrote a probe with its own path, except the first run when `probe` says otherwise.
-                temp_dir = container_tmp / managed_tmp(index).removeprefix("/tmp/")
+                temp_dir = container_tmp / (first_temp if index == 0 else managed_tmp(index)).removeprefix("/tmp/")
                 temp_dir.mkdir(parents=True)
                 content = probe if index == 0 else managed_tmp(index)
                 if content is not None:
@@ -599,7 +650,7 @@ class ScratchTests(unittest.TestCase):
             raw.mkdir()
             (raw / "cli-session.log").write_text(
                 record("PROMPT", "Use spawn_agent with agent disposable-diagnostic")
-                + (spawn_result(answer, agent="disposable-diagnostic", envelope=SCRATCH_ENVELOPE_ROOT, run=RUN_ID)
+                + (spawn_result(answer, agent="disposable-diagnostic", envelope=envelope_root, run=first_run)
                    if session_child is None else session_child)
                 + record("ASSISTANT_FINAL", reply))
             stdout = root / "stdout.json"
@@ -620,6 +671,9 @@ class ScratchTests(unittest.TestCase):
     def check(self, **kwargs):
         return self.run_check(**kwargs).returncode == 0
 
+    def code(self, **kwargs):
+        return self.run_check(**kwargs).returncode
+
     def test_child_that_returns_the_managed_path_passes(self):
         self.assertTrue(self.check())
 
@@ -632,12 +686,12 @@ class ScratchTests(unittest.TestCase):
 
     def test_path_in_the_old_formats_only_fails(self):
         answer = f"```\n{MANAGED_TMP}\n```"
-        self.assertFalse(self.check(session_child=old_spawn_result(answer)))
-        self.assertFalse(self.check(session_child=accepted_result("disposable-diagnostic", RUN_ID)
+        self.assertEqual(1, self.code(session_child=old_spawn_result(answer)))
+        self.assertEqual(1, self.code(session_child=accepted_result("disposable-diagnostic", RUN_ID)
                                     + old_child_run_result(answer, agent="disposable-diagnostic")))
 
     def test_accepted_result_without_a_child_result_fails(self):
-        self.assertFalse(self.check(session_child=accepted_result("disposable-diagnostic", RUN_ID)))
+        self.assertEqual(1, self.code(session_child=accepted_result("disposable-diagnostic", RUN_ID)))
 
     def test_path_outside_the_answer_does_not_count(self):
         # The path is in the working context of result.md, not in the child answer.
@@ -645,35 +699,52 @@ class ScratchTests(unittest.TestCase):
                          envelope=SCRATCH_ENVELOPE_ROOT) + f"- read: {MANAGED_TMP}/eval-probe\n"
         session = accepted_result("disposable-diagnostic", RUN_ID) + read_records(
             "", run=RUN_ID, envelope=SCRATCH_ENVELOPE_ROOT, text=text)
-        self.assertFalse(self.check(session_child=session))
+        self.assertEqual(1, self.code(session_child=session))
 
     def test_probe_in_the_old_run_folder_layout_fails(self):
         # Bug caught: the old check read <run folder>/tmp/eval-probe. Since
         # #2559 the temp folder is /tmp/netclaw-<uid>/<key>/c<hash> in the
         # container. A child that answers the old folder fails.
         old = f"{SCRATCH_ENVELOPE_ROOT}/subagents/{RUN_ID}/tmp"
-        self.assertFalse(self.check(answer=f"```\n{old}\n```", reply=old, probe=old))
+        self.assertEqual(1, self.code(answer=f"```\n{old}\n```", reply=old, probe=old))
 
     def test_temp_folder_of_another_run_or_session_fails(self):
         # The path has the managed shape, but its key or its run hash belongs
         # to another envelope or another run.
         for other in (managed_tmp(0, envelope_root=SCRATCH_ENVELOPE_ROOT + "x"), managed_tmp(5)):
             with self.subTest(other=other):
-                self.assertFalse(self.check(answer=f"```\n{other}\n```", reply=other, probe=other))
+                self.assertEqual(1, self.code(answer=f"```\n{other}\n```", reply=other, probe=other))
+
+    def test_temp_folder_of_real_evidence_passes(self):
+        # Literal values of trial 01 of the evals-child-consent run. The
+        # harness computes the key and the run hash with its own code, so this
+        # test does not copy the hash rule. The daemon gave this folder.
+        envelope = "signalr_df051119ee374549870f27cd8ca851b9-b1f113e417bb75f0"
+        real = "/tmp/netclaw-1654/5fef5810cd5deea5/cff2513a8"
+        self.assertTrue(self.check(envelope_name=envelope, first_run="1a7af4c3467d48b7a826ac2010c4e6ba",
+                                   first_temp=real))
+        self.assertEqual(1, self.code(envelope_name=envelope, first_run="1a7af4c3467d48b7a826ac2010c4e6bb",
+                                      first_temp=real))
 
     def test_missing_probe_fails_the_trial_and_the_harness_goes_on(self):
         # Bug caught: `$(< "$probe")` on a missing file stopped the whole run
         # under `set -e` (trial 01 of the evals-child-consent run). Now the
         # trial fails with a message, and the harness runs the next line.
-        completed = self.run_check(probe=None)
+        completed = self.run_check(no_probe=True)
         self.assertEqual(1, completed.returncode)
         self.assertIn("after the assertion", completed.stdout)
         self.assertIn(f"probe file {MANAGED_TMP}/eval-probe is missing", completed.stderr)
 
     def test_docker_failure_is_inconclusive(self):
-        completed = self.run_check(exec_rc="125")
-        self.assertEqual(2, completed.returncode)
-        self.assertIn("after the assertion", completed.stdout)
+        # Bug caught: docker exec exits 1 for a missing container or a daemon
+        # error, the same code as a false `test -f`. The probe test now uses
+        # its own code 3, so exit 1 and exit 125 are inconclusive.
+        for rc in ("1", "125"):
+            with self.subTest(rc=rc):
+                completed = self.run_check(exec_rc=rc)
+                self.assertEqual(2, completed.returncode)
+                self.assertIn("after the assertion", completed.stdout)
+                self.assertIn("could not check", completed.stderr)
 
     def test_truncated_path_in_the_child_log_is_not_used(self):
         # Bug caught: the old check read the path from the log preview, which
@@ -686,25 +757,25 @@ class ScratchTests(unittest.TestCase):
         # The log preview holds the managed path, but the child answered only /tmp.
         log = CHILD_LOG.replace("/home/netclaw/.netclaw/sessions/signalr_7cae4b47d5ce44...", MANAGED_TMP)
         self.assertIn(MANAGED_TMP, log)
-        self.assertFalse(self.check(child_log=log, answer="```\n/tmp\n```", reply="The path is /tmp"))
+        self.assertEqual(1, self.code(child_log=log, answer="```\n/tmp\n```", reply="The path is /tmp"))
 
     def test_wrong_child_answer_fails_when_the_parent_reply_has_the_right_path(self):
         # Bug caught: nothing tested the child-answer line. The parent reply
         # carries the managed path, the probe is right, and the child answered
         # /tmp. Only the child-answer check rejects this trial.
-        self.assertFalse(self.check(answer="```\n/tmp\n```"))
+        self.assertEqual(1, self.code(answer="```\n/tmp\n```"))
 
     def test_wrong_parent_reply_fails_when_the_child_answer_has_the_right_path(self):
-        self.assertFalse(self.check(reply="The path is /tmp"))
+        self.assertEqual(1, self.code(reply="The path is /tmp"))
 
     def test_child_that_reports_the_managed_path_without_a_probe_fails(self):
         # Bug caught: the child knows its assigned temp folder from its context.
         # If gettempdir() returned /tmp, the probe would be in /tmp, not here,
         # and the child could still report the managed path from its context.
-        self.assertFalse(self.check(probe=None))
+        self.assertEqual(1, self.code(no_probe=True))
 
     def test_probe_with_another_path_fails(self):
-        self.assertFalse(self.check(probe="/tmp"))
+        self.assertEqual(1, self.code(probe="/tmp"))
 
     def test_parent_log_is_not_taken_for_the_child_log(self):
         # Bug caught: the pattern */logs/session.log matches the parent log, and
@@ -713,39 +784,39 @@ class ScratchTests(unittest.TestCase):
         self.assertTrue(self.check(parent_newer=True))
 
     def test_run_with_only_a_parent_log_fails(self):
-        self.assertFalse(self.check(child_runs=0))
+        self.assertEqual(1, self.code(child_runs=0))
 
     def test_run_with_two_child_logs_fails(self):
         # Both runs are valid, and the child answer and the parent reply name
         # both paths. Whichever log `find` returns first, only the count rule
         # fails this trial.
         both = f"{managed_tmp(0)}\n{managed_tmp(1)}"
-        self.assertFalse(self.check(child_runs=2, answer=both, reply=both))
+        self.assertEqual(1, self.code(child_runs=2, answer=both, reply=both))
 
     def test_child_log_in_the_format_before_2078_fails(self):
         # The authorization records are the evidence of a shell call now.
-        self.assertFalse(self.check(child_log=OLD_STYLE_LOG))
+        self.assertEqual(1, self.code(child_log=OLD_STYLE_LOG))
 
     def test_child_that_runs_a_second_shell_call_fails(self):
         extra = ("05:13:21.000 [INF] SubAgent [disposable-diagnostic] authorization attempt started "
                  "authorizationAttemptId=auth-x callId=call_second toolName=shell_execute\n")
-        self.assertFalse(self.check(child_log=CHILD_LOG + extra))
+        self.assertEqual(1, self.code(child_log=CHILD_LOG + extra))
 
     def test_parent_reply_without_the_path_fails(self):
-        self.assertFalse(self.check(reply="The subagent completed its diagnostic."))
+        self.assertEqual(1, self.code(reply="The subagent completed its diagnostic."))
 
     def test_task_with_a_temporary_hint_fails(self):
         # The fixture description once said "temporary", and the parent copied it.
         task = dict(SPAWN_ARGS, task="Complete the temporary directory diagnostic and return the path.")
-        self.assertFalse(self.check(spawn_calls=[task]))
+        self.assertEqual(1, self.code(spawn_calls=[task]))
 
     def test_spawn_call_with_a_context_argument_fails(self):
-        self.assertFalse(self.check(spawn_calls=[dict(SPAWN_ARGS, context="Use /tmp.")]))
+        self.assertEqual(1, self.code(spawn_calls=[dict(SPAWN_ARGS, context="Use /tmp.")]))
 
     def test_second_spawn_call_with_a_bad_task_fails(self):
         # Bug caught: the old check read only the first call.
         bad = dict(SPAWN_ARGS, task="Print session_dir and return it.")
-        self.assertFalse(self.check(spawn_calls=[SPAWN_ARGS, bad]))
+        self.assertEqual(1, self.code(spawn_calls=[SPAWN_ARGS, bad]))
 
     def test_fixture_command_writes_the_probe_that_the_assertion_reads(self):
         # Cross-boundary check: run the command of the fixture with TMPDIR set.
