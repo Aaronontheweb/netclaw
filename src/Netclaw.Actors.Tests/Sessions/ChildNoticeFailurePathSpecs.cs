@@ -115,7 +115,7 @@ public sealed class ChildNoticeRefusedNoticeSpecs(ITestOutputHelper output) : Ch
         }
         finally
         {
-            Preparation.Release.TrySetResult();
+            await ReleaseHeldWriteAsync(sessionId, accepted);
         }
     }
 
@@ -145,7 +145,7 @@ public sealed class ChildNoticeRefusedNoticeSpecs(ITestOutputHelper output) : Ch
         }
         finally
         {
-            Preparation.Release.TrySetResult();
+            await ReleaseHeldWriteAsync(sessionId, accepted);
         }
     }
 
@@ -173,7 +173,7 @@ public sealed class ChildNoticeRefusedNoticeSpecs(ITestOutputHelper output) : Ch
         }
         finally
         {
-            Preparation.Release.TrySetResult();
+            await ReleaseHeldWriteAsync(sessionId, accepted);
         }
     }
 
@@ -230,6 +230,17 @@ public sealed class ChildNoticeRefusedNoticeSpecs(ITestOutputHelper output) : Ch
         Assert.Contains(journal.Committed.OfType<ChildRunEvent.TerminalRecorded>(), evt => evt.RunId == accepted.Run.RunId);
         Assert.Empty(NoticesFor(journal, accepted.Run.RunId));
         return (journal, accepted, await ResolveSessionAsync(sessionId));
+    }
+
+    // The released preparation writes result.md on the thread pool, and no actor owns that write. The spec waits for
+    // the file before it returns. A later write would create the run folder again after the base class deletes the
+    // temp folder, and the run would then fail with a temp-root leak.
+    private async Task ReleaseHeldWriteAsync(SessionId sessionId, ChildRunAccepted accepted)
+    {
+        Preparation.Release.TrySetResult();
+        var resultPath = ResultPath(sessionId, accepted);
+        await AwaitAssertAsync(() => Assert.True(File.Exists(resultPath), $"The released preparation must write {resultPath}."),
+            Deadline, cancellationToken: Cancellation);
     }
 
     // A notice that names Bob as the requester of Alice's run. The reducer refuses it.
