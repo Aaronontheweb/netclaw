@@ -2428,8 +2428,15 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
 
         if (TryResumeSlashCommand(pending))
         {
-            if (_phase.Current == SessionPhase.Processing)
-                _input.RestoreWaitingInputs(waiting, _sessionId);
+            // A rejected slash command keeps the session in Ready. The close of its input then starts the queue
+            // (RejectSlashCommand), so the other requesters are queued in each phase (#2587). The validation above
+            // stops at the second requester. RestoreWaitingInputs throws for a damaged record, so the session logs
+            // it and keeps it pending in the journal.
+            var (valid, damaged) = SessionInputFlow.SplitByAuthority(waiting);
+            foreach (var input in damaged)
+                _log.Error("Restart reminder {ReminderId}: pending input {InputId} has a damaged authority",
+                    cmd.Source?.ReminderId, input.InputId);
+            _input.RestoreWaitingInputs(valid, _sessionId);
             return true;
         }
 
@@ -2456,7 +2463,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             return false;
 
         var handled = TryHandleSlashCommand(executableText, first.UserMessage.MediaReferences);
-        return _input.CompleteSlashResume(handled, pending, _sessionId, _phase.Current);
+        return _input.CompleteSlashResume(handled, pending, _sessionId);
     }
 
     private bool ShouldCompact()
@@ -3095,6 +3102,11 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 OpenChildRunIds = _state.GetOpenChildRunIds()
             });
             TryReplyAck();
+            // A rejected command ends no turn, so no turn end starts the queue (#2587). Two paths leave queued input
+            // here in Ready: a restart resume queues the inputs behind the slash command, and a live command closes
+            // a parked approval (AbandonThenActivate) while a fire waits behind it. Start the next queued input as a
+            // turn end does, and admit a ready consent notice first.
+            AdmitConsentNoticeThen(inOpenTurn: false, StartWaitingInputAfterApproval);
         }
 
         CloseActiveInputs(Reply);
