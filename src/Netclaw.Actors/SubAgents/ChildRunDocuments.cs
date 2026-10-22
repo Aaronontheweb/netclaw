@@ -59,7 +59,7 @@ internal static class ChildRunDocuments
         if (result.OutcomeReason is { } reason)
             text.AppendLine($"- reason: {reason.Value}");
         if (terminal.Lost)
-            text.AppendLine("- lost: the child owner stopped before the child sent a final answer");
+            text.AppendLine("- lost: the child stopped before it sent a final answer");
         text.AppendLine($"- log: {storage.LogPath.Value}");
         text.AppendLine($"- artifacts: {storage.ArtifactDirectory.Value}");
         if (!string.IsNullOrWhiteSpace(warning))
@@ -122,6 +122,11 @@ internal static class ChildRunDocuments
             text.Append($" reason={reason.Value}");
         text.Append($" result_file={resultPath}");
         text.AppendLine();
+        // A checkpoint confirmed the effects before it, so only the later effects are uncertain.
+        if (result.OutcomeReason == SubAgentOutcomeReason.OwnerRestarted)
+            text.AppendLine(result.WorkingContext is null
+                ? $"{RestartLoss} Its external effects are uncertain. The result file gives the details."
+                : $"{RestartLoss} Its external effects after the last checkpoint are uncertain. The result file gives the details.");
         if (writeFailure is not null)
             text.AppendLine($"The runtime could not write the result file: {writeFailure} The file can be missing or out of date. Do not rely on it.");
         else
@@ -149,6 +154,10 @@ internal static class ChildRunDocuments
                 File.Delete(temporary);
         }
     }
+
+    /// <summary>The words that tell the parent model why a child run with the reason owner_restarted ended.</summary>
+    public const string RestartLoss =
+        "The parent session restarted (for example, a daemon restart). The child did not survive. The runtime does not start the child again.";
 
     private static string OutcomeWord(SubAgentResult result) => result.Outcome.ToString().ToLowerInvariant();
 }
