@@ -295,6 +295,50 @@ class ChildResultTests(unittest.TestCase):
         self.assertEqual(["PROMPT", "TOOL_RESULT", "ASSISTANT_FINAL"], [kind for kind, _ in records])
         self.assertEqual("The log shows one listing.\n", trial_evidence.parent_stdout(stdout, log))
 
+    def test_quoted_line_in_another_time_format_stays_in_the_result(self):
+        # Only the exact logger format starts a record. This quoted line has
+        # no fraction digits and another offset.
+        quoted = "Log excerpt:\n[2026-10-22T07:00:01+02:00] WARN: which items to include?"
+        log = (record("PROMPT", "Read the log")
+               + record("TOOL_RESULT", "file_read call_id=r1 result=" + quoted)
+               + record("ASSISTANT_FINAL", "Nothing to report."))
+        stdout = f"[tool:result] file_read \u2192 {quoted}\nNothing to report.\n"
+        self.assertEqual(["PROMPT", "TOOL_RESULT", "ASSISTANT_FINAL"],
+                         [kind for kind, _ in trial_evidence.cli_records(log)])
+        text = trial_evidence.parent_stdout(stdout, log)
+        self.assertEqual("Nothing to report.\n", text)
+        self.assertNotIn("which items", text)
+
+    def test_clock_step_back_after_a_tool_result_fails_loudly(self):
+        # The earlier-time rule applies only inside a TOOL_RESULT. After a
+        # clock step back, the next record joins the result. The stdout then
+        # does not hold the result, so the parent text is not silently wrong.
+        log = ("[2026-10-16T05:00:02.0000000+00:00] TOOL_RESULT: skill_load call_id=s1 result=## Skill\n"
+               "[2026-10-16T05:00:01.0000000+00:00] TOOL_RESULT: shell_execute call_id=s2 result=done\n")
+        stdout = "[tool:result] skill_load \u2192 ## Skill\nParent.\n[tool:result] shell_execute \u2192 done\n"
+        with self.assertRaises(trial_evidence.ParentStdoutError):
+            trial_evidence.parent_stdout(stdout, log)
+        # Outside a TOOL_RESULT, an earlier time still starts a new record.
+        other = ("[2026-10-16T05:00:02.0000000+00:00] ASSISTANT_FINAL: one\n"
+                 "[2026-10-16T05:00:01.0000000+00:00] TURN_COMPLETED: turn=1\n")
+        self.assertEqual(["ASSISTANT_FINAL", "TURN_COMPLETED"],
+                         [kind for kind, _ in trial_evidence.cli_records(other)])
+
+    def test_result_that_quotes_a_later_block_does_not_move_the_cursor_wrong(self):
+        # Result 1 holds the full stdout block of result 2. Each block must go
+        # at its own place, and the parent text between them must stay.
+        block2 = "[tool:result] shell_execute \u2192 which files to include\n"
+        body1 = "Earlier output:\n" + block2.rstrip("\n")
+        log = (record("TOOL_RESULT", "file_read call_id=r1 result=" + body1)
+               + record("TOOL_RESULT", "shell_execute call_id=r2 result=which files to include"))
+        stdout = f"[tool:result] file_read \u2192 {body1}\nParent between.\n{block2}Parent after.\n"
+        self.assertEqual("Parent between.\nParent after.\n", trial_evidence.parent_stdout(stdout, log))
+        # The same block text before result 1 is not result 2. Only a search
+        # that starts at the place of result 1 finds the real result 2.
+        echo = "Parent echo:\n" + block2
+        self.assertEqual(echo + "Parent between.\nParent after.\n",
+                         trial_evidence.parent_stdout(echo + stdout, log))
+
     def test_parent_stdout_fails_when_the_stdout_does_not_hold_the_result(self):
         with self.assertRaises(trial_evidence.ParentStdoutError):
             trial_evidence.parent_stdout(ASYNC_STDOUT + child_block("Another answer.") + "Parent.\n", self.LOG)
@@ -393,7 +437,9 @@ class HeadlessTests(unittest.TestCase):
         skill = ("## Netclaw Operations\n\n- `netclaw doctor` reports a list that exactly matches any Netclaw "
                  "default, which includes\n  the shipped deny list. Please clarify nothing here; it needs "
                  "more information.\n")
-        resource = "# Child runs\n\nWhat a child run may include: an assumption list.\n"
+        # The resource has the assumption word and no question pattern. If it
+        # stayed in the parent text, the second check below would pass.
+        resource = "# Child runs\n\nA child run lists each assumption that it makes.\n"
         loads = [("skill_load", skill), ("skill_read_resource", resource)]
         self.assertTrue(self.check(tool_results=loads))
         # A parent with no assumption word of its own still fails. The skill

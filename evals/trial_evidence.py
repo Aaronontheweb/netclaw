@@ -239,7 +239,11 @@ def derive_seed(run_seed, case_name, trial):
 
 # A CLI session log record starts with "[<ISO time>] KIND: ". The lines after
 # it, up to the next record, belong to the same record.
-CLI_RECORD_START = re.compile(r"^\[(\d{4}-\d{2}-\d{2}T[^\]]*)\] ([A-Z_]+): ", re.MULTILINE)
+# HeadlessChannel.Log writes "[{GetUtcNow():o}] KIND: ". The "o" format of a
+# UTC DateTimeOffset has 7 fraction digits and the offset +00:00. A line in any
+# other format is not a record start.
+CLI_RECORD_START = re.compile(
+    r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}\+00:00)\] ([A-Z_]+): ", re.MULTILINE)
 CLI_TOOL_RECORD = re.compile(r"(\S+) call_id=(\S+) (args|result)=(.*)\Z", re.DOTALL)
 
 # Since #2515 a child result reaches the parent as an admitted notice. The
@@ -265,13 +269,16 @@ def cli_records(text):
 
     A tool result can quote lines of a CLI session log, for example when the
     agent reads its own log. A quoted line looks like a record start. The
-    logger writes records in time order (UTC, one fixed format), so a line
-    whose time is earlier than the time of the current record is part of the
-    body, not a new record.
+    logger writes records in time order (UTC, one fixed format), so inside a
+    TOOL_RESULT a line whose time is earlier than the time of that record is
+    part of the body, not a new record. The rule applies only to TOOL_RESULT.
+    If the clock steps back after a tool result, the next record joins that
+    result, the stdout then does not hold the result, and parent-stdout fails
+    loudly.
     """
     starts = []
     for match in CLI_RECORD_START.finditer(text):
-        if starts and match.group(1) < starts[-1].group(1):
+        if starts and starts[-1].group(2) == "TOOL_RESULT" and match.group(1) < starts[-1].group(1):
             continue
         starts.append(match)
     records = []
@@ -416,6 +423,7 @@ def parent_stdout(stdout, text):
         stdout = stdout[:found] + stdout[found + len(block):]
         at = found
     return stdout
+
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
