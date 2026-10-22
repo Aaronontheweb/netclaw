@@ -1673,20 +1673,18 @@ stdout_response_not_contains() {
     return 0
 }
 
-# The parent's own text. Since #2515 the parent reads the child answer from
-# result.md with file_read, and the CLI prints that result as a block of many
-# lines. That text is the child's, not the parent's. A pattern about the parent
-# reply must not match it. trial_evidence.py removes the exact result text that
-# the CLI session log records. Tool call lines stay excluded as in
-# stdout_response_contains. A check_agent_run result of a terminal run holds the
-# full child answer in its "summary" field. It is one JSON line, so the line is
-# excluded too. Exit 2: the child text could not be removed, so the trial is
-# inconclusive.
+# The parent's own text. A tool result is not parent text: a child result read
+# from result.md (#2515), a check_agent_run status with the child answer, and a
+# skill_load or skill_read_resource text are examples. The CLI prints a result
+# as a block of many lines with no end marker. trial_evidence.py removes the
+# exact text of every result that the CLI session log records. Tool call lines
+# stay excluded as in stdout_response_contains. Exit 2: a result could not be
+# removed, so the trial is inconclusive.
 stdout_parent_text() {
     local text
     text=$(python3 "$TRIAL_EVIDENCE_PY" parent-stdout --stdout "$STDOUT_FILE" \
         --cli-log "$TRIAL_RAW/cli-session.log") || return 2
-    grep -av -e '^\[tool:call\]' -e '^\[tool:result\] check_agent_run ' <<<"$text" || true
+    grep -av '^\[tool:call\]' <<<"$text" || true
 }
 
 stdout_parent_text_contains() {

@@ -15,12 +15,13 @@ Groups:
 
   ChildResultTests   trial_evidence.py child-results and parent-stdout. Since
                      #2515 the parent reads the child answer from result.md
-                     with file_read. The helpers find that read in the CLI
-                     session log and remove its text from the stdout.
-  HeadlessTests      subagent_headless_ambiguous_task. The child answer is a
-                     "[tool:result] file_read" block of many lines in the
+                     with file_read. child-results finds that read in the CLI
+                     session log. parent-stdout removes the text of every tool
+                     result from the stdout.
+  HeadlessTests      subagent_headless_ambiguous_task. The child answer, a
+                     skill text, and each other tool result are blocks of the
                      stdout. The text patterns about the parent reply must not
-                     match that block.
+                     match them.
   PrecedenceTests    subagent_specialization_precedence. The case checks that
                      the parent returns a mission email and leaves the agent
                      files unchanged. It does not check which of the parent task
@@ -81,11 +82,14 @@ def record(kind, text):
 RUN = "28879746df7a4d57a311546f0dd108dc"
 
 
+def accepted_body(agent="headless-analyst", run=RUN):
+    return json.dumps({"run_id": run, "scope_id": f"signalr/e8475170e8ea4ea5b8f1d0fbfacbba79/subagent/{agent}/{run}",
+                       "state": "accepted", "control_tool": "check_agent_run"}, separators=(",", ":"))
+
+
 def accepted_result(agent="headless-analyst", run=RUN):
     """The spawn_agent TOOL_RESULT record since the async spawn: state accepted, no child answer."""
-    body = json.dumps({"run_id": run, "scope_id": f"signalr/e8475170e8ea4ea5b8f1d0fbfacbba79/subagent/{agent}/{run}",
-                       "state": "accepted", "control_tool": "check_agent_run"}, separators=(",", ":"))
-    return record("TOOL_RESULT", "spawn_agent call_id=call_9266 result=" + body)
+    return record("TOOL_RESULT", "spawn_agent call_id=call_9266 result=" + accepted_body(agent, run))
 
 
 ENVELOPE_ROOT = "/home/netclaw/.netclaw/sessions/signalr_e8475170e8ea4ea5b8f1d0fbfacbba79-0f4c1e2d3b4a5968"
@@ -164,7 +168,7 @@ BOLD_INLINE_REPLY = "**Subject: Reclaiming engineering hours from operational to
 SPAWN_CALL = ('[tool:call] spawn_agent({"agent":"headless-analyst","task":"Write a short prospecting '
               'email to Casey","_rationale":"Delegate the draft."})\n')
 DONE_LINE = "[subagent:done] headless-analyst (completed, 41.5s)\n"
-ACCEPTED_LINE = f'[tool:result] spawn_agent → {{"run_id":"{RUN}","state":"accepted","control_tool":"check_agent_run"}}\n'
+ACCEPTED_LINE = f"[tool:result] spawn_agent \u2192 {accepted_body()}\n"
 WAITING_LINE = f"[subagent:waiting] 1 open: {RUN}\n"
 
 
@@ -209,7 +213,10 @@ PARENT_ANSWER = ("headless-analyst decided without asking you.\n\n**Final notes 
 
 
 class ChildResultTests(unittest.TestCase):
-    """trial_evidence.py reads the child result that the parent read with file_read (#2515)."""
+    """trial_evidence.py reads the child result that the parent read with file_read (#2515).
+
+    parent-stdout removes the text of every tool result from the stdout.
+    """
 
     LOG = (record("PROMPT", "Delegate the notes") + spawn_result(BRIEF)
            + record("ASSISTANT_FINAL", "The analyst made its own calls. Each rests on an assumption."))
@@ -260,11 +267,77 @@ class ChildResultTests(unittest.TestCase):
         self.assertIn(parent, text)
         self.assertIn(f"[tool:call] file_read({read_args(result_path())})", text)
 
-    def test_parent_stdout_removes_a_child_result_that_another_tool_printed(self):
-        # The text starts as a result.md file, so it is child text whatever tool read it.
-        log = accepted_result() + read_records(BRIEF).replace("file_read", "shell_execute")
-        stdout = f"[tool:result] shell_execute \u2192 {result_md(BRIEF)}\nParent text.\n"
-        self.assertEqual("Parent text.\n", trial_evidence.parent_stdout(stdout, log))
+    def test_parent_stdout_removes_every_tool_result_in_log_order(self):
+        # One rule for every tool: a result is not parent text.
+        log = (accepted_result()
+               + record("TOOL_RESULT", "skill_load call_id=s1 result=## Skill\nwhich may include text")
+               + record("TOOL_RESULT", "shell_execute call_id=s2 result=Exit code: 0\n")
+               + record("TOOL_RESULT", "skill_load call_id=s3 result=## Skill\nwhich may include text"))
+        stdout = (ACCEPTED_LINE + "Delegated.\n"
+                  + "[tool:result] skill_load \u2192 ## Skill\nwhich may include text\nParent one.\n"
+                  + "[tool:result] shell_execute \u2192 Exit code: 0\n\nParent two.\n"
+                  + "[tool:result] skill_load \u2192 ## Skill\nwhich may include text\nParent three.\n")
+        self.assertEqual("Delegated.\nParent one.\nParent two.\nParent three.\n",
+                         trial_evidence.parent_stdout(stdout, log))
+
+    def test_quoted_log_lines_in_a_result_are_part_of_the_result(self):
+        # Bug caught: an agent that reads its own CLI session log gets older
+        # record lines inside a tool result. The splitter took each quoted line
+        # as a new record, so the result text was cut (evals-cmp-2026-10-16,
+        # skill_operations_diagnostics, trial 05).
+        quoted = ("[2026-10-16T05:00:00.0000000+00:00] TOOL_RESULT: file_list call_id=old result=Directory listing\n"
+                  "[2026-10-16T05:00:01.0000000+00:00] ASSISTANT_FINAL: an older reply")
+        log = (record("PROMPT", "Read your log")
+               + record("TOOL_RESULT", "file_read call_id=r1 result=" + quoted)
+               + record("ASSISTANT_FINAL", "The log shows one listing."))
+        stdout = f"[tool:result] file_read \u2192 {quoted}\nThe log shows one listing.\n"
+        records = trial_evidence.cli_records(log)
+        self.assertEqual(["PROMPT", "TOOL_RESULT", "ASSISTANT_FINAL"], [kind for kind, _ in records])
+        self.assertEqual("The log shows one listing.\n", trial_evidence.parent_stdout(stdout, log))
+
+    def test_quoted_line_in_another_time_format_stays_in_the_result(self):
+        # Only the exact logger format starts a record. This quoted line has
+        # no fraction digits and another offset.
+        quoted = "Log excerpt:\n[2026-10-22T07:00:01+02:00] WARN: which items to include?"
+        log = (record("PROMPT", "Read the log")
+               + record("TOOL_RESULT", "file_read call_id=r1 result=" + quoted)
+               + record("ASSISTANT_FINAL", "Nothing to report."))
+        stdout = f"[tool:result] file_read \u2192 {quoted}\nNothing to report.\n"
+        self.assertEqual(["PROMPT", "TOOL_RESULT", "ASSISTANT_FINAL"],
+                         [kind for kind, _ in trial_evidence.cli_records(log)])
+        text = trial_evidence.parent_stdout(stdout, log)
+        self.assertEqual("Nothing to report.\n", text)
+        self.assertNotIn("which items", text)
+
+    def test_clock_step_back_after_a_tool_result_fails_loudly(self):
+        # The earlier-time rule applies only inside a TOOL_RESULT. After a
+        # clock step back, the next record joins the result. The stdout then
+        # does not hold the result, so the parent text is not silently wrong.
+        log = ("[2026-10-16T05:00:02.0000000+00:00] TOOL_RESULT: skill_load call_id=s1 result=## Skill\n"
+               "[2026-10-16T05:00:01.0000000+00:00] TOOL_RESULT: shell_execute call_id=s2 result=done\n")
+        stdout = "[tool:result] skill_load \u2192 ## Skill\nParent.\n[tool:result] shell_execute \u2192 done\n"
+        with self.assertRaises(trial_evidence.ParentStdoutError):
+            trial_evidence.parent_stdout(stdout, log)
+        # Outside a TOOL_RESULT, an earlier time still starts a new record.
+        other = ("[2026-10-16T05:00:02.0000000+00:00] ASSISTANT_FINAL: one\n"
+                 "[2026-10-16T05:00:01.0000000+00:00] TURN_COMPLETED: turn=1\n")
+        self.assertEqual(["ASSISTANT_FINAL", "TURN_COMPLETED"],
+                         [kind for kind, _ in trial_evidence.cli_records(other)])
+
+    def test_result_that_quotes_a_later_block_does_not_move_the_cursor_wrong(self):
+        # Result 1 holds the full stdout block of result 2. Each block must go
+        # at its own place, and the parent text between them must stay.
+        block2 = "[tool:result] shell_execute \u2192 which files to include\n"
+        body1 = "Earlier output:\n" + block2.rstrip("\n")
+        log = (record("TOOL_RESULT", "file_read call_id=r1 result=" + body1)
+               + record("TOOL_RESULT", "shell_execute call_id=r2 result=which files to include"))
+        stdout = f"[tool:result] file_read \u2192 {body1}\nParent between.\n{block2}Parent after.\n"
+        self.assertEqual("Parent between.\nParent after.\n", trial_evidence.parent_stdout(stdout, log))
+        # The same block text before result 1 is not result 2. Only a search
+        # that starts at the place of result 1 finds the real result 2.
+        echo = "Parent echo:\n" + block2
+        self.assertEqual(echo + "Parent between.\nParent after.\n",
+                         trial_evidence.parent_stdout(echo + stdout, log))
 
     def test_parent_stdout_fails_when_the_stdout_does_not_hold_the_result(self):
         with self.assertRaises(trial_evidence.ParentStdoutError):
@@ -281,13 +354,22 @@ class HeadlessTests(unittest.TestCase):
     """
 
     def run_check(self, *, parent=PARENT_ANSWER, child=CHILD_ANSWER_WITH_INCLUDE, call=True, done=True,
-                  child_result=True, session_log=None, status_line=""):
+                  child_result=True, session_log=None, tool_results=()):
+        """Build the trial and run the assertion.
+
+        `tool_results` is a list of (tool, result) pairs that the parent got
+        before the child read. They go to the stdout and to the session log,
+        as the CLI writes them.
+        """
         stdout = (SPAWN_CALL if call else "") + ACCEPTED_LINE + "Delegated to **headless-analyst**.\n" + WAITING_LINE
-        stdout += status_line
+        stdout += "".join(f"[tool:result] {tool} \u2192 {result}\n" for tool, result in tool_results)
         stdout += DONE_LINE if done else ""
         stdout += child_block(child) if child_result else ""
         stdout += parent
-        log = (record("PROMPT", "Draft release notes") + spawn_result(child)
+        extra = "".join(record("TOOL_RESULT", f"{tool} call_id=call_extra_{index} result={result}")
+                        for index, (tool, result) in enumerate(tool_results))
+        log = (record("PROMPT", "Draft release notes") + accepted_result() + extra
+               + spawn_result(child)[len(accepted_result()):]
                if session_log is None else session_log)
         with tempfile.TemporaryDirectory() as directory:
             raw = Path(directory)
@@ -341,11 +423,34 @@ class HeadlessTests(unittest.TestCase):
         status = json.dumps({"run_id": RUN, "state": "terminal", "terminal": True, "outcome": "completed",
                              "summary": "Pressed keys, which I chose to include. Please clarify nothing."},
                             separators=(",", ":"))
-        line = f"[tool:result] check_agent_run \u2192 {status}\n"
-        self.assertTrue(self.check(status_line=line))
+        self.assertTrue(self.check(tool_results=[("check_agent_run", status)]))
         # The parent text still needs its own assumption word.
-        self.assertEqual(1, self.code(status_line=line.replace("Pressed", "Assumption: pressed"),
+        self.assertEqual(1, self.code(tool_results=[("check_agent_run", status.replace("Pressed", "Assumption: pressed"))],
                                       parent="Done. See the notes above.\n"))
+
+    def test_skill_text_that_the_parent_loaded_is_not_parent_text(self):
+        # Bug caught: the parent text kept every tool result except the child
+        # read. In trial 04 of the evals-child-consent rerun, the parent loaded
+        # netclaw-operations, and 'which.*include' matched this line of the
+        # skill_load result. The parent reply had no match. The skill_load and
+        # skill_read_resource texts below are cut from that trial.
+        skill = ("## Netclaw Operations\n\n- `netclaw doctor` reports a list that exactly matches any Netclaw "
+                 "default, which includes\n  the shipped deny list. Please clarify nothing here; it needs "
+                 "more information.\n")
+        # The resource has the assumption word and no question pattern. If it
+        # stayed in the parent text, the second check below would pass.
+        resource = "# Child runs\n\nA child run lists each assumption that it makes.\n"
+        loads = [("skill_load", skill), ("skill_read_resource", resource)]
+        self.assertTrue(self.check(tool_results=loads))
+        # A parent with no assumption word of its own still fails. The skill
+        # text does not give it one.
+        self.assertEqual(1, self.code(tool_results=loads, child="Notes.", parent="Done.\n"))
+
+    def test_parent_question_after_a_skill_load_still_fails(self):
+        # Trial 02 of the rerun: the parent itself asks "what ... include".
+        loads = [("skill_load", "## Netclaw Operations\n\nRun `netclaw doctor`.\n")]
+        parent = PARENT_ANSWER + "Also worth confirming: what should the notes include for item 2?\n"
+        self.assertEqual(1, self.code(tool_results=loads, parent=parent))
 
     def test_child_read_that_the_stdout_does_not_hold_is_inconclusive(self):
         # The session log and the stdout disagree, so the child text cannot be

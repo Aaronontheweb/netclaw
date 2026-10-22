@@ -10,7 +10,7 @@ a trial. The commands:
   memory-ids        Write the memory snapshot (status and the ids of unseeded memories).
   derive-seed       Derive the seed of one (case, trial) from the run seed.
   child-results     Print the child results that the parent read, from the CLI session log.
-  parent-stdout     Print the plain-text stdout without the child result text.
+  parent-stdout     Print the plain-text stdout without the tool result text.
 """
 
 import argparse
@@ -239,7 +239,11 @@ def derive_seed(run_seed, case_name, trial):
 
 # A CLI session log record starts with "[<ISO time>] KIND: ". The lines after
 # it, up to the next record, belong to the same record.
-CLI_RECORD_START = re.compile(r"^\[\d{4}-\d{2}-\d{2}T[^\]]*\] ([A-Z_]+): ", re.MULTILINE)
+# HeadlessChannel.Log writes "[{GetUtcNow():o}] KIND: ". The "o" format of a
+# UTC DateTimeOffset has 7 fraction digits and the offset +00:00. A line in any
+# other format is not a record start.
+CLI_RECORD_START = re.compile(
+    r"^\[(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}\+00:00)\] ([A-Z_]+): ", re.MULTILINE)
 CLI_TOOL_RECORD = re.compile(r"(\S+) call_id=(\S+) (args|result)=(.*)\Z", re.DOTALL)
 
 # Since #2515 a child result reaches the parent as an admitted notice. The
@@ -262,15 +266,28 @@ def cli_records(text):
 
     The logger ends each record with one newline. The body keeps the newlines
     inside the record and drops that last one.
+
+    A tool result can quote lines of a CLI session log, for example when the
+    agent reads its own log. A quoted line looks like a record start. The
+    logger writes records in time order (UTC, one fixed format), so inside a
+    TOOL_RESULT a line whose time is earlier than the time of that record is
+    part of the body, not a new record. The rule applies only to TOOL_RESULT.
+    If the clock steps back after a tool result, the next record joins that
+    result, the stdout then does not hold the result, and parent-stdout fails
+    loudly.
     """
-    starts = list(CLI_RECORD_START.finditer(text))
+    starts = []
+    for match in CLI_RECORD_START.finditer(text):
+        if starts and starts[-1].group(2) == "TOOL_RESULT" and match.group(1) < starts[-1].group(1):
+            continue
+        starts.append(match)
     records = []
     for index, start in enumerate(starts):
         end = starts[index + 1].start() if index + 1 < len(starts) else len(text)
         body = text[start.end():end]
         if body.endswith("\n"):
             body = body[:-1]
-        records.append((start.group(1), body))
+        records.append((start.group(2), body))
     return records
 
 
@@ -381,30 +398,30 @@ class ParentStdoutError(Exception):
 
 
 def parent_stdout(stdout, text):
-    """Return the plain-text stdout without the tool result text of each child result read.
+    """Return the plain-text stdout without the text of each tool result.
 
-    The CLI prints a tool result as "[tool:result] <tool> → <result>". A
-    result.md text has many lines, and the parent text follows it with no
+    The CLI prints a tool result as "[tool:result] <tool> → <result>". The
+    result can have many lines, and the parent text follows it with no
     marker, so a line filter cannot find its end. The CLI session log holds
-    the same result text, so this removes that exact text. A read counts when
-    its path is a child result file or its text starts as one, whatever the
-    run. A child read that the stdout does not hold raises an error: the
-    child text could then count as parent text.
+    the same result text, so this removes that exact text. Every tool result
+    goes, whatever the tool: a child result read, a check_agent_run status, a
+    skill_load or skill_read_resource text, and a file or command output are
+    all text that the parent did not write.
+
+    The blocks are removed in log order, each after the one before it. A
+    block that the stdout does not hold raises an error: its text could then
+    count as parent text.
     """
-    child_reads = set()
+    at = 0
     for kind, tool, call_id, payload in cli_tool_records(text):
-        if kind == "TOOL_CALL":
-            path = call_path(payload)
-            if path and CHILD_RESULT_FILE.search(path):
-                child_reads.add(call_id)
+        if kind != "TOOL_RESULT":
             continue
-        if call_id not in child_reads and not payload.startswith(CHILD_RESULT_HEADER):
-            continue
-        block = f"[tool:result] {tool} → {payload}\n"
-        at = stdout.find(block)
-        if at < 0:
-            raise ParentStdoutError(f"the stdout does not hold the child result of call {call_id}")
-        stdout = stdout[:at] + stdout[at + len(block):]
+        block = f"[tool:result] {tool} \u2192 {payload}\n"
+        found = stdout.find(block, at)
+        if found < 0:
+            raise ParentStdoutError(f"the stdout does not hold the {tool} result of call {call_id}")
+        stdout = stdout[:found] + stdout[found + len(block):]
+        at = found
     return stdout
 
 
@@ -441,7 +458,7 @@ def main(argv=None):
     children = commands.add_parser("child-results", help="print the child results that the parent read")
     children.add_argument("--cli-log", type=Path, required=True)
 
-    parent = commands.add_parser("parent-stdout", help="print the stdout without the child result text")
+    parent = commands.add_parser("parent-stdout", help="print the stdout without the tool result text")
     parent.add_argument("--stdout", type=Path, required=True)
     parent.add_argument("--cli-log", type=Path, required=True)
 
