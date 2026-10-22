@@ -35,31 +35,25 @@ public sealed class ChildNoticeRecoverySpecs(ITestOutputHelper output) : ChildNo
         var subscriber = await JoinAsync(sessionId);
         var (accepted, gate) = await StartChildAsync(sessionId, Alice, "one");
         await ExpectTurnsAsync(subscriber, 1);
+        // The spec never releases this hold, because the recovered session writes its own result file. A released
+        // write of the stopped session could land after the cleanup of the temp folder and create the folder again.
         Preparation.HoldNext();
+        gate.TrySetResult();
+        await Preparation.Entered.Task.WaitAsync(Deadline, Cancellation);
+        Assert.Contains(journal.Committed.OfType<ChildRunEvent.TerminalRecorded>(), evt => evt.RunId == accepted.Run.RunId);
+        Assert.Empty(NoticesFor(journal, accepted.Run.RunId));
 
-        try
-        {
-            gate.TrySetResult();
-            await Preparation.Entered.Task.WaitAsync(Deadline, Cancellation);
-            Assert.Contains(journal.Committed.OfType<ChildRunEvent.TerminalRecorded>(), evt => evt.RunId == accepted.Run.RunId);
-            Assert.Empty(NoticesFor(journal, accepted.Run.RunId));
+        // Act
+        var recovered = await RestartSessionAsync(sessionId);
 
-            // Act
-            var recovered = await RestartSessionAsync(sessionId);
-
-            // Assert
-            var resultPath = ResultPath(sessionId, accepted);
-            await AwaitAssertAsync(() => Assert.True(NoticesFor(journal, accepted.Run.RunId).Count > 0,
-                "The recovery must admit a notice for the terminal run."), Deadline, cancellationToken: Cancellation);
-            await ExpectTurnsAsync(recovered, 1);
-            Assert.Single(NoticesFor(journal, accepted.Run.RunId));
-            Assert.True(File.Exists(resultPath), $"The recovery must write {resultPath}.");
-            Assert.Contains(ChildOutput, await File.ReadAllTextAsync(resultPath, Cancellation), StringComparison.Ordinal);
-        }
-        finally
-        {
-            Preparation.Release.TrySetResult();
-        }
+        // Assert
+        var resultPath = ResultPath(sessionId, accepted);
+        await AwaitAssertAsync(() => Assert.True(NoticesFor(journal, accepted.Run.RunId).Count > 0,
+            "The recovery must admit a notice for the terminal run."), Deadline, cancellationToken: Cancellation);
+        await ExpectTurnsAsync(recovered, 1);
+        Assert.Single(NoticesFor(journal, accepted.Run.RunId));
+        Assert.True(File.Exists(resultPath), $"The recovery must write {resultPath}.");
+        Assert.Contains(ChildOutput, await File.ReadAllTextAsync(resultPath, Cancellation), StringComparison.Ordinal);
     }
 
     /// <summary>
