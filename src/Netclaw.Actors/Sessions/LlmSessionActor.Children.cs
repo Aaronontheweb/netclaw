@@ -491,7 +491,7 @@ public sealed partial class LlmSessionActor
                 _log.Error("Pending input {InputId} has a damaged authority", input.InputId);
         }
 
-        var restored = _input.RestoreWaitingInputs(orphans, _sessionId);
+        var restored = _input.RestoreWaitingInputs(orphans.Select(static pair => pair.Input).ToArray(), _sessionId);
 
         // When the session was paused, StartHeldInputs queues such a notice, so it does not wait for that input.
         if (!pausedAtRecovery)
@@ -538,17 +538,15 @@ public sealed partial class LlmSessionActor
             .Where(input => !selected.Contains(input.InputId)));
         foreach (var input in damaged)
             _log.Error("Pending input {InputId} has a damaged authority", input.InputId);
-        var queued = _input.RestoreWaitingInputs(valid.Where(WasHeldByPause).ToArray(), _sessionId);
+        // The pause holds automated input and child result notices (ChildConsentPause, design D5).
+        var queued = _input.RestoreWaitingInputs(valid
+            .Where(static pair => ChildConsentPause.Holds(pair.Authority, isChildNotice: pair.Input.ChildNotice is not null))
+            .Select(static pair => pair.Input)
+            .ToArray(), _sessionId);
         if (queued > 0)
             _log.Info("Queued {HeldCount} input(s) that the child consent pause held before the restart", queued);
         StartWaitingInputAfterApproval();
     }
-
-    // The pause holds automated input and child result notices (SessionInputFlow, design D5).
-    private static bool WasHeldByPause(InputAdmitted input)
-        => input.ChildNotice is not null
-           || (TurnContext.TryFromRecord(input.TurnContext, out var context, out _) && context is not null
-               && SessionToolWorkflow.IsAutomation(context.RequesterPrincipal) && !context.IsChildConsentNotice);
 
     private sealed record StartHeldInputs : INoSerializationVerificationNeeded;
 

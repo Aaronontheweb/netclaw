@@ -276,6 +276,48 @@ internal sealed class TurnStateTracker
         return true;
     }
 
+    /// <summary>
+    /// Copies the loop guard: the tool iteration and call counts, the completed action and outcome hashes, the last
+    /// blocked action, the recurrence episodes, and the refused-repeat count. A parked child keeps this copy, so a
+    /// park does not reset the loop guard (durable-child-consent-wait, design D2 and M10). The copy shares no
+    /// collection with the tracker. The empty-response counters are not part of the loop guard.
+    /// </summary>
+    public TurnLoopGuardState ExportLoopGuard()
+        => new(
+            ToolIterationCount,
+            ToolCallCount,
+            _completedToolCycles.Select(static cycle => (cycle.Action, cycle.OutcomeValue)).ToArray(),
+            _lastBlockedAction,
+            new Dictionary<ToolRecurrenceKey, ToolRecurrenceEpisode>(_episodes),
+            _refusedRepeatCount);
+
+    /// <summary>
+    /// Replaces the loop guard with an exported copy. The tracker then makes the same decisions as the tracker that
+    /// exported the copy. The tracker shares no collection with the copy. The empty-response counters do not change.
+    /// </summary>
+    public void RestoreLoopGuard(TurnLoopGuardState state)
+    {
+        ArgumentNullException.ThrowIfNull(state);
+        ArgumentNullException.ThrowIfNull(state.CompletedCycles);
+        ArgumentNullException.ThrowIfNull(state.Episodes);
+        if (state.CompletedCycles.Count > ToolCycleSignatureFactory.MaximumHistory)
+            throw new ArgumentException(
+                $"A loop guard holds at most {ToolCycleSignatureFactory.MaximumHistory} completed cycles.", nameof(state));
+
+        ToolIterationCount = state.ToolIterationCount;
+        ToolCallCount = state.ToolCallCount;
+        // The history keeps only the cycles that ObserveCompleted recorded as adjacent. The adjacent check reads only
+        // the action and the outcome of a stored cycle, never its groups, so the restored entries need no groups.
+        _completedToolCycles.Clear();
+        _completedToolCycles.AddRange(state.CompletedCycles.Select(static cycle =>
+            new CompletedToolCycleIteration(cycle.Action, cycle.OutcomeValue)));
+        _lastBlockedAction = state.LastBlockedAction;
+        _episodes.Clear();
+        foreach (var (key, episode) in state.Episodes)
+            _episodes[key] = episode;
+        _refusedRepeatCount = state.RefusedRepeatCount;
+    }
+
     public void RecordToolCompletion(int resultCount)
     {
         ToolCallCount = (int)Math.Min(int.MaxValue, (long)ToolCallCount + resultCount);
@@ -341,6 +383,19 @@ internal sealed class TurnStateTracker
 }
 
 internal sealed record ToolActionSignature(string Value);
+
+/// <summary>
+/// The loop guard of a tool loop, as <see cref="TurnStateTracker.ExportLoopGuard"/> copies it. It holds only counts
+/// and hashes, never raw arguments or results. <see cref="CompletedCycles"/> keeps the order of completion, because
+/// the adjacent cycle check reads the order.
+/// </summary>
+internal sealed record TurnLoopGuardState(
+    int ToolIterationCount,
+    int ToolCallCount,
+    IReadOnlyList<(ToolActionSignature Action, string OutcomeValue)> CompletedCycles,
+    ToolActionSignature? LastBlockedAction,
+    IReadOnlyDictionary<ToolRecurrenceKey, ToolRecurrenceEpisode> Episodes,
+    int RefusedRepeatCount);
 
 internal sealed record CompletedToolCycleIteration(
     ToolActionSignature Action,

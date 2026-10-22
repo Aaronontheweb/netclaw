@@ -349,15 +349,23 @@ internal sealed class SessionInputFlow
     /// Separates the pending inputs whose recorded authority parses from the damaged ones. The queue takes only valid
     /// inputs (<see cref="RestoreWaitingInputs"/> throws for a damaged one). Each caller decides what a damaged input
     /// means for its message. The idle restart resume uses it only after a slash command (#2587). The other idle
-    /// restart resume and the recovery queue behind a parked approval do not use it yet (#2576).
+    /// restart resume and the recovery queue behind a parked approval do not use it yet (#2576). Each valid input comes
+    /// with its parsed authority, so a caller that decides on the authority (for example
+    /// <see cref="ChildConsentPause.Holds"/>) does not parse the record again.
     /// </summary>
-    public static (IReadOnlyList<InputAdmitted> Valid, IReadOnlyList<InputAdmitted> Damaged) SplitByAuthority(
-        IEnumerable<InputAdmitted> inputs)
+    public static (IReadOnlyList<(InputAdmitted Input, TurnContext Authority)> Valid, IReadOnlyList<InputAdmitted> Damaged)
+        SplitByAuthority(IEnumerable<InputAdmitted> inputs)
     {
-        var valid = new List<InputAdmitted>();
+        var valid = new List<(InputAdmitted Input, TurnContext Authority)>();
         var damaged = new List<InputAdmitted>();
         foreach (var input in inputs)
-            (TurnContext.TryFromRecord(input.TurnContext, out _, out _) ? valid : damaged).Add(input);
+        {
+            if (TurnContext.TryFromRecord(input.TurnContext, out var authority, out _) && authority is not null)
+                valid.Add((input, authority));
+            else
+                damaged.Add(input);
+        }
+
         return (valid, damaged);
     }
 
@@ -578,9 +586,7 @@ internal sealed class SessionInputFlow
     }
 
     private static bool IsHeldByPause(SendUserMessage message)
-        => message.Notice is not null
-           || (SessionToolWorkflow.IsAutomation(BufferedAuthority(message).RequesterPrincipal)
-               && !BufferedAuthority(message).IsChildConsentNotice);
+        => ChildConsentPause.Holds(BufferedAuthority(message), isChildNotice: message.Notice is not null);
 
     // A new turn starts at the first input that the pause does not hold. The held inputs keep their order behind the
     // other inputs and run after the last close.

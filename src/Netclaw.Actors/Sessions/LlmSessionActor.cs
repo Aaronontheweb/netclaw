@@ -2349,7 +2349,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             return;
         }
 
-        var queued = _input.RestoreWaitingInputs(pending, _sessionId);
+        var queued = _input.RestoreWaitingInputs(pending.Select(static pair => pair.Input).ToArray(), _sessionId);
         if (queued > 0)
             _execution.ClearRestartReminderEligibility();
         _log.Info("restart_resume_queued count={QueuedCount} phase={Phase}", queued, _phase.Current);
@@ -2436,7 +2436,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             foreach (var input in damaged)
                 _log.Error("Restart reminder {ReminderId}: pending input {InputId} has a damaged authority",
                     cmd.Source?.ReminderId, input.InputId);
-            _input.RestoreWaitingInputs(valid, _sessionId);
+            _input.RestoreWaitingInputs(valid.Select(static pair => pair.Input).ToArray(), _sessionId);
             return true;
         }
 
