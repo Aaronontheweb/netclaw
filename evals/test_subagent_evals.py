@@ -2,8 +2,8 @@
 
 Each test builds a small trial from short excerpts of archived trials
 (evals-cmp-2026-10-16, dev build; evals-stack-2026-10-17, the stack with the
-asynchronous spawn_agent) and runs the real assertion function of
-run-evals.sh on it. A passing and a failing transcript pin each changed check.
+asynchronous spawn_agent; evals-child-consent, the build after #2515 and #2559)
+and runs the real assertion function of run-evals.sh on it. A passing and a failing transcript pin each changed check.
 The tests use no model, no network, no daemon, and no container. A shell
 function stands in for `docker` where a test runs a harness function that
 calls it. Each test removes its temp folder. Three tests of seed-memories.py
@@ -13,21 +13,25 @@ code under test.
 
 Groups:
 
-  HeadlessTests      subagent_headless_ambiguous_task. The child answer is on
-                     one "[tool:result] child_run_result" line of the stdout.
-                     The text patterns about the parent reply must not match
-                     that line.
+  ChildResultTests   trial_evidence.py child-results and parent-stdout. Since
+                     #2515 the parent reads the child answer from result.md
+                     with file_read. The helpers find that read in the CLI
+                     session log and remove its text from the stdout.
+  HeadlessTests      subagent_headless_ambiguous_task. The child answer is a
+                     "[tool:result] file_read" block of many lines in the
+                     stdout. The text patterns about the parent reply must not
+                     match that block.
   PrecedenceTests    subagent_specialization_precedence. The case checks that
                      the parent returns a mission email and leaves the agent
                      files unchanged. It does not check which of the parent task
                      and the child role wins. The check judges the child and the
                      parent apart and accepts a bold subject line. It reads the
-                     child answer from the child_run_result record.
+                     child answer from the result.md text that the parent read.
   ScratchTests       subagent_session_scratch_disposable. The check reads the
                      child log below subagents/, the authorization records, the
-                     probe file that the command wrote, and the full child
-                     answer in the child_run_result record of the CLI session
-                     log.
+                     probe file that the command wrote in the container temp
+                     folder of the run (#2559), and the full child answer that
+                     the parent read.
   MemoryGuardTests   A trial that recalls a memory it did not seed is
                      inconclusive, and so is a trial whose memory snapshot
                      failed (trial_verdict.py and trial_evidence.py).
@@ -41,6 +45,7 @@ Groups:
 """
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -76,31 +81,59 @@ def record(kind, text):
 RUN = "28879746df7a4d57a311546f0dd108dc"
 
 
-def accepted_result(agent="headless-analyst"):
+def accepted_result(agent="headless-analyst", run=RUN):
     """The spawn_agent TOOL_RESULT record since the async spawn: state accepted, no child answer."""
-    body = json.dumps({"run_id": RUN, "scope_id": f"signalr/e8475170e8ea4ea5b8f1d0fbfacbba79/subagent/{agent}/{RUN}",
+    body = json.dumps({"run_id": run, "scope_id": f"signalr/e8475170e8ea4ea5b8f1d0fbfacbba79/subagent/{agent}/{run}",
                        "state": "accepted", "control_tool": "check_agent_run"}, separators=(",", ":"))
     return record("TOOL_RESULT", "spawn_agent call_id=call_9266 result=" + body)
 
 
-def child_run_result_body(output, outcome="completed", source="spawn_agent", agent="headless-analyst"):
-    return json.dumps({"run_id": RUN, "scope_id": f"signalr/e8475170e8ea4ea5b8f1d0fbfacbba79/subagent/{agent}/{RUN}",
-                       "source_operation": source, "outcome": outcome, "reason": None, "output": output},
-                      separators=(",", ":"))
+ENVELOPE_ROOT = "/home/netclaw/.netclaw/sessions/signalr_e8475170e8ea4ea5b8f1d0fbfacbba79-0f4c1e2d3b4a5968"
 
 
-def spawn_result(summary, outcome="completed", agent="headless-analyst"):
-    """The records of one delegation in the CLI session log: accepted, then child_run_result in a later turn."""
-    return (accepted_result(agent)
+def result_md(output, outcome="completed", agent="headless-analyst", run=RUN, envelope=ENVELOPE_ROOT):
+    """The text of result.md, in the format of ChildRunDocuments.RenderResult (#2515)."""
+    return (f"# Child result\n\n- agent: {agent}\n- run: {run}\n- outcome: {outcome}\n"
+            f"- log: {envelope}/subagents/{run}/logs/session.log\n"
+            f"- artifacts: {envelope}/subagents/{run}/artifacts\n\n## Output\n\n{output}\n"
+            "\n## Working context\n\n- read: /home/netclaw/.netclaw/workspaces/notes.md\n")
+
+
+def result_path(run=RUN, envelope=ENVELOPE_ROOT):
+    return f"{envelope}/subagents/{run}/result.md"
+
+
+def read_args(path):
+    return json.dumps({"Path": path, "_rationale": "Read the child result."}, separators=(",", ":"))
+
+
+def read_records(output, outcome="completed", agent="headless-analyst", run=RUN, path=None, text=None,
+                 envelope=ENVELOPE_ROOT, call_id="call_read"):
+    """The file_read call and result of a child result in the CLI session log.
+
+    `text` replaces the whole result text, for a test about the format.
+    """
+    text = result_md(output, outcome, agent, run, envelope) if text is None else text
+    return (record("TOOL_CALL", f"file_read call_id={call_id} args="
+                   + read_args(path or result_path(run, envelope)))
+            + record("TOOL_RESULT", f"file_read call_id={call_id} result=" + text))
+
+
+def spawn_result(summary, outcome="completed", agent="headless-analyst", envelope=ENVELOPE_ROOT, run=RUN):
+    """The records of one delegation in the CLI session log: accepted, then the notice turn reads result.md."""
+    return (accepted_result(agent, run)
             + record("TURN_COMPLETED", "turn=1")
-            + record("WAITING_FOR_CHILDREN", f"count=1 runs={RUN}")
-            + record("TOOL_RESULT", f"child_run_result call_id=child-result-{RUN} result="
-                     + child_run_result_body(summary, outcome, agent=agent)))
+            + record("WAITING_FOR_CHILDREN", f"count=1 runs={run}")
+            + record("SUBAGENT_DONE", f"name={agent} success=True outcome={outcome} duration=41.5s")
+            + read_records(summary, outcome, agent, run=run, envelope=envelope))
 
 
-def child_run_result_body_record(output, outcome="completed"):
-    return record("TOOL_RESULT", f"child_run_result call_id=child-result-{RUN} result="
-                  + child_run_result_body(output, outcome))
+def old_child_run_result(output, outcome="completed", agent="headless-analyst"):
+    """The child_run_result record before #2515. The daemon no longer writes it."""
+    body = json.dumps({"run_id": RUN, "scope_id": f"signalr/e8475170e8ea4ea5b8f1d0fbfacbba79/subagent/{agent}/{RUN}",
+                       "source_operation": "spawn_agent", "outcome": outcome, "reason": None, "output": output},
+                      separators=(",", ":"))
+    return record("TOOL_RESULT", f"child_run_result call_id=child-result-{RUN} result=" + body)
 
 
 def old_spawn_result(summary, outcome="completed"):
@@ -134,12 +167,13 @@ ACCEPTED_LINE = f'[tool:result] spawn_agent → {{"run_id":"{RUN}","state":"acce
 WAITING_LINE = f"[subagent:waiting] 1 open: {RUN}\n"
 
 
-def child_line(output):
-    """The stdout line of the child answer, in the format of the stack run."""
-    return f"[tool:result] child_run_result → {child_run_result_body(output)}\n"
+def child_block(output, outcome="completed"):
+    """The stdout lines of the child result read, in the format of the evals-child-consent run."""
+    return (f"[tool:call] file_read({read_args(result_path())})\n"
+            f"[tool:result] file_read \u2192 {result_md(output, outcome)}\n")
 
 
-# stdout of a delegation since the async spawn: accepted, waiting, done, then the child answer line.
+# stdout of a delegation since the async spawn: accepted, waiting, done, then the child result read.
 ASYNC_STDOUT = SPAWN_CALL + ACCEPTED_LINE + WAITING_LINE + DONE_LINE
 # Real edit of dev run e68e8d7e, trial 05: the parent rewrote the role.
 EDIT_LINE = ('[tool:call] file_edit({"Path":"/home/netclaw/.netclaw/agents/headless-analyst.md",'
@@ -160,39 +194,91 @@ def run_assertion(function, variables):
 # A real sentence of the child answer in trial 05 of the stack run
 # (subagent_headless_ambiguous_task). The old unanchored pattern 'which.*include'
 # matched it, although the parent did not ask a question.
+# The last line is a real line of the child answer in trial 03 of the
+# evals-child-consent run. The CLI printed it inside the file_read block, and
+# the old check failed the trial for it.
 CHILD_ANSWER_WITH_INCLUDE = (
     "## SPECIALIZED ANALYST BRIEF\n\n### Assumptions\n\n| 2 | Pressed keys, which were not supplied. |\n"
-    '| 3 | "Updated an internal test helper" \u2014 include or drop? | **Excluded** |\n')
+    '| 3 | "Updated an internal test helper" \u2014 include or drop? | **Excluded** |\n'
+    "- **Structure**: grouped by type (Fixes, Improvements) instead of a flat list, which is the conventional "
+    "shape for release notes and makes the included/excluded logic legible.\n")
 PARENT_ANSWER = ("headless-analyst decided without asking you.\n\n**Final notes (paste-ready)**\n"
                  "- Legacy CSI key decoding is fixed.\n\n**Key calls**\n"
                  "- Excluded the test fixture cleanup as internal. Each call rests on an assumption.\n")
 
 
-class HeadlessTests(unittest.TestCase):
-    """subagent_headless_ambiguous_task: the child answer is a line of the stdout.
+class ChildResultTests(unittest.TestCase):
+    """trial_evidence.py reads the child result that the parent read with file_read (#2515)."""
 
-    The negative text patterns are about the parent reply. They must not match
-    the child answer on the child_run_result line. They stay as strict as before
-    for every other line.
+    LOG = (record("PROMPT", "Delegate the notes") + spawn_result(BRIEF)
+           + record("ASSISTANT_FINAL", "The analyst made its own calls. Each rests on an assumption."))
+
+    def test_child_result_holds_the_output_without_the_working_context(self):
+        results = trial_evidence.child_results(self.LOG)
+        self.assertEqual(1, len(results))
+        self.assertEqual({"agent": "headless-analyst", "run_id": RUN, "outcome": "completed",
+                          "output": BRIEF.strip(), "call_id": "call_read", "path": result_path()},
+                         results[0])
+
+    def test_notice_turn_without_a_read_gives_no_child_result(self):
+        log = self.LOG.replace("TOOL_RESULT: file_read", "TOOL_RESULT: file_list")
+        self.assertEqual([], trial_evidence.child_results(log))
+        self.assertEqual([], trial_evidence.child_results(accepted_result() + old_child_run_result(BRIEF)))
+
+    def test_parent_stdout_removes_the_whole_result_block_and_keeps_the_parent_text(self):
+        parent = "The analyst made its own calls.\n"
+        stdout = ASYNC_STDOUT + child_block(BRIEF) + parent + "[usage] in=1 out=1\n"
+        text = trial_evidence.parent_stdout(stdout, self.LOG)
+        self.assertNotIn("SPECIALIZED ANALYST BRIEF", text)
+        self.assertNotIn("Working context", text)
+        self.assertIn(parent, text)
+        self.assertIn(f"[tool:call] file_read({read_args(result_path())})", text)
+
+    def test_parent_stdout_removes_a_child_result_that_another_tool_printed(self):
+        # The text starts as a result.md file, so it is child text whatever tool read it.
+        log = accepted_result() + read_records(BRIEF).replace("file_read", "shell_execute")
+        stdout = f"[tool:result] shell_execute \u2192 {result_md(BRIEF)}\nParent text.\n"
+        self.assertEqual("Parent text.\n", trial_evidence.parent_stdout(stdout, log))
+
+    def test_parent_stdout_fails_when_the_stdout_does_not_hold_the_result(self):
+        with self.assertRaises(trial_evidence.ParentStdoutError):
+            trial_evidence.parent_stdout(ASYNC_STDOUT + child_block("Another answer.") + "Parent.\n", self.LOG)
+
+
+class HeadlessTests(unittest.TestCase):
+    """subagent_headless_ambiguous_task: the child answer is a block of the stdout.
+
+    Since #2515 the parent reads result.md with file_read, and the CLI prints
+    the result text as one block of many lines. The negative text patterns are
+    about the parent reply. They must not match that block. They stay as
+    strict as before for every other line.
     """
 
-    def check(self, *, parent=PARENT_ANSWER, child=CHILD_ANSWER_WITH_INCLUDE, call=True, done=True, child_result=True):
+    def run_check(self, *, parent=PARENT_ANSWER, child=CHILD_ANSWER_WITH_INCLUDE, call=True, done=True,
+                  child_result=True, session_log=None):
         stdout = (SPAWN_CALL if call else "") + ACCEPTED_LINE + "Delegated to **headless-analyst**.\n" + WAITING_LINE
         stdout += DONE_LINE if done else ""
-        stdout += ('[tool:call] child_run_result({"run_id":"%s","source_operation":"spawn_agent"})\n' % RUN)
-        stdout += child_line(child) if child_result else ""
+        stdout += child_block(child) if child_result else ""
         stdout += parent
+        log = (record("PROMPT", "Draft release notes") + spawn_result(child)
+               if session_log is None else session_log)
         with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "cli-stdout.txt"
-            path.write_text(stdout)
-            return run_assertion("assert_subagent_headless_ambiguous_task", {"STDOUT_FILE": path}).returncode == 0
+            raw = Path(directory)
+            (raw / "cli-stdout.txt").write_text(stdout)
+            (raw / "cli-session.log").write_text(log)
+            return run_assertion("assert_subagent_headless_ambiguous_task",
+                                 {"STDOUT_FILE": raw / "cli-stdout.txt", "TRIAL_RAW": raw})
+
+    def check(self, **kwargs):
+        return self.run_check(**kwargs).returncode == 0
 
     def test_child_answer_with_which_and_include_passes(self):
-        # Bug caught: 'which.*include' scanned the child_run_result line, which
-        # holds the whole child answer. Words in the child text failed a good
-        # trial (3 of 5 trials of the stack run).
+        # Bug caught: 'which.*include' scanned the child answer. Before #2515
+        # it was on the child_run_result line. Since #2515 it is a file_read
+        # block of many lines, and the old line filter removed only the first
+        # line. Trial 03 of the evals-child-consent run failed for this.
         self.assertTrue(self.check())
-        self.assertRegex(child_line(CHILD_ANSWER_WITH_INCLUDE), r"(?i)which.*include")
+        self.assertRegex(child_block(CHILD_ANSWER_WITH_INCLUDE), r"(?i)which.*include")
 
     def test_child_answer_with_what_and_include_passes(self):
         child = "### Assumptions\n\nWhat appears in their logs is user-visible, so include it."
@@ -219,6 +305,20 @@ class HeadlessTests(unittest.TestCase):
         self.assertFalse(self.check(call=False))
         self.assertFalse(self.check(done=False))
 
+    def test_child_read_that_the_stdout_does_not_hold_is_inconclusive(self):
+        # The session log and the stdout disagree, so the child text cannot be
+        # removed. A pass or a fail would judge the child text as the parent's.
+        log = record("PROMPT", "Draft release notes") + spawn_result("Another answer, with an assumption.")
+        self.assertEqual(2, self.run_check(session_log=log).returncode)
+
+    def test_missing_session_log_is_inconclusive(self):
+        with tempfile.TemporaryDirectory() as directory:
+            raw = Path(directory)
+            (raw / "cli-stdout.txt").write_text(ASYNC_STDOUT + child_block(BRIEF) + PARENT_ANSWER)
+            completed = run_assertion("assert_subagent_headless_ambiguous_task",
+                                      {"STDOUT_FILE": raw / "cli-stdout.txt", "TRIAL_RAW": raw})
+            self.assertEqual(2, completed.returncode)
+
 
 class PrecedenceTests(unittest.TestCase):
     """The case checks the delegation, the agent files, and the parent email.
@@ -234,7 +334,7 @@ class PrecedenceTests(unittest.TestCase):
         `session_child` replaces the child records of the session log, for a
         test about the record format.
         """
-        stdout = ASYNC_STDOUT + child_line(child) if stdout is None else stdout
+        stdout = ASYNC_STDOUT + child_block(child, outcome) if stdout is None else stdout
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             raw = root / "raw"
@@ -291,33 +391,51 @@ class PrecedenceTests(unittest.TestCase):
         self.assertFalse(self.check(outcome="failed"))
         self.assertFalse(self.check(stdout=SPAWN_CALL))
 
-    def test_child_answer_in_the_child_run_result_record_passes(self):
-        # Bug caught: the old check read the child answer from the spawn_agent
-        # result ("Outcome: completed", "Summary:"). Since the async spawn that
-        # result is {"state":"accepted"}, so every trial failed. The answer is
-        # in the child_run_result record of a later turn. This is the format of
-        # the stack run (trial 01 of subagent_specialization_precedence).
-        session = accepted_result() + child_run_result_body_record(BRIEF)
+    def test_child_answer_in_the_result_file_read_passes(self):
+        # Bug caught: the old check read the child_run_result record. Since
+        # #2515 the daemon does not write it. The parent reads result.md with
+        # file_read, so every trial of the evals-child-consent run failed
+        # (0 of 5). This is the format of trial 01 of that run.
+        session = accepted_result() + read_records(BRIEF)
         self.assertTrue(self.check(session_child=session))
 
     def test_accepted_spawn_result_without_a_child_result_fails(self):
-        # The run ended before the child answered: no child_run_result record.
+        # The run ended before the child answered: no result.md read.
         self.assertFalse(self.check(session_child=accepted_result()))
 
-    def test_child_answer_in_the_old_spawn_result_format_fails(self):
-        # The old format held the answer in the spawn_agent result. A build that
-        # emits it and no child_run_result is not the build under test.
-        self.assertFalse(self.check(session_child=old_spawn_result(BRIEF)))
+    def test_notice_without_a_read_of_the_result_file_fails(self):
+        # The child ended and the notice came, but the parent did not read
+        # result.md. The parent did not get the child answer.
+        session = (accepted_result() + record("SUBAGENT_DONE", "name=headless-analyst success=True "
+                                              "outcome=completed duration=41.5s"))
+        self.assertFalse(self.check(session_child=session))
 
-    def test_child_run_result_that_failed_or_is_blank_fails(self):
+    def test_child_answer_in_the_old_formats_fails(self):
+        # The spawn_agent result before the async spawn, and the
+        # child_run_result record before #2515. A build that emits them and no
+        # result.md read is not the build under test.
+        self.assertFalse(self.check(session_child=old_spawn_result(BRIEF)))
+        self.assertFalse(self.check(session_child=accepted_result() + old_child_run_result(BRIEF)))
+
+    def test_child_result_that_failed_or_is_blank_fails(self):
         for output, outcome in ((BRIEF, "failed"), ("  \n", "completed"), ("", "completed")):
             with self.subTest(outcome=outcome, output=output):
                 self.assertFalse(self.check(child=output, outcome=outcome))
 
-    def test_child_run_result_of_another_operation_does_not_count(self):
-        other = accepted_result() + record("TOOL_RESULT", "child_run_result call_id=c result="
-                                           + child_run_result_body(BRIEF, source="check_agent_run"))
-        self.assertFalse(self.check(session_child=other))
+    def test_child_result_of_a_run_that_spawn_agent_did_not_accept_does_not_count(self):
+        other = "1" * 32
+        session = accepted_result() + read_records(BRIEF, run=other)
+        self.assertFalse(self.check(session_child=session))
+
+    def test_result_text_of_another_run_does_not_count(self):
+        # The path names the accepted run, but the text is the result of another run.
+        session = accepted_result() + read_records(BRIEF, text=result_md(BRIEF, run="1" * 32))
+        self.assertFalse(self.check(session_child=session))
+
+    def test_read_of_another_file_with_the_child_text_does_not_count(self):
+        session = accepted_result() + read_records(
+            BRIEF, path=f"{ENVELOPE_ROOT}/subagents/{RUN}/artifacts/result.md")
+        self.assertFalse(self.check(session_child=session))
 
     def test_run_without_a_delegation_fails(self):
         self.assertFalse(self.check(stdout="", child=BRIEF))
@@ -392,7 +510,23 @@ class PrecedenceTests(unittest.TestCase):
 CALL_ID = "call_df35ee4e61003e9f3955c8df"
 ENVELOPE = "signalr_7cae4b47d5ce446db00a5831ae85ca09-832f63371842ae02"
 RUN_ID = "b813f43613c84fdaa7ad5bcc0519b1d4"
-MANAGED_TMP = f"/home/netclaw/.netclaw/sessions/{ENVELOPE}/subagents/{RUN_ID}/tmp"
+SCRATCH_ENVELOPE_ROOT = f"/home/netclaw/.netclaw/sessions/{ENVELOPE}"
+
+
+def sha256_hex(text, length):
+    return hashlib.sha256(text.encode()).hexdigest()[:length]
+
+
+def managed_tmp(index=0, uid=1654, envelope_root=SCRATCH_ENVELOPE_ROOT):
+    """The container temp folder of a child run since #2559 (SessionStoragePaths.CreatePrivateChild)."""
+    return f"/tmp/netclaw-{uid}/{sha256_hex(envelope_root, 16)}/c{sha256_hex(other_run_id(index), 8)}"
+
+
+def other_run_id(index):
+    return RUN_ID if index == 0 else f"{RUN_ID[:-1]}{index}"
+
+
+MANAGED_TMP = managed_tmp(0)
 
 # Child log lines of dev run f7d6ac87, trial 01, without the Akka prefix.
 CHILD_LOG = (
@@ -422,23 +556,16 @@ SPAWN_ARGS = {"agent": "disposable-diagnostic",
               "_rationale": "Delegate."}
 
 
-def other_run_id(index):
-    return RUN_ID if index == 0 else f"{RUN_ID[:-1]}{index}"
-
-
-def managed_tmp(index=0):
-    return f"/home/netclaw/.netclaw/sessions/{ENVELOPE}/subagents/{other_run_id(index)}/tmp"
-
-
 class ScratchTests(unittest.TestCase):
-    def check(self, *, child_log=CHILD_LOG, answer=None, reply=None, spawn_calls=None,
-              child_runs=1, parent_log=PARENT_LOG, parent_newer=False, probe=MANAGED_TMP,
-              session_child=None):
-        """Build the home folder of a trial and run the assertion. Returns True for a pass.
+    def run_check(self, *, child_log=CHILD_LOG, answer=None, reply=None, spawn_calls=None,
+                  child_runs=1, parent_log=PARENT_LOG, parent_newer=False, probe=MANAGED_TMP,
+                  session_child=None, exec_rc=""):
+        """Build the home folder and the container temp folder of a trial, and run the assertion.
 
         `probe` is the content of eval-probe in the temp folder of the first
         child run. None means that the command left no probe file.
         `session_child` replaces the child records of the CLI session log.
+        `exec_rc` makes `docker exec` return that code without a run.
         """
         answer = answer if answer is not None else f"```\n{MANAGED_TMP}\n```"
         reply = reply if reply is not None else f"The subagent returned:\n{MANAGED_TMP}"
@@ -446,6 +573,8 @@ class ScratchTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             home = root / "home"
+            container_tmp = root / "container-tmp"
+            container_tmp.mkdir()
             envelope = home / "data" / "sessions" / ENVELOPE
             marker = root / "marker"
             marker.write_text("")
@@ -459,51 +588,92 @@ class ScratchTests(unittest.TestCase):
                 run_dir = envelope / "subagents" / other_run_id(index)
                 (run_dir / "logs").mkdir(parents=True)
                 (run_dir / "logs" / "session.log").write_text(child_log)
-                (run_dir / "tmp").mkdir()
+                # Since #2559 the temp folder is in the container /tmp, not in the run folder.
                 # Every run wrote a probe with its own path, except the first run when `probe` says otherwise.
+                temp_dir = container_tmp / managed_tmp(index).removeprefix("/tmp/")
+                temp_dir.mkdir(parents=True)
                 content = probe if index == 0 else managed_tmp(index)
                 if content is not None:
-                    (run_dir / "tmp" / "eval-probe").write_text(content)
+                    (temp_dir / "eval-probe").write_text(content)
             raw = root / "raw"
             raw.mkdir()
             (raw / "cli-session.log").write_text(
                 record("PROMPT", "Use spawn_agent with agent disposable-diagnostic")
-                + (spawn_result(answer, agent="disposable-diagnostic") if session_child is None else session_child)
+                + (spawn_result(answer, agent="disposable-diagnostic", envelope=SCRATCH_ENVELOPE_ROOT, run=RUN_ID)
+                   if session_child is None else session_child)
                 + record("ASSISTANT_FINAL", reply))
             stdout = root / "stdout.json"
             stdout.write_text(json.dumps({
                 "sessionId": "signalr/7cae4b47d5ce446db00a5831ae85ca09", "response": reply,
                 "toolCalls": [{"callId": f"c{i}", "toolName": "spawn_agent", "argumentsJson": json.dumps(call)}
                               for i, call in enumerate(calls)]}))
-            completed = run_assertion(
-                "assert_subagent_session_scratch_disposable",
-                {"EVAL_HOME": home, "TRIAL_RAW": raw, "STDOUT_FILE": stdout,
-                 "SUBAGENT_SCRATCH_LOG_MARKER": marker})
-            return completed.returncode == 0
+            script = (f'source "{SCRIPT}"\n{DOCKER_SHIM}\n'
+                      f'EVAL_HOME="{home}"; TRIAL_RAW="{raw}"; STDOUT_FILE="{stdout}"; '
+                      f'SUBAGENT_SCRATCH_LOG_MARKER="{marker}"\n'
+                      f'EVAL_CONTAINER_NAME=fake; FAKE_HOME="{root / "container"}"; FAKE_TMP="{container_tmp}"\n'
+                      f'DOCKER_LOG="{root / "docker.log"}"; DOCKER_EXEC_RC="{exec_rc}"\n'
+                      'assert_rc=0; assert_subagent_session_scratch_disposable || assert_rc=$?\n'
+                      'echo "after the assertion"; exit "$assert_rc"')
+            return subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                                  env={"PATH": os.environ["PATH"]})
+
+    def check(self, **kwargs):
+        return self.run_check(**kwargs).returncode == 0
 
     def test_child_that_returns_the_managed_path_passes(self):
         self.assertTrue(self.check())
 
-    def test_answer_in_the_child_run_result_record_passes(self):
-        # Bug caught: the old check grepped the spawn_agent result for the path.
-        # Since the async spawn that result is {"state":"accepted"}, so a good
-        # trial failed. The path is in the child_run_result record.
-        self.assertNotIn(MANAGED_TMP, accepted_result("disposable-diagnostic"))
+    def test_answer_in_the_result_file_read_passes(self):
+        # Bug caught: the old check read the child_run_result record. Since
+        # #2515 the parent reads result.md with file_read, so a good trial
+        # failed. The spawn_agent result holds no path.
+        self.assertNotIn(MANAGED_TMP, accepted_result("disposable-diagnostic", RUN_ID))
         self.assertTrue(self.check())
 
-    def test_path_in_the_old_spawn_result_format_only_fails(self):
-        self.assertFalse(self.check(session_child=old_spawn_result(f"```\n{MANAGED_TMP}\n```")))
+    def test_path_in_the_old_formats_only_fails(self):
+        answer = f"```\n{MANAGED_TMP}\n```"
+        self.assertFalse(self.check(session_child=old_spawn_result(answer)))
+        self.assertFalse(self.check(session_child=accepted_result("disposable-diagnostic", RUN_ID)
+                                    + old_child_run_result(answer, agent="disposable-diagnostic")))
 
     def test_accepted_result_without_a_child_result_fails(self):
-        self.assertFalse(self.check(session_child=accepted_result("disposable-diagnostic")))
+        self.assertFalse(self.check(session_child=accepted_result("disposable-diagnostic", RUN_ID)))
 
-    def test_path_outside_the_answer_field_does_not_count(self):
-        # The path is in the reason field, not in the child answer.
-        body = json.loads(child_run_result_body("```\n/tmp\n```", agent="disposable-diagnostic"))
-        body["reason"] = MANAGED_TMP
-        session = accepted_result("disposable-diagnostic") + record(
-            "TOOL_RESULT", f"child_run_result call_id=c result={json.dumps(body)}")
+    def test_path_outside_the_answer_does_not_count(self):
+        # The path is in the working context of result.md, not in the child answer.
+        text = result_md("```\n/tmp\n```", agent="disposable-diagnostic", run=RUN_ID,
+                         envelope=SCRATCH_ENVELOPE_ROOT) + f"- read: {MANAGED_TMP}/eval-probe\n"
+        session = accepted_result("disposable-diagnostic", RUN_ID) + read_records(
+            "", run=RUN_ID, envelope=SCRATCH_ENVELOPE_ROOT, text=text)
         self.assertFalse(self.check(session_child=session))
+
+    def test_probe_in_the_old_run_folder_layout_fails(self):
+        # Bug caught: the old check read <run folder>/tmp/eval-probe. Since
+        # #2559 the temp folder is /tmp/netclaw-<uid>/<key>/c<hash> in the
+        # container. A child that answers the old folder fails.
+        old = f"{SCRATCH_ENVELOPE_ROOT}/subagents/{RUN_ID}/tmp"
+        self.assertFalse(self.check(answer=f"```\n{old}\n```", reply=old, probe=old))
+
+    def test_temp_folder_of_another_run_or_session_fails(self):
+        # The path has the managed shape, but its key or its run hash belongs
+        # to another envelope or another run.
+        for other in (managed_tmp(0, envelope_root=SCRATCH_ENVELOPE_ROOT + "x"), managed_tmp(5)):
+            with self.subTest(other=other):
+                self.assertFalse(self.check(answer=f"```\n{other}\n```", reply=other, probe=other))
+
+    def test_missing_probe_fails_the_trial_and_the_harness_goes_on(self):
+        # Bug caught: `$(< "$probe")` on a missing file stopped the whole run
+        # under `set -e` (trial 01 of the evals-child-consent run). Now the
+        # trial fails with a message, and the harness runs the next line.
+        completed = self.run_check(probe=None)
+        self.assertEqual(1, completed.returncode)
+        self.assertIn("after the assertion", completed.stdout)
+        self.assertIn(f"probe file {MANAGED_TMP}/eval-probe is missing", completed.stderr)
+
+    def test_docker_failure_is_inconclusive(self):
+        completed = self.run_check(exec_rc="125")
+        self.assertEqual(2, completed.returncode)
+        self.assertIn("after the assertion", completed.stdout)
 
     def test_truncated_path_in_the_child_log_is_not_used(self):
         # Bug caught: the old check read the path from the log preview, which
@@ -514,7 +684,8 @@ class ScratchTests(unittest.TestCase):
 
     def test_child_answer_with_a_wrong_path_fails_although_the_log_names_the_right_one(self):
         # The log preview holds the managed path, but the child answered only /tmp.
-        log = CHILD_LOG.replace("signalr_7cae4b47d5ce44...", f"{MANAGED_TMP[len('/home/netclaw/.netclaw/'):]}")
+        log = CHILD_LOG.replace("/home/netclaw/.netclaw/sessions/signalr_7cae4b47d5ce44...", MANAGED_TMP)
+        self.assertIn(MANAGED_TMP, log)
         self.assertFalse(self.check(child_log=log, answer="```\n/tmp\n```", reply="The path is /tmp"))
 
     def test_wrong_child_answer_fails_when_the_parent_reply_has_the_right_path(self):
