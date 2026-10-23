@@ -676,10 +676,28 @@ internal sealed class SessionInputFlow
         bool compactionDue,
         bool childConsentPaused)
     {
+        if (PersonWaitsBehindAutomation())
+            return new ToolBatchInputAdvance(null, ToolBatchNextAction.EndTurn);
+
         var batch = DrainBufferedBatch(continuesTurn: true, childConsentPaused);
         var next = completion.ChooseNext(compactionDue);
         return new ToolBatchInputAdvance(batch, next);
     }
+
+    // Security boundary (one authority per turn): a person's input never joins an automation turn, because the
+    // requesters differ. An automation turn has the principal VerifiedAutomation or SystemProcess. A waiting Operator
+    // or TrustedInternal person ends it at the tool-batch end: no input joins, and the turn makes no further model
+    // call. Each waiting input then starts a turn under its own recorded authority, so no model call mixes two
+    // authorities. An UntrustedExternal person waits, so a stranger cannot stop automation work. The pause never holds
+    // a person, so this check ignores the pause. A child result notice is automated input by its kind, so it never
+    // ends a turn. A person never ends the turn of another person.
+    private bool PersonWaitsBehindAutomation()
+        => _context is { } owner
+           && SessionToolWorkflow.IsAutomation(owner.RequesterPrincipal)
+           && _buffer.Any(static queued => !queued.IsReplay
+                                           && queued.Message.Notice is null
+                                           && BufferedAuthority(queued.Message).RequesterPrincipal
+                                               is PrincipalClassification.Operator or PrincipalClassification.TrustedInternal);
 
     public void MarkTextEmitted() => _emittedText = true;
     public void ToolBatchCommitted() { _selectedIds.Clear(); _emittedText = false; }

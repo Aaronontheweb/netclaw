@@ -2768,7 +2768,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
 
         if (@event is InputAdmitted)
             TryReplyNack("The input journal rejected the message. The session did not start a model call.");
-        else if (@event is InputClosed waitingClose && !waitingClose.InputIds.Any(_input.SelectedInputs.Ids.Contains))
+        else if (@event is InputClosed { KeepsTurn: true } waitingClose)
             _log.Error(cause, "The journal rejected the close of waiting input(s) {InputIds}", string.Join(",", waitingClose.InputIds));
         else if (_phase.Current == SessionPhase.Processing)
         {
@@ -4025,9 +4025,11 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         CloseActiveInputs(() => FinishFailedTurn(errorMessage, cause, category));
     }
 
+    // A tool batch clears the selected inputs. A background job result turn that ends after a tool batch still writes
+    // the close, because the close carries the job ID. The journal then closes the job, as TurnRecorded does.
     private void CloseActiveInputs(Action onClosed)
     {
-        if (_input.SelectedCount == 0)
+        if (_input.SelectedCount == 0 && _input.SelectedInputs.BackgroundJobId is null)
         {
             onClosed();
             return;
@@ -4291,6 +4293,18 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             TurnLog().Info("turn_mid_loop_buffer_drain count={BufferCount} iteration={Iteration}",
                 batch.Messages.Count, _turnState.ToolIterationCount);
             ApplyBufferedBatch(batch);
+        }
+
+        // A person's input waits behind this automation turn. The turn ends quietly, with no further model call, and
+        // the person's input then starts its own turn (SessionInputFlow.AdvanceAfterToolBatch).
+        if (advance.Next == ToolBatchNextAction.EndTurn)
+        {
+            _toolWorkflow.ClearNormalBatch();
+            _execution.ClearToolTracking();
+            TurnLog().Warning("turn_person_input_end_at_tool_batch iteration={Iteration} reminder={ReminderId} job={BackgroundJobId}",
+                _turnState.ToolIterationCount, _input.Authority.Source?.ReminderId?.Value, _input.Authority.Source?.BackgroundJobId?.Value);
+            CloseActiveInputs(FinishTurnWithoutReply);
+            return;
         }
 
         if (advance.Next == ToolBatchNextAction.RequestCompaction)
