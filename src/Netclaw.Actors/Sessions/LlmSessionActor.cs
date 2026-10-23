@@ -1693,7 +1693,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             new ToolExecutionTimeout(toolExecutionTimeout),
             self,
             emitSubAgentOutput,
-            request => self.Tell(request),
+            request => self.Tell(request, ActorRefs.NoSender),
             backgroundJobs,
             setWorkingDirectoryAvailable,
             setWorkingDirectoryTool is null ? null : setWorkingDirectoryTool.CanDeclare,
@@ -3325,7 +3325,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                     info.ToolCount,
                     info.Success,
                     info.Duration,
-                    info.Findings.Count));
+                    info.Findings.Count), ActorRefs.NoSender);
             });
             var context = new ToolExecutionContext(new ToolRunScope
             {
@@ -3351,11 +3351,11 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 CancellationToken.None,
                 systemPromptOverlay: skillBody);
 
-            self.Tell(new RoutedSkillExecutionCompleted(skill.Name, profile.Name, startKey, result));
+            self.Tell(new RoutedSkillExecutionCompleted(skill.Name, profile.Name, startKey, result), ActorRefs.NoSender);
         }
         catch (Exception ex)
         {
-            self.Tell(new RoutedSkillExecutionFailed(skill.Name, profile.Name, startKey, ex.Message));
+            self.Tell(new RoutedSkillExecutionFailed(skill.Name, profile.Name, startKey, ex.Message), ActorRefs.NoSender);
         }
     }
 
