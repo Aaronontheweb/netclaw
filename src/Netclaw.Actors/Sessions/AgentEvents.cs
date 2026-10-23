@@ -249,7 +249,7 @@ internal static class AgentEventRenderer
             text.AppendLine("The operator answers these prompts in the channel. You cannot answer them.");
             text.AppendLine("The children are not stalled. They wait for the operator, with no time limit.");
             text.AppendLine("Until all requests close, spawn_agent is refused and automated turns wait.");
-            text.AppendLine("check_agent_run does not work in this turn for a run that a person started.");
+            text.AppendLine("check_agent_run can read the status of a run of this session, or cancel it.");
             text.AppendLine("Ask the operator to answer the prompts, or to cancel a child.");
             return text.ToString();
         }

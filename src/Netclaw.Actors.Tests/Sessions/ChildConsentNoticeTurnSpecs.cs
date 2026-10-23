@@ -6,6 +6,9 @@
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
+using Netclaw.Actors.Sessions;
+using Netclaw.Actors.SubAgents;
+using Netclaw.Tools;
 using Xunit;
 using static Netclaw.Actors.Sessions.SessionProtocol;
 
@@ -62,7 +65,7 @@ public sealed class ChildConsentNoticeTurnSpecs(ITestOutputHelper output) : Chil
             var text = notice.UserMessage.Content ?? string.Empty;
             Assert.Contains($"run={alice.Run.RunId.Value}", text, StringComparison.Ordinal);
             Assert.Contains($"run={bob.Run.RunId.Value}", text, StringComparison.Ordinal);
-            Assert.Contains("check_agent_run does not work in this turn for a run that a person started.", text, StringComparison.Ordinal);
+            Assert.Contains("check_agent_run can read the status of a run of this session, or cancel it.", text, StringComparison.Ordinal);
             Assert.Equal(AliceTarget, notice.TurnContext.DefaultDeliveryTarget);
             Assert.Equal(AliceRequestedTarget, notice.TurnContext.RequestedDeliveryTarget);
             Assert.Equal(alice.Run.OriginalContext.Audience, notice.TurnContext.Audience);
@@ -242,4 +245,109 @@ public sealed class ChildConsentNoticeTurnSpecs(ITestOutputHelper output) : Chil
         Assert.True(completed.QuietEnd, "The notice turn must end quietly, with no empty-turn fallback.");
         await SettleNoticesAsync(journal, sessionId);
     }
+
+    /// <summary>
+    /// Live case of 22 October 2026. A child of Alice waits for consent, and the parent cancels it in the notice turn. A
+    /// notice turn reads the status of a child run of its own session and cancels it, because a cancel only reduces what
+    /// runs. The cancel closes the prompt with the reason "cancelled by parent", and the pause lifts. The notice turn
+    /// reaches no run of another session, and another tool keeps the narrow notice authority. A person turn of Bob still
+    /// cannot control a run of Alice (#2505).
+    /// Planted bug: the notice turn gets "This child run is not available to the requester." for a run of its own
+    /// session (today), or the cancel leaves the prompt open and the pause on.
+    /// </summary>
+    [Theory]
+    [InlineData("notice-cancels-own-run")]
+    [InlineData("notice-reads-own-run")]
+    [InlineData("notice-cancels-run-of-another-session")]
+    [InlineData("bob-cancels-alice-run")]
+    [InlineData("notice-probe-keeps-notice-authority")]
+    public async Task A_notice_turn_controls_the_child_runs_of_its_own_session_only(string row)
+    {
+        // Arrange: Alice starts a child that asks for consent. The control call runs in the notice turn, or in Bob's turn.
+        const string NotAvailable = "Error: This child run is not available to the requester.";
+        const string BobText = "Cancel the child of Alice.";
+        var callId = $"control-{row}";
+        var sessionId = new SessionId($"consent/notice-control-{row}");
+        var journal = await JournalAsync();
+        string? trigger = null;
+        AIContent? call = null;
+        Clients.Parent.ResponseContentsSelector = request =>
+            trigger is not null && !HasCall(request, callId)
+            && FreshUserTexts(request).Any(text => text.StartsWith(trigger, StringComparison.Ordinal))
+                ? [call!]
+                : ScriptedParentReply(request);
+        ScriptChildren();
+        var foreignSession = new SessionId($"consent/notice-control-{row}-foreign");
+        var foreign = row == "notice-cancels-run-of-another-session"
+            ? (await StartConsentChildAsync(foreignSession, await JoinAsync(foreignSession), Operator(Alice), "plain", hold: false)).Accepted
+            : null;
+        var subscriber = await JoinAsync(sessionId);
+        var (alice, gate) = await StartConsentChildAsync(sessionId, subscriber, Operator(Alice), "ask-control");
+        var aliceRun = alice.Run.RunId.Value;
+        (trigger, call) = row switch
+        {
+            "notice-cancels-own-run" => (OpenNoticeHeading, CheckRun(callId, aliceRun, cancel: true)),
+            "notice-reads-own-run" => (OpenNoticeHeading, CheckRun(callId, aliceRun, cancel: false)),
+            "notice-cancels-run-of-another-session" => (OpenNoticeHeading, CheckRun(callId, foreign!.Run.RunId.Value, cancel: true)),
+            "bob-cancels-alice-run" => (BobText, CheckRun(callId, aliceRun, cancel: true)),
+            "notice-probe-keeps-notice-authority" => (OpenNoticeHeading, (AIContent)Probe(callId)),
+            _ => throw new ArgumentOutOfRangeException(nameof(row), row, null)
+        };
+        var cancelsOwnRun = row == "notice-cancels-own-run";
+
+        // Act
+        gate.TrySetResult();
+        var prompt = await FishChildPromptAsync(subscriber, alice.Run.RunId);
+        await AwaitAssertAsync(() => Assert.NotEmpty(ConsentNotices(journal, sessionId)), Deadline, cancellationToken: Cancellation);
+        if (row == "bob-cancels-alice-run")
+        {
+            await SettleNoticesAsync(journal, sessionId);
+            await SendAsync(sessionId, BobText, Operator(Bob));
+        }
+
+        await AwaitAssertAsync(() => Assert.Contains(journal.Committed.OfType<ToolCallRecorded>(),
+            evt => evt.ToolResult.ToolCallId?.Value == callId), Deadline, cancellationToken: Cancellation);
+        if (cancelsOwnRun)
+        {
+            var closed = await subscriber.FishForMessageAsync<ToolInteractionClosed>(
+                item => item.CallId == prompt.CallId, Deadline, cancellationToken: Cancellation);
+            Assert.Equal(new ToolInteractionCloseReason.Withdrawn(WithdrawReason.CancelledByParent), closed.Reason);
+            await AwaitAssertAsync(() => Assert.Contains(ConsentNotices(journal, sessionId),
+                notice => notice.UserMessage.Content!.StartsWith(ClosingNoticeHeading, StringComparison.Ordinal)),
+                Deadline, cancellationToken: Cancellation);
+            await AwaitAssertAsync(() => Assert.Contains(journal.Committed.OfType<ChildRunEvent.TerminalRecorded>(),
+                evt => evt.RunId == alice.Run.RunId), Deadline, cancellationToken: Cancellation);
+        }
+
+        await SettleNoticesAsync(journal, sessionId);
+
+        // Assert: the shared postcondition. Only the cancel of an own run ends the run, and only it lifts the pause.
+        var result = journal.Committed.OfType<ToolCallRecorded>()
+            .Single(evt => evt.ToolResult.ToolCallId?.Value == callId).ToolResult.Content ?? string.Empty;
+        Note($"row={row} result={result}");
+        switch (row)
+        {
+            case "notice-cancels-own-run" or "notice-reads-own-run":
+                Assert.DoesNotContain(NotAvailable, result, StringComparison.Ordinal);
+                Assert.Contains($"\"run_id\":\"{aliceRun}\"", result, StringComparison.Ordinal);
+                break;
+            case "notice-cancels-run-of-another-session" or "bob-cancels-alice-run":
+                Assert.Equal(NotAvailable, result);
+                break;
+            default:
+                Assert.NotEqual("confirmed", result);
+                Assert.DoesNotContain(journal.Committed.OfType<ToolApprovalRequested>(), evt => evt.CallId == callId);
+                break;
+        }
+
+        Assert.Equal(cancelsOwnRun ? 1 : 0, journal.Committed.OfType<ChildRunEvent.CancellationRequested>().Count());
+        Assert.Equal(cancelsOwnRun ? 1 : 0, journal.Committed.OfType<ChildRunEvent.TerminalRecorded>().Count(evt =>
+            evt.RunId == alice.Run.RunId && evt.Terminal.Result.OutcomeReason == SubAgentOutcomeReason.CancelledByParent));
+        Assert.Equal(cancelsOwnRun, ConsentNotices(journal, sessionId).Any(notice =>
+            notice.UserMessage.Content!.StartsWith(ClosingNoticeHeading, StringComparison.Ordinal)));
+        Assert.Empty(ApprovalTool.Contexts);
+    }
+
+    private static FunctionCallContent CheckRun(string callId, string runId, bool cancel) => new(callId, "check_agent_run",
+        new Dictionary<string, object?> { ["runId"] = runId, ["cancel"] = cancel, ["_rationale"] = "Control the child." });
 }
