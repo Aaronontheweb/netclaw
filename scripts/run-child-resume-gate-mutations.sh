@@ -1,10 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Focused gate for the two pure decisions of a parked child run (durable-child-consent-wait, PR 1):
-# ChildParkRules.AcceptPark (only the owned child of an Accepted run opens prompts; a cancelling run ends cancelled;
-# any other sender gets the stop signal) and ChildParkRules.ResumeGate (a park waits for every answer and for the end
-# of a restart drain). ChildParkRulesTests must kill every mutant in the span.
+# Focused gate for the pure decisions of a parked child run (ChildParkRules). See TOOLING.md, "Child Resume Gate".
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 relative="SubAgents/ChildRunPark.cs"
@@ -42,7 +39,7 @@ read -r span_start span_end first_line last_line < <(
 )
 
 report="$output_path/reports/mutation-report.json"
-expected_count=10
+expected_count=44
 jq -e --arg source "$source_file" \
   --argjson first "$first_line" --argjson last "$last_line" \
   --argjson count "$expected_count" '

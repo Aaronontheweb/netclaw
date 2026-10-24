@@ -31,6 +31,12 @@ public static partial class SessionProtocol
         public sealed record CancellationRequested : ChildRunEvent;
         public sealed record TerminalRecorded(ChildRunTerminal Terminal) : ChildRunEvent;
 
+        // durable-child-park-recovery: the park with its requests, and the resume before any parked call runs.
+        internal sealed record Parked(ChildRunPark Park, IReadOnlyList<ToolApprovalRequested> Requests)
+            : ChildRunEvent;
+
+        internal sealed record Resumed : ChildRunEvent;
+
         /// <summary>
         /// Read-only. A deployed runtime wrote this event for the old tool-pair delivery. The reader keeps the pair
         /// until a legacy closure puts it into the history. No writer creates this event.

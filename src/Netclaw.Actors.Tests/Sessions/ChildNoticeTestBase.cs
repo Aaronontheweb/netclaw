@@ -225,13 +225,47 @@ public abstract class ChildNoticeTestBase : LlmSessionTestBase
         return (journal, accepted, notice);
     }
 
-    protected Task<ISessionResponse> AnswerAsync(SessionId id, ToolCallId callId, string sender) =>
-        AskManagerAsync<ISessionResponse>(new ToolInteractionResponse
+    // Writes records into the journal of a stopped session, as an earlier binary or an earlier step did. The writer
+    // recovers the journal first, so its records take the next sequence numbers.
+    private protected async Task AppendToJournalAsync(SessionId sessionId, params object[] events)
+    {
+        var writer = Sys.ActorOf(Props.Create(() => new JournalAppender($"session-{sessionId.Value}")));
+        await writer.Ask<Akka.Done>(new JournalAppender.Append(events), Deadline, Cancellation);
+        await StopAsync(writer);
+    }
+
+    private sealed class JournalAppender : Akka.Persistence.ReceivePersistentActor
+    {
+        public sealed record Append(object[] Events);
+
+        public JournalAppender(string persistenceId)
         {
-            SessionId = id, CallId = callId,
-            SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
-            SenderId = new SenderId(sender)
-        });
+            PersistenceId = persistenceId;
+            RecoverAny(_ => { });
+            Command<Append>(append =>
+            {
+                var replyTo = Sender;
+                var remaining = append.Events.Length;
+                PersistAll(append.Events, _ =>
+                {
+                    if (--remaining == 0)
+                        replyTo.Tell(Akka.Done.Instance);
+                });
+            });
+        }
+
+        public override string PersistenceId { get; }
+    }
+
+    protected Task<ISessionResponse> AnswerAsync(SessionId id, ToolCallId callId, string sender) =>
+        AskManagerAsync<ISessionResponse>(ApproveOnce(id, callId, sender));
+
+    protected static ToolInteractionResponse ApproveOnce(SessionId id, ToolCallId callId, string sender) => new()
+    {
+        SessionId = id, CallId = callId,
+        SelectedKey = new ApprovalOptionKey(ApprovalOptionKeys.ApproveOnce),
+        SenderId = new SenderId(sender)
+    };
 
     // A refused answer names its reason, so a spec failure shows why the session did not take the answer. A restart
     // reminder that resumes nothing gets RestartResumeNotNeeded, which is an acknowledgement too.
@@ -358,6 +392,11 @@ public abstract class ChildNoticeTestBase : LlmSessionTestBase
 
         return -1;
     }
+
+    // How many turns consumed the input: a turn record or a tool batch. A close is not a turn.
+    private protected static int TurnRuns(AcceptanceFault journal, InputId inputId) => journal.Committed.ToArray().Count(evt =>
+        evt is TurnRecorded turn && turn.ConsumedInputIds.Contains(inputId)
+        || evt is ToolBatchStarted batch && batch.ConsumedInputIds.Contains(inputId));
 
     // How many committed events consumed the input. A turn that runs a notice twice is a double delivery.
     private protected static int ConsumptionCount(AcceptanceFault journal, InputId inputId)

@@ -270,6 +270,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
                 .Select(closed => new ToolInteractionClosed(closed.CallId,
                     new ToolInteractionCloseReason.Withdrawn(closed.Reason)) { SessionId = _sessionId })
                 .ToArray();
+            RestoreParkedRequests();
             CloseRecoveredConsentNotices();
             foreach (var open in _toolWorkflow.OpenApprovals())
                 LogToolApprovalRequested(open.AuthorizationAttemptId.Value, open.Request.CallId, open.Request.ToolName, recovered: true);
@@ -279,7 +280,8 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             if (!_toolWorkflow.HasParkedApprovals())
                 _input.ClearNoticeRuns();
             RestoreWaitingInputs();
-            Self.Tell(new RecoverChildRuns());
+            Self.Tell(new RecoverChildRuns([.. _state.GetExecutableChildRuns().Select(run =>
+                (run.RunId, ChildParkRules.RecoveryAction(run.Lifecycle)))]));
 
             // Resolve once at recovery time. ActorRegistry returns Nobody if
             // the dispatcher hasn't been registered (unit-test scenarios that
@@ -316,8 +318,13 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             // Akka.Persistence unstashes the commands that arrived during recovery right after this handler.
             // The orphan notices must start their turn here, so a message that woke the session buffers behind them
             // and does not run first.
-            ResumeOrphanNotices(pausedAtRecovery);
-            if (pausedAtRecovery)
+            ResumeOrphanNotices(pausedAtRecovery || _toolWorkflow.IsChildConsentPaused);
+            // A restart that withdrew the requests ends the pause, so the held input runs. An open parked request keeps
+            // the pause: the held input goes into the queue now, before the stashed commands, so a stashed fire finds
+            // and replaces the held fire of its reminder (design F3). The queue holds it until the last answer.
+            if (_toolWorkflow.IsChildConsentPaused)
+                QueueInputsHeldByThePause();
+            else if (pausedAtRecovery)
                 Self.Tell(new StartHeldInputs(), ActorRefs.NoSender);
             if (_consentDigest.IsReady)
                 ChildConsentChanged();
@@ -1815,11 +1822,11 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         TransitionTo(SessionPhase.Passivating);
     }
 
-    // A live child, or an ended child whose notice is still to come. The notice needs this actor, and a passivated
-    // session would not admit it until the next join.
-    // A park lives only in this actor in PR 1, so a parked run keeps the session in memory.
-    private bool HasUnreportedChildren => _execution.HasLiveChildren || _parks.Count > 0
-        || UnreportedRuns().Any(run => run.Lifecycle is ChildRunLifecycle.Terminal);
+    // A live child, an ended child whose notice is still to come, or a park with every answer that waits only for a
+    // drain to end. The notice and the resume need this actor. A park with an open request is in the run record, so
+    // the session can passivate, and a click wakes it (UnreportedRuns leaves that park out).
+    private bool HasUnreportedChildren => _execution.HasLiveChildren
+        || UnreportedRuns().Any(run => run.Lifecycle is ChildRunLifecycle.Terminal or ChildRunLifecycle.Parked);
 
     private void ApplyBufferedBatch(BufferedInputBatch batch)
     {
@@ -2187,19 +2194,9 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         throw new InvalidOperationException("Unknown input admission decision.");
     }
 
-    // A later input ends the continuation input of a stopped turn that no turn selected (#2632). One write closes it
-    // and admits the later input. The stopped turn never runs after that, so the person gets the held-back notice once.
     private void PersistAdmission(InputAdmitted evt, SendUserMessage cmd, InputPlacement placement, InputId? replaces = null)
-    {
-        var selected = _input.SelectedInputs.Ids;
-        var stale = replaces is null
-            ? _state.GetExecutablePendingInputs()
-                .FirstOrDefault(input => SessionInputFlow.IsContinuation(input) && !selected.Contains(input.InputId))
-            : null;
-        PersistReplacingInput(replaces ?? stale?.InputId, evt, stale is null ? "reminder_fire_replaced" : "continuation_closed", admitted =>
+        => PersistReplacingInput(replaces, evt, "reminder_fire_replaced", admitted =>
         {
-            if (stale is not null)
-                EmitRestartStoppedTurnNotice(ReminderEligibility.None, 0);
             // The review reads the ended run, which the notice turns into a reported run.
             var endedRun = admitted.ChildNotice is { } notice ? _state.ChildRuns[notice.RunId] : null;
             _state = _state.Apply(admitted);
@@ -2207,28 +2204,44 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             var accepted = _input.AdmissionCommitted(admitted, cmd, placement);
             CompleteAcceptedInput(accepted, placement);
         });
-    }
 
-    // The replace rule of a waiting input (a reminder fire while paused, an approval notice). One atomic write holds the
-    // close of the waiting input and the admission of the newer input, so a crash keeps both or neither.
+    // Every admission comes here: an ordinary input, a fire that replaces a waiting fire, and an approval notice. One
+    // atomic write holds the close of the waiting input and the admission of the newer input, so a crash keeps both or
+    // neither. The same write closes the continuation input of a stopped turn that no turn selected (#2632). The stopped
+    // turn never runs after that, so the person gets the held-back restart notice once. Only the notices that the
+    // session makes itself (an approval notice, a child result notice) keep a continuation that the pause holds in the
+    // queue, so it runs after the last answer. A person input or a fire closes it.
     private void PersistReplacingInput(
         InputId? waiting, InputAdmitted admitted, string replacedLogEvent, Action<InputAdmitted> onAdmitted)
     {
-        if (waiting is not { } waitingId)
+        var selected = _input.SelectedInputs.Ids;
+        var keepsQueued = admitted.ChildNotice is not null
+                          || TurnContext.TryFromRecord(admitted.TurnContext, out var authority, out _) && authority is { IsChildConsentNotice: true };
+        var stale = _state.GetExecutablePendingInputs()
+            .FirstOrDefault(input => SessionInputFlow.IsContinuation(input) && !selected.Contains(input.InputId)
+                                     && !(keepsQueued && _input.IsBuffered(input.InputId)))?.InputId;
+        InputId[] closes = [.. new[] { waiting, stale }.OfType<InputId>()];
+        if (closes.Length == 0)
         {
             Persist(admitted, onAdmitted);
             return;
         }
 
-        var closed = new InputClosed { SessionId = _sessionId, InputIds = [waitingId], ClosedAtMs = NowMs(), KeepsTurn = true };
+        var closed = new InputClosed { SessionId = _sessionId, InputIds = closes, ClosedAtMs = NowMs(), KeepsTurn = true };
         _ = _state.Apply(closed);
         PersistAll<ISessionEvent>([closed, admitted], committed =>
         {
             if (committed is InputClosed close)
             {
                 ApplyInputClosed(close);
-                TurnLog().Info("{ReplacedEvent} waiting={Waiting} replacement={Replacement}",
-                    replacedLogEvent, waitingId, admitted.InputId);
+                if (waiting is { } waitingId)
+                    TurnLog().Info("{ReplacedEvent} waiting={Waiting} replacement={Replacement}",
+                        replacedLogEvent, waitingId, admitted.InputId);
+                if (stale is { } stopped)
+                {
+                    TurnLog().Info("continuation_closed waiting={Waiting} replacement={Replacement}", stopped, admitted.InputId);
+                    EmitRestartStoppedTurnNotice(ReminderEligibility.None, 0);
+                }
             }
             else
                 onAdmitted((InputAdmitted)committed);
@@ -2463,6 +2476,10 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         }
 
         var pending = _state.GetExecutablePendingInputs();
+        // N1 (durable-child-park-recovery): an open parked request holds automated input and child notices, also the
+        // continuation of an automation turn. The reminder starts no turn for them. They run after the last answer.
+        if (_toolWorkflow.IsChildConsentPaused)
+            pending = SplitByThePause(pending).Free;
         if (pending.Count == 0)
         {
             AckRestartResumeNoOp(cmd);
@@ -2783,21 +2800,22 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
             return;
         }
 
-        // A rejected consent request or answer of a parked child ends that run, never the parent turn
+        // A rejected park, answer, or resume of a parked child ends that run, never the parent turn
         // (durable-child-consent-wait, design D3). This branch runs before the turn failure below. The person who
         // answered gets a nack, because no resume follows the rejected answer.
-        var childRun = @event switch
+        (SubAgentRunId RunId, ChildRejectedEvent Kind)? childEvent = @event switch
         {
-            ToolApprovalRequested request => request.SourceChildRunId,
-            ToolApprovalResolved answer => answer.SourceChildRunId,
+            ChildRunEvent.Parked parked => (parked.RunId, ChildRejectedEvent.Parked),
+            ChildRunEvent.Resumed resumed => (resumed.RunId, ChildRejectedEvent.Resumed),
+            ToolApprovalResolved { SourceChildRunId: { } answered } => (answered, ChildRejectedEvent.Answer),
             _ => null
         };
-        if (childRun is { } rejectedRun)
+        if (childEvent is { } rejected)
         {
-            _log.Error(cause, "The journal rejected a consent event of child run {RunId}", rejectedRun);
-            if (@event is ToolApprovalResolved)
+            _log.Error(cause, "The journal rejected the {Kind} record of child run {RunId}", rejected.Kind, rejected.RunId);
+            if (rejected.Kind == ChildRejectedEvent.Answer)
                 TryReplyNack(ApprovalNackReasons.PersistFailed);
-            Self.Tell(new ChildEventRejected(rejectedRun));
+            Self.Tell(new ChildEventRejected(rejected.RunId, rejected.Kind));
             base.OnPersistRejected(cause, @event, sequenceNr);
             return;
         }
@@ -3524,22 +3542,16 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
 
     // Only a call of the session sends a dispatch here. The owner of a park writes its child requests directly.
     private void HandleToolInteractionRequestDispatch(ToolInteractionRequestDispatch dispatch)
-        => PersistApprovalRequests([dispatch]);
+        => Persist(CreateApprovalRequest(dispatch), e => ApprovalRequestCommitted(e, PromptOf(dispatch)));
 
-    // The journal stores the requests in one atomic write. A park sends all its requests here at once, so a rejected
-    // write leaves no request of the park (durable-child-consent-wait, design D3).
-    private void PersistApprovalRequests(IReadOnlyList<ToolInteractionRequestDispatch> dispatches)
+    // The journal holds the request: a parent request record, or a request inside a Parked record.
+    private void ApprovalRequestCommitted(ToolApprovalRequested request, ToolInteractionRequest prompt)
     {
-        var prompts = new Queue<ToolInteractionRequest>(dispatches.Select(PromptOf));
-        PersistAll(dispatches.Select(CreateApprovalRequest).ToArray(), e =>
-        {
-            var msg = prompts.Dequeue();
-            ApplyToolApprovalRequested(e);
-            EmitOutput(msg);
-            TryStopDurableApprovalWaits();
-            if (e.SourceChildRunId is { } requestingRun)
-                ChildApprovalRequested(_state.ChildRuns[requestingRun], msg);
-        });
+        ApplyToolApprovalRequested(request);
+        EmitOutput(prompt);
+        TryStopDurableApprovalWaits();
+        if (request.SourceChildRunId is { } requestingRun)
+            ChildApprovalRequested(_state.ChildRuns[requestingRun], prompt);
     }
 
     // A parent prompt ends with its turn. A child prompt lives until an answer or a close, because the child keeps
@@ -3589,8 +3601,12 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         _input.ClearTurnContext();
     }
 
+    // A parked run keeps the answer in its run record. A parent answer changes only the workflow.
     private void ApplyToolApprovalResolved(ToolApprovalResolved evt)
-        => _toolWorkflow.ApplyResolvedResponse(evt);
+    {
+        _state = _state.Apply(evt);
+        _toolWorkflow.ApplyResolvedResponse(evt);
+    }
 
     private void ApplyToolBatchAbandoned(ToolBatchAbandoned evt)
     {
@@ -3910,7 +3926,7 @@ public sealed partial class LlmSessionActor : ReceivePersistentActor, IWithTimer
         var resolution = _toolWorkflow.CreateResolution(accepted, _sessionId, NowMs());
         Persist(resolution, evt =>
         {
-            _toolWorkflow.ApplyResolvedResponse(evt);
+            ApplyToolApprovalResolved(evt);
             if (evt.SourceChildRunId is { } answeredRun)
             {
                 TryReplyAck();
