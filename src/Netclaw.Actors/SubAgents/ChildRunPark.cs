@@ -54,6 +54,15 @@ internal sealed record ChildParkReached(SubAgentRunId RunId, ChildRunPark Park, 
     : INoSerializationVerificationNeeded;
 
 /// <summary>
+/// The owner tells each live child to park at a graceful drain (running-child-drain-park design D2). After it the child
+/// starts no model call and no tool batch. Actor-local.
+/// </summary>
+internal sealed record ParkForDrain : INoSerializationVerificationNeeded
+{
+    public static readonly ParkForDrain Instance = new();
+}
+
+/// <summary>
 /// The journal rejected an event of a child run (design D3). The owner records the end of the run only when the run
 /// still has the lifecycle that the event expected (<see cref="ChildParkRules.RejectedEventEnds"/>).
 /// </summary>
@@ -86,6 +95,19 @@ internal enum ChildResumeDecision
 
     /// <summary>Every request has an answer. Prepare the resume.</summary>
     Resume
+}
+
+/// <summary>The first step of a resumed child (running-child-drain-park design D1 R3).</summary>
+internal enum ChildResumeStart
+{
+    /// <summary>A drain park: the child makes a model call.</summary>
+    ModelCall,
+
+    /// <summary>A consent park with an answer for each request: the child runs the parked calls.</summary>
+    ParkedCalls,
+
+    /// <summary>The answers do not match the requests of the park. The run ends, and no parked call runs.</summary>
+    EndRun
 }
 
 /// <summary>What recovery does with a child run (PR 2 design D6, F3).</summary>
@@ -173,5 +195,18 @@ internal static class ChildParkRules
                 : loopGuard.Episodes.Values.Any(static episode => episode.EqualRounds is < 0 or > 2)
                     ? "an equal-round count is outside 0 to 2"
                     : null;
+
+    // Security boundary: a consent park asks the requester of the run, so that requester must be able to answer. A drain
+    // park (no request) asks nobody, so a requester with no interactive approval, such as a reminder turn, can keep it.
+    public static bool RequesterCanAnswer(int requestCount, bool supportsInteractiveApproval)
+        => requestCount == 0 || supportsInteractiveApproval;
+
+    // The request count of the park picks the first step of a resumed child, never the answer count alone. A consent
+    // park whose answers are lost must not take the drain branch: the child would call the model with unanswered tool
+    // calls, and the parked calls would never run.
+    public static ChildResumeStart ResumeStart(int parkRequests, int answers)
+        => answers != parkRequests ? ChildResumeStart.EndRun
+            : parkRequests == 0 ? ChildResumeStart.ModelCall
+            : ChildResumeStart.ParkedCalls;
     // </child-resume-gate>
 }

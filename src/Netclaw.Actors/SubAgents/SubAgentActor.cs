@@ -112,6 +112,10 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     private long _llmCallId;
     private ChildRunExecution? _ownedRun;
     private int _checkpointRound;
+    // running-child-drain-park design D2: after ParkForDrain the child starts no model call and no tool batch. A batch
+    // that runs ends first, so its results enter the park.
+    private bool _parkForDrain;
+    private bool _toolBatchRuns;
     private IActorRef _replyTo = ActorRefs.Nobody;
     private CancellationTokenSource? _executionCts;
 
@@ -412,6 +416,8 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 _definition.Name, _aiTools.Count, _prefillBudget, _interDeltaBudget,
                 _noProgressBudget?.ToString() ?? "unbounded", msg.Resume is not null);
             LogToolExposure();
+            // Become first: a resume that ends the run at once hands over, and that behavior must win.
+            Become(Processing);
             if (msg.Resume is { } resume)
                 ResumeFromPark(resume);
             else
@@ -425,8 +431,6 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
                 });
                 FireLlmCall();
             }
-
-            Become(Processing);
         });
     }
 
@@ -434,6 +438,13 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
     {
         Receive<ChildCheckpointCommitted>(_ => FireLlmCall());
         Receive<ChildTerminalCommitted>(_ => Context.Stop(Self));
+        Receive<ParkForDrain>(_ =>
+        {
+            _parkForDrain = true;
+            // A model call has no outside effect, so the park cancels it, and the resumed child makes the call again.
+            if (!_toolBatchRuns)
+                ParkForDrainNow();
+        });
         Receive<LlmResponseReceived>(msg =>
         {
             if (msg.CallId != _llmCallId)
@@ -560,6 +571,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         {
             if (msg.CallId != _llmCallId)
                 return;
+            _toolBatchRuns = false;
             RecordProgress("processing tool results");
             // H3: a parked call runs later in the directories of this batch, before a finished call changes them.
             var batchDirectories = new ChildParkScopeDirectories(ToolExecutionContext.RunScope.ProjectDirectory,
@@ -652,6 +664,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         {
             if (msg.CallId != _llmCallId)
                 return;
+            _toolBatchRuns = false;
             _activeCycleBatch = null;
             _activeRepeatNudge = null;
             _log.Error(msg.Cause, "SubAgent [{AgentName}] tool execution failed", _definition.Name);
@@ -831,6 +844,7 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         _log.Info("SubAgent [{AgentName}] calling tools: [{ToolNames}]",
             _definition.Name, toolNames);
 
+        _toolBatchRuns = true;
         var self = Self;
         var setWorkingDirectoryTool =
             _toolRegistry.GetByName(SetWorkingDirectoryTool.ToolName) as SetWorkingDirectoryTool;
@@ -867,9 +881,28 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
         _turnState.RestoreLoopGuard(park.LoopGuard);
         _checkpointRound = park.LoopGuard.ToolIterationCount;
         _fileActivity.Restore(park.FileActivity);
-        var parkedCallIds = resume.Answers.Keys.ToHashSet(StringComparer.Ordinal);
-        var parkedCalls = _history.Last(static message => message.Role == Microsoft.Extensions.AI.ChatRole.Assistant)
-            .Contents.OfType<FunctionCallContent>().Where(call => parkedCallIds.Contains(call.CallId)).ToList();
+        // The parked calls of the park are the calls of its last assistant message with no result. A consent park has
+        // one for each request, and a drain park has none, so the child follows the same rule as the owner.
+        var lastAssistant = _history.FindLastIndex(static message => message.Role == Microsoft.Extensions.AI.ChatRole.Assistant);
+        var answered = _history.Skip(lastAssistant + 1).SelectMany(static message => message.Contents)
+            .OfType<FunctionResultContent>().Select(static result => result.CallId).ToHashSet(StringComparer.Ordinal);
+        List<FunctionCallContent> parkedCalls = lastAssistant < 0 ? [] : _history[lastAssistant].Contents.OfType<FunctionCallContent>()
+            .Where(call => !answered.Contains(call.CallId)).ToList();
+        switch (ChildParkRules.ResumeStart(parkedCalls.Count, resume.Answers.Count))
+        {
+            case ChildResumeStart.ModelCall:
+                FireLlmCall();
+                return;
+            case ChildResumeStart.ParkedCalls when parkedCalls.All(call => resume.Answers.ContainsKey(call.CallId)):
+                break;
+            default:
+                // The owner checks the same rule before the resume, so this is damage. The run ends loudly, and no
+                // parked call runs.
+                var damage = $"The resume has {resume.Answers.Count} answer(s) that do not match the {parkedCalls.Count} parked call(s) of the park.";
+                _log.Error("SubAgent [{AgentName}] cannot resume: {Damage}", _definition.Name, damage);
+                Complete(false, damage, SubAgentRunOutcome.Failed, SubAgentOutcomeReason.ParkDamaged);
+                return;
+        }
         _toolRegistry.CanonicalizeToolCalls(parkedCalls);
         RunTools(CreateExecutor(), parkedCalls, new HashSet<string>(StringComparer.Ordinal), resume.Answers);
         // Design D2: the parked calls run in the directories of the batch (RunTools took that context). A finished
@@ -890,10 +923,15 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
             FileActivity = _fileActivity.BuildResult(), SkillOverlay = _definition.SkillOverlay
         };
         EndRun();
-        _log.Info("SubAgent [{AgentName}] parked {Count} call(s) for consent after {Iterations} tool iterations",
+        _log.Info("SubAgent [{AgentName}] parked with {Count} consent request(s) after {Iterations} tool iterations",
             _definition.Name, requests.Count, _turnState.ToolIterationCount);
         HandOver(owned, new ChildParkReached(owned.RunId, park, requests));
     }
+
+    // A drain park holds no request. It keeps the current directories, so the resume applies no directory change.
+    private void ParkForDrainNow()
+        => Park([], new ChildParkScopeDirectories(ToolExecutionContext.RunScope.ProjectDirectory,
+            ToolExecutionContext.RunScope.InheritedCwd));
 
     private void HandOver(ChildRunExecution owned, object message)
     {
@@ -904,6 +942,11 @@ public sealed class SubAgentActor : ReceiveActor, IWithTimers
 
     private void FireLlmCall()
     {
+        if (_parkForDrain)
+        {
+            ParkForDrainNow();
+            return;
+        }
         if (_ownedRun is { } owned && _turnState.ToolIterationCount > _checkpointRound)
         {
             _checkpointRound = _turnState.ToolIterationCount;

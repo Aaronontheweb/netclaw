@@ -43,7 +43,14 @@ A click on a withdrawn prompt gets the same text. Nothing runs, and no grant is 
 A parked child survives a restart, a config reload, and passivation. Its prompt stays open, and the pause comes back.
 The operator answers the old prompt after the restart, and the parked call runs once. Do not respawn the child.
 Recovery logs `child_parks_recovered count=N bytes=B` when it keeps parked runs.
-A child that was running (not parked) at a restart is still lost with `owner_restarted`.
+A running child also survives a graceful restart (a daemon stop or a config reload). The drain tells it to park.
+It finishes its current tool step, or it drops its current model call, and it parks with no prompt.
+After the restart the restart reminder wakes the session, and the child continues with its next model call under its original authority. Do not respawn it.
+The restart reminder needs the channel type of the recorded context. A context with no channel type gets no reminder, and the park then waits for the next message in the session.
+The drain waits for running children for about 18 seconds (the drain deadline minus 2 seconds).
+A child that does not park in that time is lost with `owner_restarted`, and its running tool does not run again.
+The session then logs one Warning that ends with `child_wait_ended live_children=N`.
+A crash, a kill, or a stop with no drain still loses a running child with `owner_restarted`.
 An older Netclaw binary cannot recover a session that holds a parked child. Restore the `netclaw.db` backup before a downgrade.
 
 Use `Cancel: true` to request cancellation.

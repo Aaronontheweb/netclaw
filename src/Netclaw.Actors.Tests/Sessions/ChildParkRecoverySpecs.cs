@@ -3,7 +3,6 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Text.RegularExpressions;
 using Microsoft.Extensions.AI;
 using Netclaw.Actors.Channels;
 using Netclaw.Actors.Protocol;
@@ -27,6 +26,10 @@ public sealed class ChildParkRecoverySpecs(ITestOutputHelper output) : ChildPark
 {
     private const string AliceText = "Alice interrupted work.";
     private const string BatchCall = "turn-batch";
+
+    // The drain waits for the model grace period and for the child wait (running-child-drain-park). The virtual clock
+    // moves both forward, so no row waits for them in real time.
+    protected override bool UseTestScheduler => true;
 
     /// <summary>
     /// S5, the pause across a restart. A child of Alice parks, so its open request pauses the session. Rows:
@@ -313,9 +316,14 @@ public sealed class ChildParkRecoverySpecs(ITestOutputHelper output) : ChildPark
         }
         await StopAsync(await ResolveSessionAsync(id));
 
-        // Act + Assert
-        var line = parks == 0 ? new Regex("child_parks_recovered") : new Regex(@"child_parks_recovered count=2 bytes=[1-9][0-9]*$");
-        await EventFilter.Info(line).ExpectAsync(parks == 0 ? 0 : 1, () => JoinRecorderAsync(id), Deadline, Cancellation);
+        // Act: the join recovers the session. The park line is a recovery line, so the join line ends the search.
+        var lines = await RecoveryLogLinesAsync(id, "child_parks_recovered", () => JoinRecorderAsync(id));
+
+        // Assert
+        if (parks == 0)
+            Assert.Empty(lines);
+        else
+            Assert.Matches(@"child_parks_recovered count=2 bytes=[1-9][0-9]*$", Assert.Single(lines));
     }
 
     /// <summary>
@@ -377,7 +385,13 @@ public sealed class ChildParkRecoverySpecs(ITestOutputHelper output) : ChildPark
         var session = await ResolveSessionAsync(id);
         var stopped = CreateTestProbe();
         stopped.Watch(session);
-        var drained = await AskManagerAsync<DaemonRestartPrepared>(new PrepareForDaemonRestart(id, "daemon-stop"));
+        var drain = AskManagerAsync<DaemonRestartPrepared>(new PrepareForDaemonRestart(id, "daemon-stop"));
+        await AwaitAssertAsync(() =>
+        {
+            AdvanceScheduler(TimeSpan.FromSeconds(1));
+            Assert.True(drain.IsCompleted, "The restart drain did not finish.");
+        }, Deadline, TimeSpan.FromMilliseconds(10), Cancellation);
+        var drained = await drain;
         await stopped.ExpectTerminatedAsync(session, Deadline, cancellationToken: Cancellation);
         Assert.NotNull(drained.RestartReminder);
         return drained.RestartReminder;
