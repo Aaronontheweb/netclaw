@@ -35,6 +35,7 @@ internal static partial class NetclawProtoMapper
         InputAdmitted v => ToProto(v),
         InputClosed v => ToProto(v),
         SessionTitleSet v => ToProto(v),
+        ContinuationAuthorized v => ToProto(v),
         SessionCompacted v => ToProto(v),
         ToolBatchStarted v => ToProto(v),
         ToolCallRecorded v => ToProto(v),
@@ -200,7 +201,8 @@ internal static partial class NetclawProtoMapper
             SessionId = ToProto(evt.SessionId),
             InputId = evt.InputId.Value,
             UserMessage = ToProto(evt.UserMessage),
-            AdmittedAtMs = evt.AdmittedAtMs
+            AdmittedAtMs = evt.AdmittedAtMs,
+            ContinuesStoppedTurn = evt.ContinuesStoppedTurn
         };
         if (evt.SourceBackgroundJobId is { } sourceBackgroundJobId)
             proto.SourceBackgroundJobId = sourceBackgroundJobId.Value;
@@ -214,21 +216,33 @@ internal static partial class NetclawProtoMapper
         return proto;
     }
 
-    internal static InputAdmitted FromProto(Proto.InputAdmittedProto proto) => new()
+    internal static InputAdmitted FromProto(Proto.InputAdmittedProto proto)
     {
-        SessionId = FromProto(proto.SessionId),
-        InputId = new InputId(proto.InputId),
-        SourceBackgroundJobId = proto.HasSourceBackgroundJobId
-            ? new BackgroundJobId(proto.SourceBackgroundJobId) : null,
-        SourceMessageId = proto.HasSourceMessageId ? proto.SourceMessageId : null,
-        UserMessage = FromProto(proto.UserMessage),
-        ExecutableText = proto.HasExecutableText ? proto.ExecutableText : null,
-        TurnContext = proto.TurnContext is null
-            ? throw new InvalidDataException("An admitted input has no turn context.")
-            : FromProto(proto.TurnContext),
-        ChildNotice = proto.ChildNotice is null ? null : FromProto(proto.ChildNotice),
-        AdmittedAtMs = proto.AdmittedAtMs
-    };
+        var input = new InputAdmitted
+        {
+            SessionId = FromProto(proto.SessionId),
+            InputId = new InputId(proto.InputId),
+            SourceBackgroundJobId = proto.HasSourceBackgroundJobId
+                ? new BackgroundJobId(proto.SourceBackgroundJobId) : null,
+            SourceMessageId = proto.HasSourceMessageId ? proto.SourceMessageId : null,
+            UserMessage = FromProto(proto.UserMessage),
+            ExecutableText = proto.HasExecutableText ? proto.ExecutableText : null,
+            TurnContext = proto.TurnContext is null
+                ? throw new InvalidDataException("An admitted input has no turn context.")
+                : FromProto(proto.TurnContext),
+            ChildNotice = proto.ChildNotice is null ? null : FromProto(proto.ChildNotice),
+            AdmittedAtMs = proto.AdmittedAtMs
+        };
+        // A 0.28.0-beta.3 record has no marker. That binary wrote its continuation with no text, no media, no
+        // executable text, and no notice, so the legacy read keeps that shape rule (#2659 design D4).
+        return input with
+        {
+            ContinuesStoppedTurn = proto.HasContinuesStoppedTurn
+                ? proto.ContinuesStoppedTurn
+                : input.UserMessage.Content.Length == 0 && input.UserMessage.MediaReferences.Count == 0
+                  && input.ExecutableText is null && input.ChildNotice is null
+        };
+    }
 
     internal static Proto.InputClosedProto ToProto(InputClosed evt)
     {
@@ -257,6 +271,22 @@ internal static partial class NetclawProtoMapper
         ClosedAtMs = proto.ClosedAtMs,
         ChildContinuation = proto.ChildContinuation is null ? null : FromProto(proto.ChildContinuation),
         KeepsTurn = proto.HasKeepsTurn && proto.KeepsTurn
+    };
+
+    // ── ContinuationAuthorized ──
+
+    internal static Proto.ContinuationAuthorizedProto ToProto(ContinuationAuthorized evt) => new()
+    {
+        SessionId = ToProto(evt.SessionId),
+        InputId = evt.InputId.Value,
+        AuthorizedAtMs = evt.AuthorizedAtMs
+    };
+
+    internal static ContinuationAuthorized FromProto(Proto.ContinuationAuthorizedProto proto) => new()
+    {
+        SessionId = FromProto(proto.SessionId),
+        InputId = new InputId(proto.InputId),
+        AuthorizedAtMs = proto.AuthorizedAtMs
     };
 
     // ── SessionTitleSet ──
@@ -660,6 +690,7 @@ internal static partial class NetclawProtoMapper
         proto.AdoptedContextRecords.AddRange(snap.AdoptedContextRecords.Select(ToAdoptedContextSnapshotRecord));
         proto.PendingInputs.AddRange(snap.PendingInputs.Select(ToProto));
         proto.RecentSourceMessageKeys.AddRange(snap.RecentSourceMessageKeys);
+        proto.AuthorizedContinuationInputIds.AddRange(snap.AuthorizedContinuationInputIds.Select(static id => id.Value));
         return proto;
     }
 
@@ -683,7 +714,8 @@ internal static partial class NetclawProtoMapper
             .Select(static id => new BackgroundJobId(id)).ToArray(),
         AdoptedContextRecords = proto.AdoptedContextRecords.Select(FromAdoptedContextSnapshotRecord).ToArray(),
         PendingInputs = proto.PendingInputs.Select(FromProto).ToArray(),
-        RecentSourceMessageKeys = proto.RecentSourceMessageKeys.ToArray()
+        RecentSourceMessageKeys = proto.RecentSourceMessageKeys.ToArray(),
+        AuthorizedContinuationInputIds = proto.AuthorizedContinuationInputIds.Select(static id => new InputId(id)).ToArray()
     };
 
     private static Proto.SessionSnapshotProto.Types.AdoptedContextSnapshotRecord ToAdoptedContextSnapshotRecord(

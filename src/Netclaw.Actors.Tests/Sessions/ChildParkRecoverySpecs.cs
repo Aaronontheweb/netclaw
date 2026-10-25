@@ -46,12 +46,22 @@ public sealed class ChildParkRecoverySpecs(ITestOutputHelper output) : ChildPark
     /// <item>continuation-person and continuation-fire: as automation-continuation, but after the restart Alice writes,
     /// or a later fire of M arrives. That admission closes the continuation input in its own write and posts the
     /// restart notice once (#2651). The continuation never runs, also after the last answer.</item>
+    /// <item>continuation-no-reminder: as automation-continuation, but no restart reminder arrives. Recovery does not
+    /// queue the continuation, so the approval notice of the last answer closes it in its own write and posts the
+    /// restart notice once. The continuation never runs (#2659).</item>
+    /// <item>continuation-expired: as automation-continuation, but the expiry signal arrives in place of the restart
+    /// reminder. It closes the continuation with one notice and resumes nothing. The child park stays (#2659).</item>
+    /// <item>continuation-passivated: as automation-continuation, so the fresh restart reminder authorized the held
+    /// continuation. The session then passivates while the request is open, and a join wakes it. After the last answer
+    /// the continuation runs once, and no restart notice posts (#2659).</item>
     /// </list>
     /// The shared postcondition: after the restart the prompt is still open and no automated turn runs. After Alice's
     /// answer the child resumes, and each held fire or continuation runs once in a turn. No close takes the place of
     /// that turn.
     /// Planted bug: a restart loses the pause, a stashed fire runs before the held inputs, a restart reminder starts a
-    /// held input, or a crash gives no notice or two notices.
+    /// held input, or a crash gives no notice or two notices. #2659: recovery or an internal notice lets a continuation
+    /// run with no restart reminder, the expiry signal runs or admits anything, or a continuation adds an empty user
+    /// message to the model history.
     /// </summary>
     [Theory]
     [InlineData("stashed-fire")]
@@ -61,6 +71,9 @@ public sealed class ChildParkRecoverySpecs(ITestOutputHelper output) : ChildPark
     [InlineData("passivated-fire")]
     [InlineData("continuation-person")]
     [InlineData("continuation-fire")]
+    [InlineData("continuation-no-reminder")]
+    [InlineData("continuation-expired")]
+    [InlineData("continuation-passivated")]
     public async Task A_restart_keeps_the_child_consent_pause(string row)
     {
         // Arrange
@@ -74,7 +87,8 @@ public sealed class ChildParkRecoverySpecs(ITestOutputHelper output) : ChildPark
         var run = await StartAsync(id, $"park-{row}", beforeChildRuns: row switch
         {
             // The reminder turn runs its tool batch before the child parks. Its next model call waits.
-            "automation-continuation" or "continuation-person" or "continuation-fire"
+            "automation-continuation" or "continuation-person" or "continuation-fire" or "continuation-no-reminder"
+                or "continuation-expired" or "continuation-passivated"
                 => async () => held = await HoldAfterToolBatchAsync(id, FireText, Fire(Sweep, FireMs)),
             "notice" => () =>
             {
@@ -106,7 +120,8 @@ public sealed class ChildParkRecoverySpecs(ITestOutputHelper output) : ChildPark
                 notices = ConsentNotices(journal, id).Count;
                 await RestartSessionAsync(id);
                 break;
-            case "automation-continuation" or "continuation-person" or "continuation-fire":
+            case "automation-continuation" or "continuation-person" or "continuation-fire" or "continuation-no-reminder"
+                or "continuation-expired" or "continuation-passivated":
                 reminder = await DrainAsync(id);
                 break;
             case "passivated-fire":
@@ -121,12 +136,19 @@ public sealed class ChildParkRecoverySpecs(ITestOutputHelper output) : ChildPark
         ISessionResponse? reply = row switch
         {
             "reminder-held" => await SendStrayRestartReminderAsync(id),
-            "automation-continuation" => await SendRestartReminderAsync(id, reminder!),
+            "automation-continuation" or "continuation-passivated" => await SendRestartReminderAsync(id, reminder!),
+            "continuation-expired" => await SendRestartReminderAsync(id, reminder! with { Instructions = RestartExpiredInstruction }),
             _ => null
         };
         if (reply is not null)
             AssertAck(reply);
-        var closesContinuation = row is "continuation-person" or "continuation-fire";
+        if (row == "continuation-expired")
+        {
+            Assert.True(reply is RestartResumeNotNeeded, $"The expiry signal must resume nothing. The session replied {reply}.");
+            Assert.DoesNotContain(journal.Committed.OfType<InputAdmitted>(), input => input.UserMessage.Content == RestartExpiredInstruction);
+        }
+        var closesContinuation = row is "continuation-person" or "continuation-fire" or "continuation-expired";
+        var closedByLastAnswer = row == "continuation-no-reminder";
         if (row == "continuation-person")
             await SendAsync(id, AliceText, AliceSource);
         else if (row == "continuation-fire")
@@ -153,14 +175,29 @@ public sealed class ChildParkRecoverySpecs(ITestOutputHelper output) : ChildPark
             Assert.StartsWith(OpenNoticeHeading, Assert.Single(after).UserMessage.Content, StringComparison.Ordinal);
         }
 
-        // Act: the last answer
+        // Act: the last answer. In continuation-passivated the session passivates first. The recorder join wakes it, so
+        // the recorder sees the close of the prompt.
+        if (row == "continuation-passivated")
+        {
+            await PassivateAsync(id);
+            await JoinRecorderAsync(id);
+        }
         AssertAck(await AnswerAsync(id, prompt.CallId, Alice));
 
         // Assert: the child resumes once, and each held fire or continuation runs once.
         var terminal = await AssertRunInvariantsAsync(journal, id, run, probeRuns: 1);
         Assert.True(terminal.Result.Success, terminal.Result.Output);
+        if (closedByLastAnswer)
+            await AwaitAssertAsync(() =>
+            {
+                var notices = Outputs<TextOutput>().Count(output =>
+                    output.Text == RestartNoticeRuleTests.ExpectedNotice("daemon-stop")
+                    || output.Text == RestartNoticeRuleTests.ExpectedNotice("config-reload"));
+                Assert.True(notices == 1, $"The last answer posted {notices} restart notices. A continuation that no "
+                                          + "restart reminder queued must close with one notice and never run.");
+            }, Deadline, cancellationToken: Cancellation);
         // A continuation that a later admission closed never runs. Each other held input runs in a turn.
-        bool Runs(InputAdmitted input) => !(closesContinuation && SessionInputFlow.IsContinuation(input));
+        bool Runs(InputAdmitted input) => !((closesContinuation || closedByLastAnswer) && SessionInputFlow.IsContinuation(input));
         await AwaitAssertAsync(() =>
         {
             if (row == "passivated-fire")
@@ -181,6 +218,12 @@ public sealed class ChildParkRecoverySpecs(ITestOutputHelper output) : ChildPark
             var closes = journal.Committed.OfType<InputClosed>().Count(closed => closed.InputIds.Contains(input.InputId));
             Assert.Equal(Runs(input) ? (1, 0) : (0, 1), (TurnRuns(journal, input.InputId), closes));
         });
+        if (row == "continuation-passivated")
+            Assert.DoesNotContain(Outputs<TextOutput>(), output => output.Text == RestartNoticeRuleTests.ExpectedNotice("daemon-stop")
+                                                                 || output.Text == RestartNoticeRuleTests.ExpectedNotice("config-reload"));
+        // A continuation input adds no user message to the model history (#2632, #2659).
+        Assert.DoesNotContain(Clients.Parent.ReceivedMessages, request => request.Any(static message =>
+            message.Role == Microsoft.Extensions.AI.ChatRole.User && string.IsNullOrEmpty(message.Text)));
     }
 
     /// <summary>

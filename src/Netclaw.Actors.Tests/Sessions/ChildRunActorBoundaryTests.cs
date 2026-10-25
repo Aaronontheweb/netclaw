@@ -264,12 +264,26 @@ public sealed class ChildRunActorBoundaryTests(ITestOutputHelper output) : LlmSe
         }
     }
 
-    [Fact]
-    public async Task A_cancelled_child_approval_is_closed_for_replay_and_logs_nothing_after_a_restart()
+    /// <summary>
+    /// Rows:
+    /// <list type="bullet">
+    /// <item>durable-park: the journal holds the request inside the Parked record (PR 2).</item>
+    /// <item>legacy-request: the journal holds the request as its own row, the shape of a 0.28.0-beta.2 live wait. Replay
+    /// opens its entry and does not close it. Only recovery withdraws it (WithdrawRecoveredChildApprovals), so this row
+    /// catches two bugs that the durable-park row cannot see: replay that logs each request, and recovery that skips the
+    /// withdrawal and then logs the entry as open (#2659 gap C).</item>
+    /// </list>
+    /// </summary>
+    [Theory]
+    [InlineData("durable-park")]
+    [InlineData("legacy-request")]
+    public async Task A_cancelled_child_approval_is_closed_for_replay_and_logs_nothing_after_a_restart(string row)
     {
         // Arrange: the child waits on an approval that nobody answers. The parent cancels the child.
-        var sessionId = new SessionId("boundary/cancel-open-child-approval");
+        var sessionId = new SessionId($"boundary/cancel-open-child-approval-{row}");
         var control = await ConfigureJournalAsync(rejectAcceptance: false, holdAcceptance: false);
+        if (row == "legacy-request")
+            control.RewriteNextStored(static evt => evt is ChildRunEvent.Parked parked ? parked.Requests[0] : null);
         _clients.Parent.ToolCallsOnFirstCall = [Spawn("cancel-approval-child", "child-a")];
         _clients.A.ToolCallsOnFirstCall = [Probe("forbidden-after-cancel")];
         var subscriber = CreateTestProbe();
@@ -279,6 +293,13 @@ public sealed class ChildRunActorBoundaryTests(ITestOutputHelper output) : LlmSe
         await subscriber.FishForMessageAsync<ToolInteractionRequest>(
             item => item.ToolName.Value == "authority_probe", Deadline, cancellationToken: Cancellation);
         var accepted = await control.Acceptance.Task.WaitAsync(Deadline, Cancellation);
+        if (row == "legacy-request")
+        {
+            // The rewrite took effect: the journal holds the request as its own row and no park record of the run.
+            await AwaitAssertAsync(() => Assert.Contains(control.Committed.OfType<ToolApprovalRequested>(),
+                request => request.SourceChildRunId == accepted.Run.RunId), Deadline, cancellationToken: Cancellation);
+            Assert.DoesNotContain(control.Committed.OfType<ChildRunEvent.Parked>(), parked => parked.RunId == accepted.Run.RunId);
+        }
         using var cancelled = JsonDocument.Parse(await session.Ask<string>(
             new ChildRunControl(accepted.Run.RunId, true, accepted.Run.OriginalContext), Deadline, Cancellation));
         await AwaitAssertAsync(() => Assert.Contains(control.Committed.OfType<ChildRunEvent.TerminalRecorded>(),

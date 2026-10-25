@@ -97,6 +97,12 @@ public static partial class SessionProtocol
         /// </summary>
         public ChildNotice? ChildNotice { get; init; }
 
+        /// <summary>
+        /// Marks the continuation input that a restart drain writes for a turn that it stopped after a tool batch
+        /// (#2632, #2659). A record with no marker on the wire reads with the old shape rule.
+        /// </summary>
+        public bool ContinuesStoppedTurn { get; init; }
+
         public long AdmittedAtMs { get; init; }
 
         public DateTimeOffset Timestamp => DateTimeOffset.FromUnixTimeMilliseconds(AdmittedAtMs);
@@ -348,6 +354,22 @@ public static partial class SessionProtocol
         public DateTimeOffset RecordedAt => DateTimeOffset.FromUnixTimeMilliseconds(RecordedAtMs);
 
         public DateTimeOffset Timestamp => RecordedAt;
+    }
+
+    /// <summary>
+    /// A fresh restart reminder authorized the continuation input <see cref="InputId"/> that the child consent pause holds
+    /// (#2659). Recovery queues only an authorized continuation behind the pause. A pending input blocks a snapshot, so
+    /// the record matters only in the journal.
+    /// </summary>
+    public sealed record ContinuationAuthorized : ISessionEvent
+    {
+        public SessionId SessionId { get; init; }
+
+        public InputId InputId { get; init; }
+
+        public long AuthorizedAtMs { get; init; }
+
+        public DateTimeOffset Timestamp => DateTimeOffset.FromUnixTimeMilliseconds(AuthorizedAtMs);
     }
 
     /// <summary>
