@@ -61,7 +61,9 @@ internal readonly record struct TurnTelemetryFacts(
     string? MessageId,
     ChannelType? ChannelType);
 
-internal enum InputProgressAction { Restart, FollowUp, Ready }
+// EndTurn: only the compaction end returns it. A person waits behind an automation turn whose tool loop the compaction
+// stopped, so the turn ends quietly and makes no further model call.
+internal enum InputProgressAction { Restart, FollowUp, Ready, EndTurn }
 internal readonly record struct AfterTurnResult(InputProgressAction Action, BufferedInputBatch? Batch);
 
 internal readonly record struct CompactionContinuation(
@@ -684,18 +686,22 @@ internal sealed class SessionInputFlow
         if (PersonWaitsBehindAutomation())
             return new ToolBatchInputAdvance(null, ToolBatchNextAction.EndTurn);
 
-        var batch = DrainBufferedBatch(continuesTurn: true, childConsentPaused);
+        // A due compaction comes first. Input of the turn's requester joins at the compaction end
+        // (AdvanceAfterCompaction), so a stop there never closes an input that no model request carried.
         var next = completion.ChooseNext(compactionDue);
+        var batch = next == ToolBatchNextAction.RequestCompaction
+            ? null
+            : DrainBufferedBatch(continuesTurn: true, childConsentPaused);
         return new ToolBatchInputAdvance(batch, next);
     }
 
     // Security boundary (one authority per turn): a person's input never joins an automation turn, because the
     // requesters differ. An automation turn has the principal VerifiedAutomation or SystemProcess. A waiting Operator
-    // or TrustedInternal person ends it at the tool-batch end: no input joins, and the turn makes no further model
-    // call. Each waiting input then starts a turn under its own recorded authority, so no model call mixes two
-    // authorities. An UntrustedExternal person waits, so a stranger cannot stop automation work. The pause never holds
-    // a person, so this check ignores the pause. A child result notice is automated input by its kind, so it never
-    // ends a turn. A person never ends the turn of another person.
+    // or TrustedInternal person ends it at a safe boundary (a tool-batch end or a tool-loop compaction end): no input
+    // joins, and the turn makes no further model call. Each waiting input then starts a turn under its own recorded
+    // authority, so no model call mixes two authorities. An UntrustedExternal person waits, so a stranger cannot stop
+    // automation work. The pause never holds a person, so this check ignores the pause. A child result notice is
+    // automated input by its kind, so it never ends a turn. A person never ends the turn of another person.
     private bool PersonWaitsBehindAutomation()
         => _context is { } owner
            && SessionToolWorkflow.IsAutomation(owner.RequesterPrincipal)
@@ -779,6 +785,12 @@ internal sealed class SessionInputFlow
 
         var resume = _resumeToolLoopAfterCompaction;
         _resumeToolLoopAfterCompaction = false;
+        // The end of a tool-loop compaction is the second safe boundary (#2633): a waiting person ends the automation
+        // turn, as at the tool-batch end. An overflow compaction resumes no tool loop, so its replay keeps the turn.
+        // A deferred approval stays for the drain that follows the close.
+        if (resume && PersonWaitsBehindAutomation())
+            return new CompactionContinuation(InputProgressAction.EndTurn, false, null, null);
+
         var batch = DrainBufferedBatch(continuesTurn: resume, childConsentPaused);
         // The actor replays this response only after it applies the phase transition.
         var deferred = _deferredApproval;
