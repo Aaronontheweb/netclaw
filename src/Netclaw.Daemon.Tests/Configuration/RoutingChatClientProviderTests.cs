@@ -3,10 +3,14 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Net;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Netclaw.Configuration;
 using Netclaw.Daemon.Configuration;
+using Netclaw.Daemon.Tests.Providers;
 using Xunit;
 
 namespace Netclaw.Daemon.Tests.Configuration;
@@ -27,91 +31,108 @@ public sealed class RoutingChatClientProviderTests
         Assert.Same(provider.GetClient(ModelRole.Compaction), provider.GetClient(ModelRole.Compaction));
     }
 
-    private sealed class StubRouter : IChatClientRouter
+    // #2681: each candidate must get its own copy of the caller's options. Main is an Ollama client and
+    // fails after its wrappers run; the fallback request must hold only the fallback's own fields.
+    private sealed record FailoverRow(
+        ModelReference Main,
+        ProviderEntry MainEntry,
+        ModelReference Fallback,
+        ProviderEntry FallbackEntry,
+        bool FallbackSucceeds,
+        Action<JsonElement> ExpectFallbackBody);
+
+    private static ModelReference Definition(string provider, int? limit = null, ThinkingLevel? thinking = null) => new()
     {
-        private readonly IReadOnlyList<IChatClient> _candidates = [new FakeChatClient()];
-        public IReadOnlyList<IChatClient> Route(ChatRoutingContext context) => _candidates;
-    }
-}
+        Provider = provider,
+        ModelId = WireCapture.ModelIdFor(WireCapture.Entry(provider).Type),
+        ContextWindow = 131_072,
+        MaxOutputTokens = limit,
+        Thinking = thinking,
+    };
 
-public sealed class RoleBasedFailoverRouterTests
-{
-    [Fact]
-    public void Main_has_two_candidates_when_fallback_configured()
+    private static ProviderEntry OllamaWithThinkingDisabled()
     {
-        var models = new ModelSelection
-        {
-            Main = new ModelReference { Provider = "p", ModelId = "main" },
-            Fallback = new ModelReference { Provider = "p", ModelId = "fb" }
-        };
-        var router = new RoleBasedFailoverRouter(_ => new FakeChatClient(), models);
-
-        var main = router.Route(new ChatRoutingContext { Role = ModelRole.Main });
-
-        Assert.Equal(2, main.Count);
-        Assert.Same(main, router.Route(new ChatRoutingContext { Role = ModelRole.Fallback }));
-        // No distinct compaction model → compaction reuses the main candidate list.
-        Assert.Same(main, router.Route(new ChatRoutingContext { Role = ModelRole.Compaction }));
-    }
-
-    [Fact]
-    public void Main_has_one_candidate_when_no_fallback()
-    {
-        var models = new ModelSelection { Main = new ModelReference { Provider = "p", ModelId = "main" } };
-        var router = new RoleBasedFailoverRouter(_ => new FakeChatClient(), models);
-
-        Assert.Single(router.Route(new ChatRoutingContext { Role = ModelRole.Main }));
+        var entry = WireCapture.Entry("ollama");
+        entry.SetVendorOptions(new JsonObject { ["DisableThinking"] = true });
+        return entry;
     }
 
-    [Fact]
-    public void Compaction_is_a_distinct_single_pipeline_when_configured()
+    private static readonly Dictionary<string, FailoverRow> FailoverRows = new()
     {
-        var models = new ModelSelection
-        {
-            Main = new ModelReference { Provider = "p", ModelId = "main" },
-            Compaction = new ModelReference { Provider = "p", ModelId = "comp" }
-        };
-        var router = new RoleBasedFailoverRouter(_ => new FakeChatClient(), models);
+        ["fallback_receives_no_dialect_field_from_failed_candidate"] = new(
+            Definition("ollama", thinking: ThinkingLevel.Off), WireCapture.Entry("ollama"),
+            Definition("deepseek", thinking: ThinkingLevel.High), WireCapture.Entry("deepseek"),
+            FallbackSucceeds: true,
+            body =>
+            {
+                Assert.False(body.TryGetProperty("think", out _), "the Ollama think field leaked to the fallback");
+                Assert.Equal("enabled", WireCapture.Text(body, "thinking", "type"));
+                Assert.Equal("high", WireCapture.Text(body, "reasoning_effort"));
+            }),
+        ["fallback_receives_no_vendor_option_field_from_failed_candidate"] = new(
+            Definition("ollama"), OllamaWithThinkingDisabled(),
+            Definition("openai-compatible"), WireCapture.Entry("openai-compatible"),
+            FallbackSucceeds: true,
+            body => Assert.False(body.TryGetProperty("think", out _), "the Ollama vendor option leaked to the fallback")),
+        ["fallback_applies_its_own_definition_settings"] = new(
+            Definition("ollama", limit: 8_000), WireCapture.Entry("ollama"),
+            Definition("deepseek", limit: 16_000, thinking: ThinkingLevel.Max), WireCapture.Entry("deepseek"),
+            FallbackSucceeds: true,
+            body =>
+            {
+                Assert.Equal("16000", WireCapture.Text(body, "max_tokens"));
+                Assert.Equal("max", WireCapture.Text(body, "reasoning_effort"));
+            }),
+        ["caller_options_unchanged_after_all_candidates"] = new(
+            Definition("ollama", limit: 8_000, thinking: ThinkingLevel.Off), WireCapture.Entry("ollama"),
+            Definition("deepseek", limit: 16_000, thinking: ThinkingLevel.High), WireCapture.Entry("deepseek"),
+            FallbackSucceeds: false,
+            body => Assert.Equal("16000", WireCapture.Text(body, "max_tokens"))),
+    };
 
-        var main = router.Route(new ChatRoutingContext { Role = ModelRole.Main });
-        var compaction = router.Route(new ChatRoutingContext { Role = ModelRole.Compaction });
+    public static TheoryData<string> FailoverRowNames => new(FailoverRows.Keys);
 
-        Assert.Single(compaction);
-        Assert.NotSame(main, compaction);
-    }
-
-    // Two references name the same model when Provider and ModelId both match; ModelReference
-    // has no separate definition ID in this version, and the other fields are tuning data.
     [Theory]
-    [InlineData("fallback-set-compaction-distinct", "fb", "comp", "main,fb", "comp,fb")]
-    [InlineData("fallback-set-compaction-equals-main", "fb", "main", "main,fb", "main,fb")]
-    [InlineData("no-fallback-compaction-distinct", null, "comp", "main", "comp")]
-    [InlineData("no-compaction", "fb", null, "main,fb", "main,fb")]
-    [InlineData("no-compaction-no-fallback", null, null, "main", "main")]
-    [InlineData("compaction-equals-fallback", "fb", "fb", "main,fb", "fb")]
-    public void Candidate_lists_per_role(
-        string row, string? fallbackId, string? compactionId, string expectedMain, string expectedCompaction)
+    [MemberData(nameof(FailoverRowNames))]
+    public async Task Failover_isolates_candidate_options(string row)
     {
-        var models = new ModelSelection
-        {
-            Main = Model("main"),
-            Fallback = fallbackId is null ? null : Model(fallbackId),
-            Compaction = compactionId is null ? null : Model(compactionId)
-        };
-        var modelIdByClient = new Dictionary<IChatClient, string>(ReferenceEqualityComparer.Instance);
-        var router = new RoleBasedFailoverRouter(r =>
-        {
-            var client = new FakeChatClient();
-            modelIdByClient[client] = r.ModelId;
-            return client;
-        }, models);
+        var spec = FailoverRows[row];
+        var mainCapture = new WireCapture(HttpStatusCode.InternalServerError);
+        var fallbackCapture = spec.FallbackSucceeds
+            ? new WireCapture(HttpStatusCode.OK, CompatChatResponse)
+            : new WireCapture(HttpStatusCode.BadRequest);
+        var mainType = spec.MainEntry.Type;
+        var factory = WireCapture.Factory(
+            new() { [spec.Main.Provider] = spec.MainEntry, [spec.Fallback.Provider] = spec.FallbackEntry },
+            type => type == mainType ? mainCapture.Handler : fallbackCapture.Handler);
+        var routing = new RoutingChatClient(
+            new StubRouter(factory.Create(spec.Main), factory.Create(spec.Fallback)),
+            new ChatRoutingContext { Role = ModelRole.Main },
+            NullNotificationSink.Instance,
+            NullLogger.Instance,
+            TimeProvider.System);
+        var callerOptions = new ChatOptions { AdditionalProperties = new AdditionalPropertiesDictionary() };
 
-        string Ids(ModelRole role) => string.Join(",",
-            router.Route(new ChatRoutingContext { Role = role }).Select(c => modelIdByClient[c]));
+        var error = await Record.ExceptionAsync(() => routing.GetResponseAsync(
+            [new ChatMessage(ChatRole.User, "hello")], callerOptions, TestContext.Current.CancellationToken));
 
-        Assert.True(expectedMain == Ids(ModelRole.Main), $"{row}: Main was [{Ids(ModelRole.Main)}]");
-        Assert.True(expectedMain == Ids(ModelRole.Fallback), $"{row}: Fallback was [{Ids(ModelRole.Fallback)}]");
-        Assert.True(expectedCompaction == Ids(ModelRole.Compaction), $"{row}: Compaction was [{Ids(ModelRole.Compaction)}]");
+        Assert.Equal(!spec.FallbackSucceeds, error is not null);
+        Assert.Single(mainCapture.Bodies);
+        spec.ExpectFallbackBody(fallbackCapture.SingleBody());
+        // The caller's object is never a candidate's working copy.
+        Assert.Empty(callerOptions.AdditionalProperties);
+        Assert.Null(callerOptions.MaxOutputTokens);
+        Assert.Null(callerOptions.Reasoning);
+    }
+
+    private const string CompatChatResponse = """
+        {"id":"response-1","model":"m","choices":[{"finish_reason":"stop","message":{"role":"assistant","content":"ok"}}]}
+        """;
+
+    private sealed class StubRouter(params IChatClient[] candidates) : IChatClientRouter
+    {
+        private readonly IReadOnlyList<IChatClient> _candidates = candidates.Length == 0 ? [new FakeChatClient()] : candidates;
+        public IReadOnlyList<IChatClient> Route(ChatRoutingContext context) => _candidates;
     }
 
     [Fact]
@@ -119,9 +140,9 @@ public sealed class RoleBasedFailoverRouterTests
     {
         var models = new ModelSelection
         {
-            Main = Model("main"),
-            Fallback = Model("fb"),
-            Compaction = Model("comp")
+            Main = new ModelReference { Provider = "p", ModelId = "main" },
+            Fallback = new ModelReference { Provider = "p", ModelId = "fb" },
+            Compaction = new ModelReference { Provider = "p", ModelId = "comp" }
         };
         var router = new RoleBasedFailoverRouter(r => r.ModelId == "fb"
             ? new FakeChatClient((_, _, _) =>
@@ -135,6 +156,4 @@ public sealed class RoleBasedFailoverRouterTests
 
         Assert.Equal("fallback", response.Messages[0].Text);
     }
-
-    private static ModelReference Model(string modelId) => new() { Provider = "p", ModelId = modelId };
 }

@@ -21,6 +21,8 @@ public sealed class OpenRouterDescriptor : IProviderDescriptor
     }
 
     public string TypeKey => "openrouter";
+
+    public ThinkingDialect ResolveThinkingDialect(ProviderEntry entry) => ThinkingDialect.Native;
     public string DisplayName => "OpenRouter";
     public string DefaultEndpoint => "https://openrouter.ai/api/v1";
     public string ModelListingPath => "/models";
@@ -43,7 +45,13 @@ public sealed class OpenRouterDescriptor : IProviderDescriptor
             ModelListingPath,
             entry.Endpoint,
             request => request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", apiKey),
-            ProbeHelpers.ParseOpenAiStyleModels,
+            json => ProbeHelpers.ParseOpenAiStyleModels(json, (model, discovered) => discovered with
+            {
+                Thinking = OpenRouterOracleResolver.ParseThinking(model),
+                MaxOutputTokens = model.TryGetProperty("top_provider", out var topProvider)
+                    ? ProbeHelpers.TryReadPositiveInt32(topProvider, "max_completion_tokens")
+                    : null,
+            }),
             ct);
     }
 }

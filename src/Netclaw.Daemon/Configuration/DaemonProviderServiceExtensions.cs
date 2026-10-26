@@ -51,7 +51,12 @@ public static class DaemonProviderServiceExtensions
 
         // Raw provider client factory (raw client + vendor options per model)
         services.AddSingleton(sp =>
-            new ProviderPluginFactory(providers, sp.GetServices<ILlmProviderPlugin>()));
+            new ProviderPluginFactory(
+                providers,
+                sp.GetServices<ILlmProviderPlugin>(),
+                sp.GetRequiredService<IModelCapabilityResolver>(),
+                sp.GetRequiredService<ILoggerFactory>(),
+                sp.GetRequiredService<TimeProvider>()));
 
         // Transport retry budget/backoff. The RetryingChatClient layer is the single
         // owner of LLM transient-failure retry; this is its configured policy

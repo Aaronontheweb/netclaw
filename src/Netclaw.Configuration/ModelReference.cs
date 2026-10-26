@@ -12,6 +12,12 @@ namespace Netclaw.Configuration;
 /// </summary>
 public sealed class ModelReference
 {
+    /// <summary>
+    /// The output limit that a call sends when neither the call site nor the definition sets one.
+    /// The runtime clamps it per call to the model maximum and to the context window.
+    /// </summary>
+    public const int DefaultMaxOutputTokens = 32_000;
+
     public string Provider { get; set; } = "local-ollama";
     public string ModelId { get; set; } = "qwen3:30b";
 
@@ -39,4 +45,16 @@ public sealed class ModelReference
     /// automated capability detection for this model.
     /// </summary>
     public ModelModality? OutputModalities { get; set; }
+
+    /// <summary>
+    /// The output limit in tokens that every call of this model sends, unless the call site sets
+    /// its own. Null means the clamped default.
+    /// </summary>
+    public int? MaxOutputTokens { get; set; }
+
+    /// <summary>
+    /// The thinking level that every call of this model sends, unless the call site sets its own.
+    /// Null means the model's default.
+    /// </summary>
+    public ThinkingLevel? Thinking { get; set; }
 }

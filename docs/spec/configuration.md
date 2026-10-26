@@ -214,6 +214,13 @@ runtime detection for an affected definition.
 | `ContextWindow` | int? | `null` | Operator override for the runtime context window. When set, it clamps the detected provider value. If not set, Netclaw uses the provider-reported value when available, otherwise defaults to 32,768. Model selection does not persist a discovered value here. |
 | `InputModalities` | string? | `null` | Manual override for input modalities. Comma-separated flags from `Text`, `Image`, `Audio`, `Video` — e.g. `"Text"` or `"Text, Image"`. When set, bypasses automated capability detection. |
 | `OutputModalities` | string? | `null` | Manual override for output modalities. Same form as `InputModalities`. |
+| `MaxOutputTokens` | int? | `null` | Output limit for every call of this model, unless the call site sets its own. Must be positive, and below `ContextWindow` when that is set. Thinking tokens count inside it. If not set, each call sends 32,000, capped to the known model maximum and clamped to the known context window minus the estimated prompt and tool schemas (margin: 5% of the window, at least 1,024; floor: 1,024). A self-hosted provider counts only a window from `ContextWindow` or from the endpoint's own probe, ignores a catalog model maximum, and sends no limit field when the window is unknown. A self-hosted server must use the `ollama` or `openai-compatible` type; a hosted type (`deepseek`, `openrouter`, `veniceai`) pointed at your own server is treated as hosted. Set with `netclaw model set ... --max-output-tokens <n>`. |
+| `Thinking` | string? | `null` | Provider-neutral thinking level: `Off`, `Low`, `Medium`, `High`, or `Max` (the highest level that the provider offers). If not set, the model's default applies. Netclaw rejects a level that the provider dialect or the model does not offer. Set with `netclaw model set ... --thinking <level>`. |
+
+An `openai-compatible` provider needs `Providers:<name>:VendorOptions:ThinkingDialect` before it
+can send a thinking level: `ChatTemplateKwargs`, `ReasoningEffort`, `DeepSeek`, or `None`.
+`netclaw model set` saves `ReasoningEffort` when it detects llama.cpp. For another server, edit
+the key in `netclaw.json`. Without the key, only `MaxOutputTokens` works.
 
 **Invalid Models configuration.** One check, `ModelConfigurationValidation.Check`, validates the
 Models section. The daemon runs it at startup. The config watcher runs it before it restarts the
@@ -225,6 +232,10 @@ daemon. It rejects these cases:
 - a role that names an unknown definition
 - a definition with a value that cannot be read (for example `InputModalities: "banana"`)
 - a role-bound `ContextWindow` below 4,096
+- a role-bound `MaxOutputTokens` that is not positive, or that is not below its `ContextWindow`
+- a role-bound `Thinking` level that the provider's thinking dialect cannot send, an invalid
+  `VendorOptions:ThinkingDialect` value, or a level other than `Off` on an `ollama` provider with
+  `VendorOptions:DisableThinking: true`. `netclaw doctor --fix` does not change these values.
 - a Fallback or Compaction model whose provider is not configured
 - a provider that a role uses and that cannot be built: an unknown `Type`, a missing credential for
   `openai` or `anthropic`, an `openai-compatible` provider without `Endpoint`, or a `Providers` entry

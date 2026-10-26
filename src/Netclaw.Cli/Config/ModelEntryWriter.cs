@@ -77,7 +77,8 @@ internal static class ModelEntryWriter
     /// </param>
     /// <param name="inputModalities">Operator intent for input modalities (set / clear / unset).</param>
     /// <param name="outputModalities">Operator intent for output modalities (set / clear / unset).</param>
-    internal static void WriteRole(
+    /// <returns>The name of the definition that the role selects.</returns>
+    internal static string WriteRole(
         Dictionary<string, object> modelsSection,
         string roleKey,
         string provider,
@@ -88,7 +89,10 @@ internal static class ModelEntryWriter
         ValueOverride<ModelModality> outputModalities)
     {
         var (definitions, roles) = EnsureNamedShape(modelsSection, roleKey);
-        var definitionName = FindDefinition(definitions, provider, modelId)
+        // Two definitions can name one model with other settings (sonnet-low, sonnet-high). A re-set of
+        // the model that the role already uses keeps the role's own definition.
+        var definitionName = CurrentDefinition(definitions, roles, roleKey, provider, modelId)
+                             ?? FindDefinition(definitions, provider, modelId)
                              ?? CreateDefinitionName(definitions, provider, modelId);
         var existing = ReadSameModelEntry(definitions, definitionName, provider, modelId);
 
@@ -105,9 +109,66 @@ internal static class ModelEntryWriter
         var resolvedInput = inputModalities.Supplied ? inputModalities.Value : existing?.InputModalities;
         var resolvedOutput = outputModalities.Supplied ? outputModalities.Value : existing?.OutputModalities;
 
-        definitions[definitionName] = BuildModelEntry(
-            provider, modelId, provenance, resolvedWindow, resolvedInput, resolvedOutput);
+        // The output limit and the thinking level stay with the same model; WriteSettings changes them.
+        definitions[definitionName] = WithSettings(
+            BuildModelEntry(provider, modelId, provenance, resolvedWindow, resolvedInput, resolvedOutput),
+            existing?.MaxOutputTokens,
+            existing?.Thinking);
         roles[roleKey] = definitionName;
+        return definitionName;
+    }
+
+    /// <summary>
+    /// Sets or clears the output limit and the thinking level of one definition, and keeps its other
+    /// keys. <see cref="ValueOverride{T}.Unset"/> keeps the stored value. The caller validates the
+    /// result before it writes the file.
+    /// </summary>
+    internal static void WriteSettings(
+        Dictionary<string, object> modelsSection,
+        string definitionName,
+        ValueOverride<int> maxOutputTokens,
+        ValueOverride<ThinkingLevel> thinking)
+    {
+        var definitions = GetDictionary(modelsSection, "Definitions");
+        var entry = ToDictionary(definitions[definitionName]);
+        if (maxOutputTokens.Supplied)
+            SetOrRemove(entry, nameof(ModelReference.MaxOutputTokens), maxOutputTokens.Value);
+        if (thinking.Supplied)
+            SetOrRemove(entry, nameof(ModelReference.Thinking), thinking.Value?.ToString());
+        definitions[definitionName] = entry;
+    }
+
+    /// <summary>The definition as the runtime binds it.</summary>
+    internal static ModelReference ReadDefinition(Dictionary<string, object> modelsSection, string definitionName)
+        => ConfigFileHelper.DeserializeSection<ModelReference>(GetDictionary(modelsSection, "Definitions")[definitionName])
+           ?? throw new ModelConfigurationException($"Models:Definitions:{definitionName} could not be read.");
+
+    private static Dictionary<string, object> WithSettings(
+        Dictionary<string, object> entry, int? maxOutputTokens, ThinkingLevel? thinking)
+    {
+        if (maxOutputTokens is { } limit)
+            entry[nameof(ModelReference.MaxOutputTokens)] = limit;
+        if (thinking is { } level)
+            entry[nameof(ModelReference.Thinking)] = level.ToString();
+        return entry;
+    }
+
+    private static Dictionary<string, object> ToDictionary(object raw)
+        => raw switch
+        {
+            Dictionary<string, object> dictionary => dictionary,
+            JsonElement { ValueKind: JsonValueKind.Object } element =>
+                JsonSerializer.Deserialize<Dictionary<string, object>>(element.GetRawText()) ?? [],
+            _ => throw new ModelConfigurationException("A model definition must be an object."),
+        };
+
+    private static void SetOrRemove(Dictionary<string, object> entry, string key, object? value)
+    {
+        // Keys bind case-insensitively, so remove every spelling before the canonical one is written.
+        foreach (var existingKey in entry.Keys.Where(k => string.Equals(k, key, StringComparison.OrdinalIgnoreCase)).ToList())
+            entry.Remove(existingKey);
+        if (value is not null)
+            entry[key] = value;
     }
 
     private static (Dictionary<string, object> Definitions, Dictionary<string, object> Roles)
@@ -172,9 +233,12 @@ internal static class ModelEntryWriter
             }
 
             var name = CreateDefinitionName(definitions, model.Provider, model.ModelId);
-            definitions[name] = BuildModelEntry(
-                model.Provider, model.ModelId, model.Provenance, model.ContextWindow,
-                model.InputModalities, model.OutputModalities);
+            definitions[name] = WithSettings(
+                BuildModelEntry(
+                    model.Provider, model.ModelId, model.Provenance, model.ContextWindow,
+                    model.InputModalities, model.OutputModalities),
+                model.MaxOutputTokens,
+                model.Thinking);
             roles[role] = name;
         }
 
@@ -216,6 +280,36 @@ internal static class ModelEntryWriter
 
         throw new ModelConfigurationException($"Models:{key} must be an object.");
     }
+
+    private static string? CurrentDefinition(
+        Dictionary<string, object> definitions, Dictionary<string, object> roles, string roleKey, string provider, string? modelId)
+    {
+        var name = RoleDefinitionName(roles, roleKey);
+        return name is not null && definitions.ContainsKey(name) && ReadSameModelEntry(definitions, name, provider, modelId) is not null
+            ? name
+            : null;
+    }
+
+    /// <summary>The roles other than <paramref name="roleKey"/> that select <paramref name="definitionName"/>.</summary>
+    internal static IReadOnlyList<string> OtherRolesOf(
+        Dictionary<string, object> modelsSection, string roleKey, string definitionName)
+    {
+        var roles = GetDictionary(modelsSection, "Roles");
+        return roles.Keys
+            .Where(role => !string.Equals(role, roleKey, StringComparison.OrdinalIgnoreCase)
+                           && string.Equals(RoleDefinitionName(roles, role), definitionName, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    private static string? RoleDefinitionName(Dictionary<string, object> roles, string roleKey)
+        => roles.TryGetValue(roleKey, out var raw)
+            ? raw switch
+            {
+                string text => text,
+                JsonElement { ValueKind: JsonValueKind.String } element => element.GetString(),
+                _ => null,
+            }
+            : null;
 
     private static string? FindDefinition(
         Dictionary<string, object> definitions, string provider, string? modelId)
@@ -263,7 +357,9 @@ internal static class ModelEntryWriter
            && left.ContextWindow == right.ContextWindow
            && left.Provenance == right.Provenance
            && left.InputModalities == right.InputModalities
-           && left.OutputModalities == right.OutputModalities;
+           && left.OutputModalities == right.OutputModalities
+           && left.MaxOutputTokens == right.MaxOutputTokens
+           && left.Thinking == right.Thinking;
 
     /// <summary>
     /// The role's current entry, but only when it already references the same
@@ -341,6 +437,8 @@ internal static class ModelEntryWriter
         var recovered = new ModelReference { Provider = storedProvider, ModelId = storedModelId };
         if (TryGetInt32(root, nameof(ModelReference.ContextWindow), out var window))
             recovered.ContextWindow = window;
+        if (TryGetInt32(root, nameof(ModelReference.MaxOutputTokens), out var limit))
+            recovered.MaxOutputTokens = limit;
 
         return recovered;
     }

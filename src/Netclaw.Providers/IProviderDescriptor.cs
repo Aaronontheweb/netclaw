@@ -34,4 +34,17 @@ public interface IProviderDescriptor
     /// </summary>
     Task<ProviderProbeResult> ProbeAsync(
         ProviderEntry entry, CancellationToken ct = default);
+
+    /// <summary>
+    /// The thinking dialect of a provider entry. The CLI, doctor, and the daemon use this one
+    /// resolution, so each surface offers and sends the same levels.
+    /// </summary>
+    ThinkingDialect ResolveThinkingDialect(ProviderEntry entry);
+
+    /// <summary>
+    /// True for a provider whose endpoint the operator runs (Ollama, an OpenAI-compatible server).
+    /// Its default output limit clamps only to a window that the endpoint or the operator states,
+    /// and a catalog model maximum does not cap it. A hosted API keeps the default false.
+    /// </summary>
+    bool IsSelfHosted => false;
 }

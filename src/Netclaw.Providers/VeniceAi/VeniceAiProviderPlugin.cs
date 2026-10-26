@@ -9,6 +9,7 @@ using Microsoft.Extensions.AI;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Providers;
 using OpenAI;
+using OpenAI.Chat;
 
 namespace Netclaw.Providers.VeniceAi;
 
@@ -31,11 +32,15 @@ public sealed class VeniceAiProviderPlugin : ProviderPluginBase<VeniceAiDescript
         var vendorOptions = entry.GetVendorOptions<VeniceAiVendorOptions>() ?? new VeniceAiVendorOptions();
 
         var options = new OpenAIClientOptions { Endpoint = endpoint };
+        if (CreateTransportOverride() is { } transport)
+            options.Transport = transport;
         if (!vendorOptions.IncludeVeniceSystemPrompt)
             options.AddPolicy(new VeniceAiSystemPromptOverridePolicy(), PipelinePosition.PerCall);
 
         var client = new OpenAIClient(new ApiKeyCredential(apiKey), options);
 
-        return client.GetChatClient(model.ModelId).AsIChatClient();
+        return new MaxEffortChatClient(
+            client.GetChatClient(model.ModelId).AsIChatClient(),
+            _ => new ChatCompletionOptions { ReasoningEffortLevel = new ChatReasoningEffortLevel("max") });
     }
 }

@@ -10,10 +10,12 @@ using Microsoft.Extensions.Time.Testing;
 using Netclaw.Configuration;
 using Netclaw.Configuration.Secrets;
 using Netclaw.Daemon.Services;
+using Netclaw.Daemon.Tests.Providers;
 using Netclaw.Providers;
 using Netclaw.Providers.OAuth;
 using Netclaw.Tests.Utilities;
 using Xunit;
+
 
 namespace Netclaw.Daemon.Tests.Services;
 
@@ -46,6 +48,8 @@ public sealed class ConfigWatcherServiceTests : IDisposable
             _restartCoordinator,
             _rejectedConfig,
             plugins,
+            new FakeCapabilityResolver(null),
+            NullLoggerFactory.Instance,
             _logger);
     }
 
@@ -180,6 +184,20 @@ public sealed class ConfigWatcherServiceTests : IDisposable
         Assert.Contains(expected, _rejectedConfig.Reason);
         Assert.DoesNotContain('\n', _rejectedConfig.Reason!);
         Assert.DoesNotContain("   at ", _rejectedConfig.Reason);
+    }
+
+    [Fact]
+    public async Task thinking_with_ollama_disable_thinking_is_rejected_on_reload()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, """
+            { "Providers": { "p": { "Type": "ollama", "VendorOptions": { "DisableThinking": true } } },
+              "Models": { "Definitions": { "d": { "Provider": "p", "ModelId": "m", "Thinking": "Low" } }, "Roles": { "Main": "d" } } }
+            """);
+
+        await _sut.ApplyReloadAsync(CancellationToken.None);
+
+        Assert.Equal(0, _restartCoordinator.RequestCount);
+        Assert.Contains("DisableThinking", _rejectedConfig.Reason);
     }
 
     [Fact]

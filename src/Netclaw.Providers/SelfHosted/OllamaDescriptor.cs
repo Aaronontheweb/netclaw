@@ -24,7 +24,10 @@ public sealed class OllamaDescriptor : IProviderDescriptor
     }
 
     public string TypeKey => "ollama";
+
+    public ThinkingDialect ResolveThinkingDialect(ProviderEntry entry) => ThinkingDialect.OllamaThink;
     public string DisplayName => "Ollama";
+    public bool IsSelfHosted => true;
     public string DefaultEndpoint => DefaultEndpointValue;
     public string ModelListingPath => "/api/tags";
     public IProviderAuth Auth { get; } = new EndpointOnlyAuth();
