@@ -26,15 +26,17 @@ public interface IChatClientRouter
 
 /// <summary>
 /// Today's policy: route by <see cref="ModelRole"/> with primary→fallback failover.
-/// Builds the main/fallback/compaction pipelines once via
-/// <see cref="PipelineChatClientFactory"/> and maps each role to an ordered candidate
-/// list. Reproduces the previous resilient-decorator wiring:
+/// Builds one pipeline per distinct model via <see cref="PipelineChatClientFactory"/>
+/// and maps each role to an ordered candidate list. Two references name the same model
+/// when Provider and ModelId both match.
 /// <list type="bullet">
-/// <item>Main / Fallback → <c>[main]</c>, plus <c>fallback</c> when a distinct
-/// fallback model is configured (failover across both).</item>
-/// <item>Compaction → its own single pipeline when a distinct compaction model is
-/// configured; otherwise it reuses the main candidate list (inheriting failover).</item>
+/// <item>Main / Fallback → <c>[main]</c>, plus <c>fallback</c> when a different
+/// fallback model is configured.</item>
+/// <item>Compaction → <c>[compaction]</c>, plus <c>fallback</c> when a fallback is
+/// configured and is not the compaction model. When Compaction is the same model as
+/// Main, or is not configured, it reuses the main candidate list.</item>
 /// </list>
+/// A pipeline is never built twice for one model, and the fallback never appears twice.
 /// </summary>
 public sealed class RoleBasedFailoverRouter : IChatClientRouter
 {
@@ -50,17 +52,38 @@ public sealed class RoleBasedFailoverRouter : IChatClientRouter
     // plumbing PipelineChatClientFactory needs.
     internal RoleBasedFailoverRouter(Func<ModelReference, IChatClient> create, ModelSelection models)
     {
-        var main = create(models.Main);
-        _mainCandidates = models.Fallback is not null
-            ? [main, create(models.Fallback)]
-            : [main];
+        var built = new Dictionary<(string Provider, string ModelId), IChatClient>();
 
-        // A distinct compaction model gets its own (single-candidate) pipeline; without
-        // one, compaction reuses the main candidates so it inherits failover.
+        IChatClient Pipeline(ModelReference model)
+        {
+            var key = (model.Provider, model.ModelId);
+            if (!built.TryGetValue(key, out var client))
+                built[key] = client = create(model);
+            return client;
+        }
+
+        // Every role's list ends with the fallback, so a refused connection on any
+        // role's primary still reaches it.
+        IReadOnlyList<IChatClient> Candidates(ModelReference primary)
+        {
+            var first = Pipeline(primary);
+            if (models.Fallback is null)
+                return [first];
+
+            var fallback = Pipeline(models.Fallback);
+            return ReferenceEquals(first, fallback) ? [first] : [first, fallback];
+        }
+
+        _mainCandidates = Candidates(models.Main);
+
         _compactionCandidates = models.Compaction is not null
-            ? [create(models.Compaction)]
-            : _mainCandidates;
+            && !IsSameModel(models.Compaction, models.Main)
+                ? Candidates(models.Compaction)
+                : _mainCandidates;
     }
+
+    private static bool IsSameModel(ModelReference a, ModelReference b) =>
+        a.Provider == b.Provider && a.ModelId == b.ModelId;
 
     public IReadOnlyList<IChatClient> Route(ChatRoutingContext context) => context.Role switch
     {
