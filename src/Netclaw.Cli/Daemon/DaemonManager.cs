@@ -183,14 +183,14 @@ public sealed partial class DaemonManager
         // double work: it tells the daemon why it stops, and the answer is the proof.
         // stop-proof:begin
         var home = HomeIdentity.Canonical(_paths.BasePath);
-        var outcome = await NotifyAsync(pid, home, reason, cancellationToken);
+        var (outcome, endpoint) = await NotifyAsync(pid, home, reason, cancellationToken);
         var proven = outcome == NoticeOutcome.Accepted
             || (outcome == NoticeOutcome.Unconfirmed && HomeIdentity.ProcessServesHome(pid, home));
         if (!proven)
         {
             return new DaemonResult(
                 false,
-                $"Nothing was stopped. {NotShownToServe(pid, answered: outcome == NoticeOutcome.Refused)}",
+                $"Nothing was stopped. {NotShownToServe(pid, endpoint, answered: outcome == NoticeOutcome.Refused)}",
                 IsRefusal: true);
         }
         // stop-proof:end
@@ -297,20 +297,33 @@ public sealed partial class DaemonManager
 
     // The daemon may be hung or not bound yet, so a failed notice is a normal runtime condition and
     // the stop falls back to the environment of the process. A cancel from the caller still ends the stop.
-    private async Task<NoticeOutcome> NotifyAsync(int pid, string home, string reason, CancellationToken cancellationToken)
+    private async Task<(NoticeOutcome Outcome, string? Endpoint)> NotifyAsync(
+        int pid, string home, string reason, CancellationToken cancellationToken)
     {
         // The notice goes to the daemon of this home, never to NETCLAW_DAEMON_ENDPOINT or a client
         // config: those can name a remote daemon, and the signal goes to a local PID.
-        var endpoint = DaemonApi.ResolveLocalControlEndpoint(_paths);
+        string endpoint;
+        try
+        {
+            endpoint = DaemonApi.ResolveLocalControlEndpoint(_paths);
+        }
+        catch (Exception ex) when (ex is InvalidDataException or IOException or UnauthorizedAccessException
+                                      or InvalidOperationException or FormatException)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Console.Error.WriteLine($"The local daemon address is unknown. No shutdown notice was sent. {ex.Message}");
+            return (NoticeOutcome.Unconfirmed, null);
+        }
+
         using var http = _createLocalControlHttpClient();
         try
         {
-            return await SendNoticeAsync(http, endpoint, pid, home, reason, cancellationToken);
+            return (await SendNoticeAsync(http, endpoint, pid, home, reason, cancellationToken), endpoint);
         }
         catch (Exception ex) when (!cancellationToken.IsCancellationRequested && ex is (HttpRequestException or TaskCanceledException))
         {
             Console.Error.WriteLine($"Note: could not notify daemon of shutdown reason: {ex.Message}");
-            return NoticeOutcome.Unconfirmed;
+            return (NoticeOutcome.Unconfirmed, endpoint);
         }
     }
 
@@ -373,9 +386,11 @@ public sealed partial class DaemonManager
     // stop-notice:end
 
     // The refusal of a stop: the cause is the answer to the notice that the stop sent.
-    private string NotShownToServe(int pid, bool answered)
+    private string NotShownToServe(int pid, string? endpoint, bool answered)
     {
-        var endpoint = DaemonApi.ResolveLocalControlEndpoint(_paths);
+        if (endpoint is null)
+            return Refusal(pid, "The local daemon address is unknown. No shutdown notice was sent.");
+
         return Refusal(pid, answered
             ? $"The daemon at {endpoint} answered for another daemon or home."
             : $"The daemon at {endpoint} did not confirm PID {pid} for this home.");

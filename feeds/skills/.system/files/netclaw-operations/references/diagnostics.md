@@ -14,6 +14,10 @@ When something seems wrong with Netclaw itself:
 3. Check daemon logs at `<NETCLAW_HOME>/logs/daemon-{yyyy-MM-dd}.log` (`NETCLAW_HOME` defaults to `~/.netclaw`)
 4. Check session logs at `<NETCLAW_HOME>/logs/sessions/{sanitized-session-id}/session.log`
 
+If a local config source cannot be read, `netclaw daemon status` reports an unknown address and skips its readiness probe.
+`netclaw daemon stop` also skips its shutdown notice. It still requires proof that the process serves this home.
+Repair or restore the file that the command names, then retry.
+
 The daemon deletes `daemon-*.log` and `crash-*.log` files older than `Retention:Logs:Days`
 (default 14, `0` keeps them forever). It does not delete anything under `logs/sessions/`.
 To read or change the setting, run `netclaw config retention` or

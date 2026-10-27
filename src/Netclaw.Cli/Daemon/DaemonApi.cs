@@ -63,18 +63,20 @@ public sealed class DaemonApi
 
         return (Environment.GetEnvironmentVariable("NETCLAW_DAEMON_ENDPOINT")
             ?? ClientConfigFile.ReadEndpoint(paths)
-            ?? ResolveDaemonConfigEndpoint(paths)
+            ?? ResolveDaemonConfigEndpoint(paths, lenient: true)
             ?? DefaultEndpoint).TrimEnd('/');
     }
 
-    private static string? ResolveDaemonConfigEndpoint(NetclawPaths paths)
+    private static string ResolveDaemonConfigEndpoint(NetclawPaths paths, bool lenient)
     {
-        var daemonConfig = DaemonClientFactory.LoadDaemonConfig(paths);
+        var daemonConfig = DaemonClientFactory.LoadDaemonConfig(paths, lenient);
         return DaemonControlPlaneEndpointResolver.ResolveFallbackEndpoint(daemonConfig);
     }
 
+    // local-control-strict-config:begin
     internal static string ResolveLocalControlEndpoint(NetclawPaths paths)
-        => ResolveDaemonConfigEndpoint(paths) ?? DefaultEndpoint;
+        => ResolveDaemonConfigEndpoint(paths, lenient: false);
+    // local-control-strict-config:end
 
     internal static SocketsHttpHandler CreateLocalControlHttpHandler()
         => new()
@@ -502,21 +504,21 @@ public sealed class DaemonApi
         => ProbeReadinessAsync(ResolveEndpoint(_paths), ct);
 
     /// <summary>
-    /// Probes the daemon this home runs for <c>netclaw daemon status</c>: a plain anonymous GET of
-    /// <c>/api/health/ready</c> at the endpoint <see cref="ResolveLocalControlEndpoint"/> yields
-    /// (ignoring <c>NETCLAW_DAEMON_ENDPOINT</c> and any paired remote endpoint). It builds no host
-    /// and no authenticated client, so it reads no secrets or keys, and it never throws: any failure
-    /// reports not ready.
+    /// Probes this home's daemon with an anonymous GET of <c>/api/health/ready</c>.
+    /// Local configuration supplies the address. Remote client endpoints do not affect the probe.
+    /// A failed address resolution returns no endpoint and creates no transport.
+    /// Other failures report not ready. Caller cancellation propagates.
     /// </summary>
-    internal static Task<(bool Ready, string Endpoint)> ProbeLocalReadinessAsync(
+    internal static Task<(bool Ready, string? Endpoint)> ProbeLocalReadinessAsync(
         NetclawPaths paths, CancellationToken ct = default)
         => ProbeLocalReadinessAsync(paths, CreateLocalControlHttpClient, ct);
 
-    internal static async Task<(bool Ready, string Endpoint)> ProbeLocalReadinessAsync(
+    internal static async Task<(bool Ready, string? Endpoint)> ProbeLocalReadinessAsync(
         NetclawPaths paths, Func<HttpClient> createLocalControlHttpClient, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(createLocalControlHttpClient);
-        var endpoint = DefaultEndpoint;
+        ct.ThrowIfCancellationRequested();
+        string? endpoint = null;
         try
         {
             endpoint = ResolveLocalControlEndpoint(paths);
@@ -526,6 +528,7 @@ public sealed class DaemonApi
         }
         catch (Exception ex) when (ex is not OperationCanceledException || !ct.IsCancellationRequested)
         {
+            ct.ThrowIfCancellationRequested();
             return (false, endpoint);
         }
     }
