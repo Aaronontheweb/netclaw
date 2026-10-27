@@ -83,6 +83,9 @@ public sealed class DaemonApi
             UseProxy = false,
         };
 
+    internal static HttpClient CreateLocalControlHttpClient()
+        => new(CreateLocalControlHttpHandler()) { Timeout = DefaultTimeout };
+
     /// <summary>
     /// The resolved daemon base endpoint (e.g. <c>http://127.0.0.1:5199</c>).
     /// Useful for display messages and SignalR hub URL construction.
@@ -505,14 +508,19 @@ public sealed class DaemonApi
     /// and no authenticated client, so it reads no secrets or keys, and it never throws: any failure
     /// reports not ready.
     /// </summary>
-    internal static async Task<(bool Ready, string Endpoint)> ProbeLocalReadinessAsync(
+    internal static Task<(bool Ready, string Endpoint)> ProbeLocalReadinessAsync(
         NetclawPaths paths, CancellationToken ct = default)
+        => ProbeLocalReadinessAsync(paths, CreateLocalControlHttpClient, ct);
+
+    internal static async Task<(bool Ready, string Endpoint)> ProbeLocalReadinessAsync(
+        NetclawPaths paths, Func<HttpClient> createLocalControlHttpClient, CancellationToken ct)
     {
+        ArgumentNullException.ThrowIfNull(createLocalControlHttpClient);
         var endpoint = DefaultEndpoint;
         try
         {
             endpoint = ResolveLocalControlEndpoint(paths);
-            using var http = new HttpClient(CreateLocalControlHttpHandler()) { Timeout = DefaultTimeout };
+            using var http = createLocalControlHttpClient();
             using var response = await http.GetAsync($"{endpoint}/api/health/ready", ct);
             return (response.IsSuccessStatusCode, endpoint);
         }

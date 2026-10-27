@@ -22,9 +22,11 @@ public sealed partial class DaemonManager
     private readonly TimeProvider _timeProvider;
     private readonly IContainerSupervisor _supervisor;
     private readonly ISystemCommandRunner _commandRunner;
+    private readonly Func<HttpClient> _createLocalControlHttpClient;
 
     public DaemonManager(NetclawPaths paths, TimeProvider timeProvider, IContainerSupervisor? supervisor = null)
-        : this(paths, timeProvider, supervisor ?? new ContainerSupervisor(), ProcessSystemCommandRunner.Instance)
+        : this(paths, timeProvider, supervisor ?? new ContainerSupervisor(), ProcessSystemCommandRunner.Instance,
+            DaemonApi.CreateLocalControlHttpClient)
     {
     }
 
@@ -32,12 +34,15 @@ public sealed partial class DaemonManager
         NetclawPaths paths,
         TimeProvider timeProvider,
         IContainerSupervisor supervisor,
-        ISystemCommandRunner commandRunner)
+        ISystemCommandRunner commandRunner,
+        Func<HttpClient> createLocalControlHttpClient)
     {
+        ArgumentNullException.ThrowIfNull(createLocalControlHttpClient);
         _paths = paths;
         _timeProvider = timeProvider;
         _supervisor = supervisor;
         _commandRunner = commandRunner;
+        _createLocalControlHttpClient = createLocalControlHttpClient;
     }
 
     internal string HomePath => _paths.BasePath;
@@ -290,8 +295,6 @@ public sealed partial class DaemonManager
         Unconfirmed
     }
 
-    private static readonly TimeSpan NoticeTimeout = TimeSpan.FromSeconds(5);
-
     // The daemon may be hung or not bound yet, so a failed notice is a normal runtime condition and
     // the stop falls back to the environment of the process. A cancel from the caller still ends the stop.
     private async Task<NoticeOutcome> NotifyAsync(int pid, string home, string reason, CancellationToken cancellationToken)
@@ -299,7 +302,7 @@ public sealed partial class DaemonManager
         // The notice goes to the daemon of this home, never to NETCLAW_DAEMON_ENDPOINT or a client
         // config: those can name a remote daemon, and the signal goes to a local PID.
         var endpoint = DaemonApi.ResolveLocalControlEndpoint(_paths);
-        using var http = new HttpClient(DaemonApi.CreateLocalControlHttpHandler()) { Timeout = NoticeTimeout };
+        using var http = _createLocalControlHttpClient();
         try
         {
             return await SendNoticeAsync(http, endpoint, pid, home, reason, cancellationToken);
