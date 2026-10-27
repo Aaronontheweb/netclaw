@@ -430,7 +430,25 @@ static (NetclawPaths Paths, ModelSelection Models) ConfigureConfigServices(
     // 1. netclaw.json (base config, optional)
     // 2. secrets.json (credentials overlay, optional)
     // 3. NETCLAW_* environment variables (highest priority)
+    var lowerPriorityConfiguration = configuration.AsEnumerable()
+        .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
     configuration.AddNetclawDaemonSources(bootstrapPaths);
+    var generationConfiguration = configuration.AsEnumerable()
+        .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
+
+    services.AddSingleton(sp => new ConfigWatcherService(
+        sp.GetRequiredService<NetclawPaths>(),
+        protector,
+        sp.GetRequiredService<TimeProvider>(),
+        sp.GetRequiredService<IDaemonRestartCoordinator>(),
+        sp.GetRequiredService<RejectedConfigState>(),
+        sp.GetServices<ILlmProviderPlugin>(),
+        sp.GetRequiredService<IModelCapabilityResolver>(),
+        sp.GetRequiredService<ILoggerFactory>(),
+        sp.GetRequiredService<ILogger<ConfigWatcherService>>(),
+        sp.GetRequiredService<IHostApplicationLifetime>(),
+        lowerPriorityConfiguration,
+        generationConfiguration));
 
     // Re-create paths with config-driven overrides (e.g. custom workspaces directory).
     var workspacesDir = configuration.GetValue<string>("Workspaces:Directory");
@@ -1148,7 +1166,6 @@ static (IReadOnlyList<string> Warnings, IReadOnlyList<string> Notices) Configure
     services.AddChannelIntegrations(configuration);
 
     // Config hot-reload watcher
-    services.AddSingleton<ConfigWatcherService>();
     services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ConfigWatcherService>());
 
     // Warm previously active sessions after a coordinated restart.

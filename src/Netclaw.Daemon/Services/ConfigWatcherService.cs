@@ -7,7 +7,11 @@ using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Netclaw.Channels.Discord;
+using Netclaw.Channels.Mattermost;
+using Netclaw.Channels.Slack;
 using Netclaw.Configuration;
+using Netclaw.Configuration.Secrets;
 using Netclaw.Daemon.Configuration;
 using Netclaw.Providers;
 
@@ -34,6 +38,7 @@ namespace Netclaw.Daemon.Services;
 public sealed class ConfigWatcherService : IHostedService, IDisposable
 {
     private readonly NetclawPaths _paths;
+    private readonly ISecretsProtector _protector;
     private readonly TimeProvider _timeProvider;
     private readonly IDaemonRestartCoordinator _restartCoordinator;
     private readonly RejectedConfigState _rejectedConfig;
@@ -42,6 +47,10 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
     private readonly ILoggerFactory _loggerFactory;
     private (string Reason, string Content)? _lastRejection;
     private readonly ILogger<ConfigWatcherService> _logger;
+    private readonly IReadOnlyDictionary<string, string?> _lowerPriorityConfiguration;
+    private readonly IReadOnlyDictionary<string, string?> _generationConfiguration;
+    private readonly TaskCompletionSource _applicationStarted = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly CancellationTokenRegistration _applicationStartedRegistration;
 
     private FileSystemWatcher? _watcher;
     private CancellationTokenSource? _debounceCts;
@@ -63,22 +72,31 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
 
     public ConfigWatcherService(
         NetclawPaths paths,
+        ISecretsProtector protector,
         TimeProvider timeProvider,
         IDaemonRestartCoordinator restartCoordinator,
         RejectedConfigState rejectedConfig,
         IEnumerable<ILlmProviderPlugin> plugins,
         IModelCapabilityResolver capabilities,
         ILoggerFactory loggerFactory,
-        ILogger<ConfigWatcherService> logger)
+        ILogger<ConfigWatcherService> logger,
+        IHostApplicationLifetime applicationLifetime,
+        IReadOnlyDictionary<string, string?> lowerPriorityConfiguration,
+        IReadOnlyDictionary<string, string?> generationConfiguration)
     {
         _capabilities = capabilities;
         _loggerFactory = loggerFactory;
         _rejectedConfig = rejectedConfig;
         _plugins = plugins.ToList();
         _paths = paths;
+        _protector = protector;
         _timeProvider = timeProvider;
         _restartCoordinator = restartCoordinator;
         _logger = logger;
+        _lowerPriorityConfiguration = lowerPriorityConfiguration;
+        _generationConfiguration = generationConfiguration;
+        _applicationStartedRegistration = applicationLifetime.ApplicationStarted.Register(
+            () => _applicationStarted.TrySetResult());
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -107,13 +125,20 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         _watcher = new FileSystemWatcher(configDir)
         {
             NotifyFilter = NotifyFilters.LastWrite | NotifyFilters.CreationTime | NotifyFilters.FileName,
-            EnableRaisingEvents = true
+            EnableRaisingEvents = false
         };
 
         _watcher.Changed += OnFileChanged;
         _watcher.Created += OnFileChanged;
         _watcher.Deleted += OnFileDeleted;
         _watcher.Renamed += OnFileRenamed;
+
+        lock (_debounceLock)
+        {
+            // An event after subscription must retain its ordinary reload behavior.
+            _watcher.EnableRaisingEvents = true;
+            ScheduleReload(startupReconciliation: true);
+        }
 
         _logger.LogInformation("Config hot-reload watching: {ConfigDir}", configDir);
         return Task.CompletedTask;
@@ -122,7 +147,11 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
     public Task StopAsync(CancellationToken cancellationToken)
     {
         _watcher?.Dispose();
-        _debounceCts?.Cancel();
+        lock (_debounceLock)
+        {
+            _debounceCts?.Cancel();
+        }
+        _applicationStartedRegistration.Dispose();
         return Task.CompletedTask;
     }
 
@@ -134,7 +163,7 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
                 return;
 
             _logger.LogDebug("Config file changed: {FileName}", e.Name);
-            ScheduleReload();
+            ScheduleReload(startupReconciliation: false);
         }
         catch (Exception ex)
         {
@@ -165,7 +194,7 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
             if (IsWatchedFile(e.Name))
             {
                 _logger.LogDebug("Config file rename detected: {OldName} -> {NewName}", e.OldName, e.Name);
-                ScheduleReload();
+                ScheduleReload(startupReconciliation: false);
                 return;
             }
 
@@ -181,7 +210,7 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         }
     }
 
-    private void ScheduleReload()
+    private void ScheduleReload(bool startupReconciliation)
     {
         // FileSystemWatcher raises events on thread-pool threads and may deliver
         // them concurrently. The cancel-and-replace of the debounce CTS must be
@@ -192,20 +221,22 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         {
             _debounceCts?.Cancel();
             _debounceCts = new CancellationTokenSource();
-            _pendingReload = RunDebouncedReloadAsync(_debounceCts.Token);
+            _pendingReload = RunDebouncedReloadAsync(startupReconciliation, _debounceCts.Token);
         }
     }
 
-    private async Task RunDebouncedReloadAsync(CancellationToken token)
+    private async Task RunDebouncedReloadAsync(bool startupReconciliation, CancellationToken token)
     {
         try
         {
             // Debounce on the injected TimeProvider so tests can virtualize it.
             await Task.Delay(_debounceInterval, _timeProvider, token);
+            // A restart must not stop the host before its other services start.
+            await _applicationStarted.Task.WaitAsync(token);
             if (token.IsCancellationRequested)
                 return;
 
-            await ApplyReloadAsync(CancellationToken.None);
+            await ApplyReloadAsync(startupReconciliation, CancellationToken.None);
         }
         catch (OperationCanceledException)
         {
@@ -213,7 +244,10 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         }
     }
 
-    internal async Task ApplyReloadAsync(CancellationToken cancellationToken)
+    internal Task ApplyReloadAsync(CancellationToken cancellationToken) =>
+        ApplyReloadAsync(startupReconciliation: false, cancellationToken);
+
+    private async Task ApplyReloadAsync(bool startupReconciliation, CancellationToken cancellationToken)
     {
         try
         {
@@ -223,10 +257,18 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
 
             // A restart into a configuration that startup rejects would stop the daemon, so the
             // running daemon keeps its configuration and `netclaw status` says why.
+            using var candidate = new ConfigurationManager();
             string? reason;
+            var configurationChanged = true;
             try
             {
-                reason = FindRejection();
+                var check = FindRejection(candidate);
+                reason = check.Error;
+                if (check.Valid is { } valid && startupReconciliation)
+                {
+                    var (generationValues, candidateValues) = PrepareComparison(candidate, valid.Providers);
+                    configurationChanged = HasConfigurationChanged(generationValues, candidateValues);
+                }
             }
             catch (Exception ex)
             {
@@ -243,6 +285,9 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
             _rejectedConfig.Clear();
             _lastRejection = null;
 
+            if (startupReconciliation && !configurationChanged)
+                return;
+
             // Every valid config change — including Daemon-section settings (bind
             // address, exposure mode) — is applied via the coordinated in-process
             // restart below. That restart rebuilds the host and re-binds Kestrel, so
@@ -258,28 +303,172 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
 
     // The same checks startup makes, in the same order: the JSON syntax, the configuration
     // sources, the Models and Providers sections, and the provider plugins.
-    private string? FindRejection()
+    private ModelConfigurationCheck FindRejection(ConfigurationManager configuration)
     {
         if (!ValidateConfigJson(_paths.NetclawConfigPath, out var jsonError))
-            return $"netclaw.json is not valid JSON: {FirstLine(jsonError)}";
+            return new ModelConfigurationCheck($"netclaw.json is not valid JSON: {FirstLine(jsonError)}", null);
 
-        IConfigurationRoot configuration;
         try
         {
-            configuration = new ConfigurationBuilder().AddNetclawDaemonSources(_paths).Build();
+            configuration.AddInMemoryCollection(_lowerPriorityConfiguration);
+            configuration.AddNetclawDaemonSources(_paths);
         }
         catch (InvalidDataException ex)
         {
-            return DaemonConfigurationSources.DescribeLoadFailure(ex);
+            return new ModelConfigurationCheck(DaemonConfigurationSources.DescribeLoadFailure(ex), null);
         }
 
         var check = ModelConfigurationValidation.Check(configuration);
         if (check.Valid is not { } valid)
-            return check.Error;
+            return check;
 
-        return valid.Validation.Status == ProviderRuntimeStatus.Valid
+        var error = valid.Validation.Status == ProviderRuntimeStatus.Valid
             ? new ProviderPluginFactory(valid.Providers, _plugins, _capabilities, _loggerFactory, _timeProvider).Validate(valid.Models)
             : null;
+        return error is null ? check : new ModelConfigurationCheck(error, null);
+    }
+
+    private (Dictionary<string, string?> Generation, Dictionary<string, string?> Candidate) PrepareComparison(
+        IConfiguration candidateConfiguration,
+        IReadOnlyDictionary<string, ProviderEntry> candidateProviders)
+    {
+        // Load the captured raw generation. Normalized values must not pass through the secret converter twice.
+        using var saved = new ConfigurationManager();
+        saved.AddInMemoryCollection(_generationConfiguration);
+        var generationProviders = ProviderConfigurationLoader.Load(saved.GetSection("Providers"));
+        var generation = PrepareComparisonValues(_generationConfiguration);
+        var candidate = PrepareComparisonValues(candidateConfiguration.AsEnumerable());
+
+        foreach (var (name, provider) in generationProviders)
+        {
+            if (!UsesOAuth(provider)
+                || !candidateProviders.TryGetValue(name, out var candidateProvider)
+                || !UsesOAuth(candidateProvider))
+                continue;
+
+            // The OAuth refresh service owns these exact leaves. Metadata and nested keys remain visible.
+            var providerPath = ConfigurationPath.Combine("Providers", name);
+            foreach (var field in new[]
+                     {
+                         nameof(ProviderEntry.OAuthAccessToken), nameof(ProviderEntry.OAuthRefreshToken),
+                         nameof(ProviderEntry.OAuthAccountId), nameof(ProviderEntry.OAuthTokenExpiry)
+                     })
+            {
+                var key = ConfigurationPath.Combine(providerPath, field);
+                generation.Remove(key);
+                candidate.Remove(key);
+            }
+
+            // PersistTokens removes the legacy ApiKey. Additions and value changes still require a restart.
+            var apiKey = ConfigurationPath.Combine(providerPath, nameof(ProviderEntry.ApiKey));
+            if (!candidate.ContainsKey(apiKey))
+                generation.Remove(apiKey);
+        }
+
+        return (generation, candidate);
+    }
+
+    private bool UsesOAuth(ProviderEntry provider)
+    {
+        // ProviderPluginFactory uses the last plugin for a type key, without case.
+        var auth = _plugins.LastOrDefault(plugin =>
+            string.Equals(plugin.TypeKey, provider.Type, StringComparison.OrdinalIgnoreCase))?.Auth;
+        return auth is OAuthAuth
+            || auth is MultiAuth multi
+            && provider.AuthMethod is AuthMethod.OAuthDevice or AuthMethod.OAuthPkce
+            && multi.SupportedAuthMethods.Contains(provider.AuthMethod);
+    }
+
+    private Dictionary<string, string?> PrepareComparisonValues(IEnumerable<KeyValuePair<string, string?>> configuration)
+    {
+        var values = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var (key, value) in configuration)
+        {
+            values.Add(key, value is not null && ISecretsProtector.IsEncrypted(value) && IsRuntimeDecryptedValue(key)
+                ? _protector.Unprotect(value)
+                : value);
+        }
+        return values;
+    }
+
+    private static bool IsRuntimeDecryptedValue(string key)
+    {
+        var path = key.Split(ConfigurationPath.KeyDelimiter);
+        static bool Is(string value, string expected) => string.Equals(value, expected, StringComparison.OrdinalIgnoreCase);
+
+        // BootstrapDeviceSeeder decrypts this root value before it checks the durable device token.
+        if (path.Length == 1)
+            return Is(path[0], "DeviceToken");
+
+        // Program and RemoteChatChannelBuilder bind these SensitiveString properties.
+        if (path.Length == 2)
+        {
+            if (Is(path[0], "Search"))
+            {
+                var searchKey = ConfigValueMetadataProvider.Get<SearchConfig>(nameof(SearchConfig.BraveApiKey)).Key;
+                return Is(key, searchKey.Replace('.', ':'));
+            }
+            return Is(path[0], "Slack")
+                   && (Is(path[1], nameof(SlackChannelOptions.BotToken)) || Is(path[1], nameof(SlackChannelOptions.AppToken)))
+                || Is(path[0], "Discord") && Is(path[1], nameof(DiscordChannelOptions.BotToken))
+                || Is(path[0], "Mattermost") && Is(path[1], nameof(MattermostChannelOptions.BotToken));
+        }
+
+        if (path.Length == 3)
+        {
+            if (Is(path[0], "Providers"))
+                return Is(path[2], nameof(ProviderEntry.ApiKey))
+                    || Is(path[2], nameof(ProviderEntry.OAuthAccessToken))
+                    || Is(path[2], nameof(ProviderEntry.OAuthRefreshToken))
+                    || Is(path[2], nameof(ProviderEntry.OAuthAccountId));
+
+            if (Is(path[0], "McpServers"))
+                return Is(path[2], nameof(McpServerEntry.OAuthClientSecret));
+
+            // McpOAuthCredentialStore decrypts the document before it deserializes these declared fields.
+            // Retain their values: resource and authority changes must still cause a restart.
+            if (Is(path[0], McpOAuthTokenSet.SecretsSectionKey))
+                return Is(path[2], nameof(McpOAuthTokenSet.AccessToken))
+                    || Is(path[2], nameof(McpOAuthTokenSet.RefreshToken))
+                    || Is(path[2], nameof(McpOAuthTokenSet.ExpiresAt))
+                    || Is(path[2], nameof(McpOAuthTokenSet.TokenType))
+                    || Is(path[2], nameof(McpOAuthTokenSet.Scope))
+                    || Is(path[2], nameof(McpOAuthTokenSet.ObtainedAt))
+                    || Is(path[2], nameof(McpOAuthTokenSet.ClientId))
+                    || Is(path[2], nameof(McpOAuthTokenSet.ClientSecret))
+                    || Is(path[2], nameof(McpOAuthTokenSet.DynamicClientRegistration))
+                    || Is(path[2], nameof(McpOAuthTokenSet.AuthorizationServer))
+                    || Is(path[2], nameof(McpOAuthTokenSet.TokenEndpointAuthMethod))
+                    || Is(path[2], nameof(McpOAuthTokenSet.McpServerUrl))
+                    || Is(path[2], nameof(McpOAuthTokenSet.ResourceIdentity));
+        }
+
+        if (path.Length == 4)
+            return Is(path[0], "SkillFeeds") && Is(path[1], nameof(SkillFeedsConfig.Feeds))
+                   && Is(path[3], nameof(SkillFeedSource.ApiKey))
+                || Is(path[0], "McpServers")
+                   && (Is(path[2], nameof(McpServerEntry.Headers)) || Is(path[2], nameof(McpServerEntry.EnvironmentVariables)));
+
+        return false;
+    }
+
+    internal static bool HasConfigurationChanged(
+        IReadOnlyDictionary<string, string?> generationConfiguration,
+        IEnumerable<KeyValuePair<string, string?>> candidateConfiguration)
+    {
+        var generation = generationConfiguration.ToDictionary(
+            entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
+        var candidate = candidateConfiguration.ToDictionary(
+            entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
+
+        return candidate.Count != generation.Count
+            || generation.Any(entry =>
+            {
+                var hasKey = candidate.TryGetValue(entry.Key, out var value);
+                // config-startup-reconciliation:begin
+                return !hasKey || !string.Equals(entry.Value, value, StringComparison.Ordinal);
+                // config-startup-reconciliation:end
+            });
     }
 
     private void Reject(string reason)
@@ -345,6 +534,12 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
     public void Dispose()
     {
         _watcher?.Dispose();
-        _debounceCts?.Dispose();
+        lock (_debounceLock)
+        {
+            _debounceCts?.Cancel();
+            _debounceCts?.Dispose();
+            _debounceCts = null;
+        }
+        _applicationStartedRegistration.Dispose();
     }
 }

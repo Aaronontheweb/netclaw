@@ -20,6 +20,25 @@ If a local config source cannot be read, `netclaw daemon status` reports an unkn
 `netclaw daemon stop` also skips its shutdown notice. It still requires proof that the process serves this home.
 Repair or restore the file that the command names, then retry.
 
+A new daemon host compares its loaded configuration with the latest files after its config watcher starts.
+A valid difference requests another coordinated restart. This includes an edit before the watcher starts.
+Runtime-owned OAuth refresh state is an exception, including a refresh before watcher startup.
+The watcher uses the provider loader and descriptors to identify OAuth in both snapshots.
+An OAuth-only descriptor needs no explicit authentication selection.
+A descriptor with multiple authentication methods requires a loaded, supported OAuth selection.
+For these providers, the comparison excludes the canonical access token, refresh token, account ID, and expiry.
+It also excludes removal of the legacy `ApiKey` that OAuth persistence removes.
+The watcher compares decrypted values only at exact paths that runtime consumers decrypt.
+Thus, an unchanged credential needs no restart after encryption with a new nonce or migration from plaintext.
+This covers provider, search, channel, skill-feed, MCP, and device credentials.
+MCP OAuth fields retain their decrypted values in the comparison, including authority and resource fields.
+A real API key change still requests a restart.
+Provider metadata, authority fields, nested vendor keys, and other config changes remain visible.
+Unknown paths and ordinary host, type, and endpoint values remain unchanged, even with an `ENC:` prefix.
+For example, a `Daemon:Host` change in `secrets.json` still requests a restart, even when OAuth tokens also change.
+An invalid edit preserves the current host and reports the rejection through `netclaw status`.
+Comparison preparation or decryption failures also reject the candidate before the watcher clears an earlier rejection.
+
 The daemon deletes `daemon-*.log` and `crash-*.log` files older than `Retention:Logs:Days`
 (default 14, `0` keeps them forever). It does not delete anything under `logs/sessions/`.
 To read or change the setting, run `netclaw config retention` or

@@ -7,6 +7,7 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Microsoft.Data.Sqlite;
 using Netclaw.Configuration;
@@ -18,9 +19,13 @@ namespace Netclaw.Daemon.Tests.Services;
 public sealed class ConfigStartupGapProcessTests
 {
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task Latest_config_reaches_the_real_host_across_watcher_start(bool writeBeforeWatcherStart)
+    [InlineData(true, StartupEdit.Host)]
+    [InlineData(false, StartupEdit.Host)]
+    [InlineData(true, StartupEdit.RemoveHost)]
+    [InlineData(true, StartupEdit.SecretsOverlay)]
+    [InlineData(true, StartupEdit.InvalidJson)]
+    public async Task Latest_config_reaches_the_real_host_across_watcher_start(
+        bool writeBeforeWatcherStart, StartupEdit edit)
     {
         using var directory = new DisposableTempDir();
         var paths = new NetclawPaths(Path.Combine(directory.Path, "home"));
@@ -32,6 +37,7 @@ public sealed class ConfigStartupGapProcessTests
         WriteConfig(paths, port, "127.0.0.1");
         await using var daemon = new OwnedDaemon(directory.Path, paths, port);
         await daemon.WaitForAsync(state => state.Starts == 1 && state.Watchers == 1, token);
+        Assert.Equal("127.0.0.1", daemon.State.Host);
         Assert.Equal(1, await ReadGenerationAsync("127.0.0.1", port, token));
 
         await using (var gate = new SqliteConnection(new SqliteConnectionStringBuilder
@@ -56,7 +62,7 @@ public sealed class ConfigStartupGapProcessTests
 
             // WAL permits readers. Verify that this transaction excludes another writer before A starts.
             await AssertWalWriteGateAsync(gate.ConnectionString, token);
-            WriteConfig(paths, port, "127.0.0.2");
+            WriteConfig(paths, port, "localhost");
             await daemon.WaitForAsync(state => state.Migrations == 2, token);
             daemon.DrainEvents();
             Assert.Equal(1, daemon.State.Watchers);
@@ -64,7 +70,7 @@ public sealed class ConfigStartupGapProcessTests
 
             // Program loaded A before this checkpoint. The memory schema UPDATE holds the new watcher behind the gate.
             if (writeBeforeWatcherStart)
-                WriteConfig(paths, port, "127.0.0.3");
+                ApplyEdit(paths, port, edit);
 
             await using var release = gate.CreateCommand();
             release.CommandText = "ROLLBACK";
@@ -74,15 +80,64 @@ public sealed class ConfigStartupGapProcessTests
         if (!writeBeforeWatcherStart)
         {
             await daemon.WaitForAsync(state => state.Starts == 2 && state.Watchers == 2, token);
-            Assert.Equal(2, await ReadGenerationAsync("127.0.0.2", port, token));
-            WriteConfig(paths, port, "127.0.0.3");
+            Assert.Equal("localhost", daemon.State.Host);
+            Assert.Equal(2, await ReadGenerationAsync("localhost", port, token));
+            ApplyEdit(paths, port, edit);
         }
 
-        await daemon.WaitForAsync(state => state.Host == "127.0.0.3" && state.Starts == state.Migrations, token);
-        var generation = await ReadGenerationAsync("127.0.0.3", port, token);
-        Assert.True(generation > 1, "B must serve the readiness response from a later host generation.");
+        if (edit == StartupEdit.InvalidJson)
+        {
+            await daemon.WaitForAsync(state => state.Rejections == 1 && state.Starts == 2, token);
+            Assert.Equal("localhost", daemon.State.Host);
+            Assert.Equal(2, await ReadGenerationAsync("localhost", port, token));
+            daemon.DrainEvents();
+            Assert.Equal(2, daemon.State.Migrations);
+            Assert.Equal(2, daemon.State.Watchers);
+            Assert.Equal(2, daemon.State.Starts);
+            Assert.Equal(1, daemon.State.Rejections);
+            return;
+        }
+
+        const string expectedHost = "127.0.0.1";
+        await daemon.WaitForAsync(state => state.Host == expectedHost
+            && state.Migrations >= 3 && state.Starts == state.Migrations, token);
+        Assert.Equal(expectedHost, daemon.State.Host);
+        var generation = await ReadGenerationAsync(expectedHost, port, token);
+        Assert.True(generation >= 3, "B must serve the readiness response after host generation A.");
         Assert.Equal(daemon.State.Migrations, generation);
         Assert.Equal(0, daemon.State.Rejections);
+    }
+
+    public enum StartupEdit
+    {
+        Host,
+        RemoveHost,
+        SecretsOverlay,
+        InvalidJson
+    }
+
+    private static void ApplyEdit(NetclawPaths paths, int port, StartupEdit edit)
+    {
+        switch (edit)
+        {
+            case StartupEdit.Host:
+                WriteConfig(paths, port, "127.0.0.1");
+                break;
+            case StartupEdit.RemoveHost:
+                var config = JsonNode.Parse(File.ReadAllText(paths.NetclawConfigPath))!.AsObject();
+                Assert.True(config["Daemon"]!.AsObject().Remove("Host"));
+                WriteFile(paths.NetclawConfigPath, config.ToJsonString());
+                break;
+            case StartupEdit.SecretsOverlay:
+                // The higher-priority source must override A without a netclaw.json event.
+                WriteFile(paths.SecretsPath, """{ "Daemon": { "Host": "127.0.0.1" } }""");
+                break;
+            case StartupEdit.InvalidJson:
+                WriteFile(paths.NetclawConfigPath, "{ invalid json");
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(edit), edit, null);
+        }
     }
 
     private static async Task AssertWalWriteGateAsync(string connectionString, CancellationToken token)
@@ -104,8 +159,7 @@ public sealed class ConfigStartupGapProcessTests
     private static void WriteConfig(NetclawPaths paths, int port, string host)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(paths.NetclawConfigPath)!);
-        var temporary = paths.NetclawConfigPath + ".tmp";
-        File.WriteAllText(temporary, JsonSerializer.Serialize(new
+        WriteFile(paths.NetclawConfigPath, JsonSerializer.Serialize(new
         {
             configVersion = 1,
             Daemon = new { Host = host, Port = port },
@@ -114,7 +168,13 @@ public sealed class ConfigStartupGapProcessTests
             ExternalSkills = new { Sources = Array.Empty<object>() },
             Logging = new { Console = new { Enabled = true } }
         }));
-        File.Move(temporary, paths.NetclawConfigPath, overwrite: true);
+    }
+
+    private static void WriteFile(string path, string content)
+    {
+        var temporary = path + ".tmp";
+        File.WriteAllText(temporary, content);
+        File.Move(temporary, path, overwrite: true);
     }
 
     private static async Task<int> ReadGenerationAsync(string host, int port, CancellationToken token)
@@ -157,7 +217,7 @@ public sealed class ConfigStartupGapProcessTests
             start.Environment["DOTNET_NOLOGO"] = "1";
             foreach (var key in new[] { "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy" })
                 start.Environment[key] = "http://127.0.0.1:1";
-            start.Environment["NO_PROXY"] = "127.0.0.1,127.0.0.2,127.0.0.3,localhost";
+            start.Environment["NO_PROXY"] = "127.0.0.1,localhost";
             start.Environment["no_proxy"] = start.Environment["NO_PROXY"];
             StandInDaemon.RequireDaemonBindPort(start.Environment);
             _process = Process.Start(start) ?? throw new InvalidOperationException("The test daemon did not start.");
@@ -213,7 +273,7 @@ public sealed class ConfigStartupGapProcessTests
                 else if (line.Contains("Config validation failed.", StringComparison.Ordinal))
                     signal = "rejected";
                 else if (line.Contains("Now listening on:", StringComparison.Ordinal))
-                    signal = new[] { "127.0.0.1", "127.0.0.2", "127.0.0.3" }
+                    signal = new[] { "127.0.0.1", "localhost" }
                         .SingleOrDefault(host => line.Contains($"http://{host}:", StringComparison.Ordinal));
 
                 if (signal is not null)

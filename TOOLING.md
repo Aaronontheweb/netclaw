@@ -62,6 +62,7 @@ The table retains earlier group measurements. Gate notes below describe later ad
 | `child-owner-and-report` | one Actors invocation for the owner, control, report, close, and drain-scan spans; `chat-close-dispatch-expiry` (two mutants, one CLI invocation) | [8m14s](https://github.com/netclaw-dev/netclaw/actions/runs/40069130760/job/120798739243) |
 | `loopback-host-origin` | `loopback-host-origin` (two invocations, 4.3 to 6.6) | 4.5 to 7 (estimate) |
 | `child-consent` | `child-consent` (36 mutants, one invocation, about 3, estimate), `text-answer-guard` (15 mutants, two invocations, 3.6 local), `child-resume-gate` (55 mutants, one invocation, 3.2 local) | 9 to 11 (estimate) |
+| `config-startup-reconciliation` | `config-startup-reconciliation` (three required mutants, one Daemon invocation) | 122 seconds locally; hosted cost pending |
 
 The approval-directory gate includes one retained-hop producer target in `FileSystemAuthority.FollowLinkChainCore`.
 The gate requires the omission of `knownTargets?.Add(current);` to have the `Killed` status.
@@ -252,6 +253,61 @@ The finalized gate passes locally and in CI.
 CI places this gate in `child-owner-and-report`; its complete hosted job took 8m14s.
 The combined group must stay within 15 minutes on a fast runner.
 The parent must measure the combined group before acceptance and move this gate if the total exceeds that budget.
+
+### Config Startup Reconciliation Gate
+
+Issue #2485 protects the comparison between the host generation and the latest configuration.
+The contract follows [PRD-001 FR-016](docs/prd/PRD-001-netclaw-mvp.md#fr-016-config-change-restart-coordination)
+and [SPEC-011](docs/spec/SPEC-011-daemon-architecture.md).
+The narrow claim is that a key replacement changes configuration even when both values are null.
+For example, generation `Daemon:Host=null` and candidate `Daemon:Port=null` must differ.
+The unsafe inner `||` to `&&` mutation hides that difference.
+The shared pure test row requires this mutation to fail without a child process.
+
+Run `./scripts/run-config-startup-reconciliation-mutations.sh` after the disk check confirms at least 20 GB free.
+The script links `ConfigWatcherConfigurationComparisonTests` through the existing xUnit 2 Actors mutation project.
+The daemon already grants that assembly internal access.
+The script selects only the marked inner predicate in `HasConfigurationChanged`.
+It excludes the count comparison and the outer `Any` expression.
+The lookup precedes the predicate, so each mutant can read the key-presence flag and value.
+The final local report contains three killed targets.
+The gate pins these three identities:
+
+| Original source | Required replacement |
+|---|---|
+| The complete inner predicate | The same predicate with `&&` instead of `||` |
+| `!hasKey` | `hasKey` |
+| `!string.Equals(entry.Value, value, StringComparison.Ordinal)` | `string.Equals(entry.Value, value, StringComparison.Ordinal)` |
+
+All three targets must compile and have `Killed` status. The correction does not accept compiler failures.
+Review the actual report and run all 13 pure cases before acceptance.
+An independent author must review the comparison and its mutation gate.
+The five process cases retain their separate integration role.
+The gate checks the exact source, count, mutator names, UTF-16 locations, and replacements.
+It ignores whitespace trivia in replacements. Every expected mutant must have status `Killed`.
+Missing, extra, ignored, uncovered, timed-out, compile-error, or surviving target mutants fail the gate.
+An active mutant outside the selected span also fails the gate.
+The gate excludes only ignored mutants and compiler artifacts outside that span.
+It retains the full report and a separate `outside-span-compile-errors.json` receipt.
+A failed Stryker invocation cannot pass the gate.
+Reports appear in `artifacts/stryker/config-startup-reconciliation` by default.
+The script refuses an output path that contains a prior scope or report.
+Pass a fresh output path for each later run. Preserve the failed report and its scope.
+
+This gate proves the pure decision within the test process.
+It does not instrument a child daemon process or prove that the next host consumes configuration B.
+The separate process regression tests prove the startup gap and the next host configuration.
+The existing full-process baseline proves the effect of absent startup reconciliation.
+
+On a shared host, hold the shared build lock through Stryker's initial SDK build.
+Release it when Stryker prints `Initial test run started`.
+Keep the lock free during mutation analysis and test waits.
+CI uses a separate group because the current measurements do not establish spare capacity in an existing group.
+The group retains the 25-minute timeout and the 15-minute target on a fast runner.
+The final local run took 122 seconds, including the initial build and 1,110 initial test cases.
+The shared pure fixture has 13 cases. All three expected mutants died.
+The verifier records 618 compiler artifacts outside the target span.
+Cold-runner cost and hosted group cost remain unverified.
 
 ### No Program Gate
 

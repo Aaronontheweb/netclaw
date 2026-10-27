@@ -493,6 +493,68 @@ not execute tools.
    route activates each target session.
 6. **Invalid config**: log warning with validation errors, preserve previous config
 
+Each host generation records its effective configuration before it binds runtime settings.
+The config watcher attaches its handlers before it enables file events.
+It then compares the latest canonical sources with that generation snapshot after the host starts.
+An unchanged snapshot needs no restart. A valid difference outside runtime-owned OAuth refresh state requests a coordinated restart.
+This comparison includes removed keys and retains source precedence. An invalid edit uses the existing rejection path.
+
+`ConfigWatcherService` compares the same candidate that it validates.
+It prepares call-local values and leaves both raw snapshots unchanged.
+It uses the host's existing `ISecretsProtector` only for exact paths that runtime consumers decrypt.
+An unchanged secret compares equal after encryption with a new nonce or migration from plaintext.
+A changed API key still differs. Null values, absent keys, and source precedence remain distinct.
+
+| Compared values | Runtime consumer that owns decryption |
+| --- | --- |
+| `ProviderEntry.ApiKey`, `OAuthAccessToken`, `OAuthRefreshToken`, `OAuthAccountId` | `ProviderConfigurationLoader` binds `SensitiveString` properties. |
+| `Search.BraveApiKey` | `Program` binds `SearchConfig`; its `ConfigValue` metadata supplies the key. |
+| Slack bot/app tokens; Discord and Mattermost bot tokens | `RemoteChatChannelBuilder` binds the typed channel options. |
+| `SkillFeeds.Feeds.<entry>.ApiKey` | `Program` binds `SkillFeedSource` entries. |
+| MCP client secrets, header values, and environment values | `Program` binds `McpServerEntry` properties. |
+| Declared `McpOAuthTokenSet` fields | `McpOAuthCredentialStore` decrypts the document before deserialization. |
+| Root `DeviceToken` | `BootstrapDeviceSeeder` decrypts the document before its token check. |
+
+MCP authority and resource values remain part of the comparison after decryption.
+The direct MCP and device file consumers retain their own source rules.
+This projection does not equate those file consumers with merged configuration sources.
+Unknown paths remain unchanged, even with an `ENC:` prefix.
+The watcher does not decrypt host names, provider types, endpoints, vendor options, or other authority inputs.
+
+The watcher reuses the candidate providers from model validation.
+`ProviderConfigurationLoader` loads the saved generation from its raw snapshot in memory, without another file read.
+The watcher resolves descriptors with the same case-insensitive type keys and last-plugin precedence as `ProviderPluginFactory`.
+An `OAuthAuth` descriptor identifies an OAuth-only provider, even without an explicit `AuthMethod`.
+A `MultiAuth` descriptor requires a loaded `OAuthDevice` or `OAuthPkce` selection that its supported methods include.
+The watcher does not infer authentication from a provider name or the first supported method.
+
+The comparison excludes these exact `Providers:<name>` fields only when both providers use OAuth:
+
+- `OAuthAccessToken`: the refresh service supplies the current access token.
+- `OAuthRefreshToken`: the refresh service adopts and rotates the live refresh token.
+- `OAuthAccountId`: the refresh service updates the account ID with the token result.
+- `OAuthTokenExpiry`: the refresh service uses the current expiry to decide when to refresh.
+
+The comparison also excludes removal of the legacy `ApiKey` in that OAuth context, because `OAuthTokenPersistence.PersistTokens` removes it.
+An `ApiKey` addition, null value, or value change remains visible. Other authentication methods retain all credential comparisons.
+Config keys match without case; all retained prepared values compare exactly.
+Provider IDs, metadata, authority fields, and nested vendor keys remain visible.
+For example, an OAuth refresh before watcher startup needs no restart.
+A `Daemon:Host` change in the same `secrets.json` update still requests a restart.
+Preparation, decryption, or provider load failures reject the candidate before the watcher clears its rejection state.
+The watcher never treats these failures as equality.
+
+The startup sequence is:
+
+1. Capture the raw host generation.
+2. Attach the file watcher and await `ApplicationStarted`.
+3. Load and validate the candidate sources, models, and provider clients.
+4. Prepare comparison values within the rejection boundary.
+5. Compare key presence and ordinal values with the pure predicate.
+6. Request a restart for a valid difference.
+
+This preserves the [OAuth refresh contract](../../openspec/specs/netclaw-model-providers/spec.md#requirement-oauth-refresh-state-lives-in-secretsjson).
+
 ### What Changes Take Effect After Restart
 
 - Provider credentials and endpoints
@@ -517,8 +579,8 @@ not execute tools.
 - Not agent file tools: tool authorization write-denies the config directory
   (see `docs/architecture/tool-authorization.md`)
 
-All changes go to disk first. The `FileSystemWatcher` is the single reload
-trigger — there is no in-memory config mutation path.
+All changes go to disk first. File events and the watcher startup comparison request
+reload through the same coordinator. No in-memory config mutation path exists.
 
 ## Security Context
 
