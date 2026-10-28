@@ -164,6 +164,9 @@ static async Task RunDaemonAsync(
     // under the Netclaw home instead of the system temp directory.
     Environment.CurrentDirectory = bootstrapPaths.RuntimeDirectory;
 
+    using var configWatch = new ConfigFileWatch(bootstrapPaths);
+    configWatch.Arm();
+
     // Resolve inside each daemon generation. A soft restart is allowed to
     // select a newly installed compatible host, but one running generation
     // keeps this exact environment for parsing, authorization, and execution.
@@ -172,6 +175,7 @@ static async Task RunDaemonAsync(
         .ResolveAsync(ShellExecutionEnvironmentResolver.DetectCurrentPlatform());
 
     var builder = WebApplication.CreateBuilder(args);
+    builder.Services.AddSingleton(configWatch);
 
     // Register process-lifetime restart signal so services can trigger a restart
     builder.Services.AddSingleton(restartSignal);
@@ -433,12 +437,10 @@ static (NetclawPaths Paths, ModelSelection Models) ConfigureConfigServices(
     var lowerPriorityConfiguration = configuration.AsEnumerable()
         .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
     configuration.AddNetclawDaemonSources(bootstrapPaths);
-    var generationConfiguration = configuration.AsEnumerable()
-        .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
 
     services.AddSingleton(sp => new ConfigWatcherService(
         sp.GetRequiredService<NetclawPaths>(),
-        protector,
+        sp.GetRequiredService<ConfigFileWatch>(),
         sp.GetRequiredService<TimeProvider>(),
         sp.GetRequiredService<IDaemonRestartCoordinator>(),
         sp.GetRequiredService<RejectedConfigState>(),
@@ -447,8 +449,7 @@ static (NetclawPaths Paths, ModelSelection Models) ConfigureConfigServices(
         sp.GetRequiredService<ILoggerFactory>(),
         sp.GetRequiredService<ILogger<ConfigWatcherService>>(),
         sp.GetRequiredService<IHostApplicationLifetime>(),
-        lowerPriorityConfiguration,
-        generationConfiguration));
+        lowerPriorityConfiguration));
 
     // Re-create paths with config-driven overrides (e.g. custom workspaces directory).
     var workspacesDir = configuration.GetValue<string>("Workspaces:Directory");

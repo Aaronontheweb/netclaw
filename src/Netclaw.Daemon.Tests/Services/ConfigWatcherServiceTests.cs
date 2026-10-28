@@ -3,7 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
-using System.Text.Json.Nodes;
+using System.Threading.Channels;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -32,6 +32,7 @@ public sealed class ConfigWatcherServiceTests : IDisposable
     private readonly CapturingLogger _logger = new();
     private readonly FakeApplicationLifetime _lifetime = new();
     private readonly ServiceProvider _services;
+    private readonly ConfigFileWatch _watch;
     private readonly ConfigWatcherService _sut;
 
     public ConfigWatcherServiceTests()
@@ -46,23 +47,21 @@ public sealed class ConfigWatcherServiceTests : IDisposable
         services.AddSingleton<ILoggerFactory>(NullLoggerFactory.Instance);
         services.AddLlmProviders();
         _services = services.BuildServiceProvider();
-        _sut = CreateWatcher(new NullSecretsProtector());
+        _watch = new ConfigFileWatch(_paths);
+        _sut = CreateWatcher(_watch);
     }
 
-    private ConfigWatcherService CreateWatcher(ISecretsProtector protector)
+    private ConfigWatcherService CreateWatcher(ConfigFileWatch watch)
     {
         var plugins = _services.GetServices<ILlmProviderPlugin>();
 
         using var configuration = new ConfigurationManager();
         var lowerPriorityConfiguration = configuration.AsEnumerable()
             .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
-        configuration.AddNetclawDaemonSources(_paths);
-        var generationConfiguration = configuration.AsEnumerable()
-            .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
 
         return new ConfigWatcherService(
             _paths,
-            protector,
+            watch,
             _time,
             _restartCoordinator,
             _rejectedConfig,
@@ -71,8 +70,7 @@ public sealed class ConfigWatcherServiceTests : IDisposable
             NullLoggerFactory.Instance,
             _logger,
             _lifetime,
-            lowerPriorityConfiguration,
-            generationConfiguration);
+            lowerPriorityConfiguration);
     }
 
     private sealed class CapturingLogger : ILogger<ConfigWatcherService>
@@ -91,6 +89,21 @@ public sealed class ConfigWatcherServiceTests : IDisposable
     }
 
     private const string GoodModels = "\"Models\": { \"Definitions\": { \"d\": { \"Provider\": \"p\", \"ModelId\": \"m\" } }, \"Roles\": { \"Main\": \"d\" } }";
+
+    [Fact]
+    public async Task Start_without_a_file_event_leaves_no_reload_or_restart()
+    {
+        await _sut.StartAsync(TestContext.Current.CancellationToken);
+        var queuedWork = !_sut.PendingReload.IsCompleted;
+        _lifetime.NotifyStarted();
+        _time.Advance(_sut.DebounceInterval);
+        await _sut.PendingReload.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await _sut.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.False(queuedWork);
+        Assert.Equal(0, _restartCoordinator.RequestCount);
+        Assert.Null(_rejectedConfig.Reason);
+    }
 
     [Fact]
     public async Task ValidConfigChange_TriggersRestart()
@@ -144,22 +157,6 @@ public sealed class ConfigWatcherServiceTests : IDisposable
 
         Assert.Equal(1, _restartCoordinator.RequestCount);
         Assert.Null(_rejectedConfig.Reason);
-    }
-
-    [Theory]
-    [InlineData("secrets.json")]
-    [InlineData("mcp-oauth-metadata.json")]
-    [InlineData("random.txt")]
-    [InlineData(null)]
-    public void NonConfigFiles_AreNotWatched(string? fileName)
-    {
-        Assert.False(ConfigWatcherService.IsWatchedFile(fileName));
-    }
-
-    [Fact]
-    public void NetclawJson_IsWatched()
-    {
-        Assert.True(ConfigWatcherService.IsWatchedFile("netclaw.json"));
     }
 
     [Theory]
@@ -306,13 +303,14 @@ public sealed class ConfigWatcherServiceTests : IDisposable
     [Fact]
     public async Task AtomicReplace_TriggersReload()
     {
+        await _sut.StartAsync(TestContext.Current.CancellationToken);
         _lifetime.NotifyStarted();
         // An atomic-replace write (write-temp then rename) surfaces as a Renamed
         // event whose new name is the watched config file.
         File.WriteAllText(_paths.NetclawConfigPath, """{ "Providers": {} }""");
         var configDir = Path.GetDirectoryName(_paths.NetclawConfigPath)!;
 
-        _sut.OnFileRenamed(this, new RenamedEventArgs(
+        _watch.OnFileRenamed(this, new RenamedEventArgs(
             WatcherChangeTypes.Renamed, configDir, "netclaw.json", "netclaw.json.tmp.0a1b2c3d"));
 
         _time.Advance(_sut.DebounceInterval);
@@ -324,13 +322,14 @@ public sealed class ConfigWatcherServiceTests : IDisposable
     [Fact]
     public async Task InPlaceWrite_TriggersReload()
     {
+        await _sut.StartAsync(TestContext.Current.CancellationToken);
         _lifetime.NotifyStarted();
         // Regression: a direct in-place write (e.g. a shell > redirect) surfaces
         // as a Changed event and must still trigger a reload.
         File.WriteAllText(_paths.NetclawConfigPath, """{ "Providers": {} }""");
         var configDir = Path.GetDirectoryName(_paths.NetclawConfigPath)!;
 
-        _sut.OnFileChanged(this, new FileSystemEventArgs(
+        _watch.OnFileChanged(this, new FileSystemEventArgs(
             WatcherChangeTypes.Changed, configDir, "netclaw.json"));
 
         _time.Advance(_sut.DebounceInterval);
@@ -342,6 +341,7 @@ public sealed class ConfigWatcherServiceTests : IDisposable
     [Fact]
     public async Task OAuth_token_refresh_requests_no_daemon_restart()
     {
+        await _sut.StartAsync(TestContext.Current.CancellationToken);
         _lifetime.NotifyStarted();
         File.WriteAllText(
             _paths.NetclawConfigPath,
@@ -364,13 +364,16 @@ public sealed class ConfigWatcherServiceTests : IDisposable
         Assert.Contains("secrets.json", written);
         foreach (var name in written)
         {
-            _sut.OnFileRenamed(this, new RenamedEventArgs(
+            _watch.OnFileRenamed(this, new RenamedEventArgs(
                 WatcherChangeTypes.Renamed, _paths.ConfigDirectory, name, name + ".tmp.0a1b2c3d"));
         }
 
+        var queuedWork = !_sut.PendingReload.IsCompleted;
         _time.Advance(_sut.DebounceInterval);
         await _sut.PendingReload;
+        await _sut.StopAsync(TestContext.Current.CancellationToken);
 
+        Assert.False(queuedWork);
         Assert.Equal(0, _restartCoordinator.RequestCount);
         Assert.Null(_rejectedConfig.Reason);
     }
@@ -383,13 +386,10 @@ public sealed class ConfigWatcherServiceTests : IDisposable
     }
 
     [Theory]
-    [InlineData(false, StartupSyntax.StrictJson)]
-    [InlineData(true, StartupSyntax.StrictJson)]
-    [InlineData(false, StartupSyntax.Comments)]
-    [InlineData(true, StartupSyntax.Comments)]
-    [InlineData(false, StartupSyntax.TrailingComma)]
-    [InlineData(true, StartupSyntax.TrailingComma)]
-    public async Task Startup_reconciliation_accepts_canonical_json_syntax(bool changeDuringGap, StartupSyntax syntax)
+    [InlineData(StartupSyntax.StrictJson)]
+    [InlineData(StartupSyntax.Comments)]
+    [InlineData(StartupSyntax.TrailingComma)]
+    public async Task Buffered_edit_uses_canonical_json_syntax(StartupSyntax syntax)
     {
         var candidate = syntax switch
         {
@@ -401,12 +401,9 @@ public sealed class ConfigWatcherServiceTests : IDisposable
             StartupSyntax.TrailingComma => """{ "Daemon": { "Host": "localhost", }, }""",
             _ => throw new ArgumentOutOfRangeException(nameof(syntax), syntax, null)
         };
-        File.WriteAllText(_paths.NetclawConfigPath, changeDuringGap
-            ? """{ "Daemon": { "Host": "127.0.0.1" } }"""
-            : candidate);
-        using var watcher = CreateWatcher(new NullSecretsProtector());
-        if (changeDuringGap)
-            File.WriteAllText(_paths.NetclawConfigPath, candidate);
+        File.WriteAllText(_paths.NetclawConfigPath, candidate);
+        _watch.OnFileChanged(this, new FileSystemEventArgs(
+            WatcherChangeTypes.Changed, _paths.ConfigDirectory, "netclaw.json"));
 
         using (var configuration = new ConfigurationManager())
         {
@@ -414,329 +411,174 @@ public sealed class ConfigWatcherServiceTests : IDisposable
             Assert.Equal("localhost", configuration["Daemon:Host"]);
         }
 
-        // All writes precede subscription. Only startup reconciliation can observe the gap edit.
-        await watcher.StartAsync(TestContext.Current.CancellationToken);
-        _time.Advance(watcher.DebounceInterval);
-        var pendingReload = watcher.PendingReload;
-        Assert.False(pendingReload.IsCompleted);
-        Assert.Equal(0, _restartCoordinator.RequestCount);
-
+        await _sut.StartAsync(TestContext.Current.CancellationToken);
         _lifetime.NotifyStarted();
-        await pendingReload.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
-        await watcher.StopAsync(TestContext.Current.CancellationToken);
+        _time.Advance(_sut.DebounceInterval);
+        await _sut.PendingReload.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await _sut.StopAsync(TestContext.Current.CancellationToken);
 
         Assert.Null(_rejectedConfig.Reason);
         Assert.Equal(0, _logger.Warnings);
-        Assert.Equal(changeDuringGap ? 1 : 0, _restartCoordinator.RequestCount);
-    }
-
-    public enum StartupCredentialCase
-    {
-        Plaintext,
-        EncryptedUnchangedOtherSecrets,
-        PlaintextMigrationUnchangedOtherSecrets,
-        EncryptedChangedOtherApiKey,
-        ImplicitCopilotOAuth,
-        InvalidEncryptedSecret,
-        OpaqueVendorValue,
-        MultiAuthApiKey,
-        MultiAuthOAuth,
-        LegacyApiKeyNull,
-        LegacyApiKeySourceExposure
+        Assert.Equal(1, _restartCoordinator.RequestCount);
     }
 
     [Theory]
-    [InlineData(false, false, 0, StartupCredentialCase.Plaintext)]
-    [InlineData(true, false, 0, StartupCredentialCase.Plaintext)]
-    [InlineData(false, true, 1, StartupCredentialCase.Plaintext)]
-    [InlineData(true, true, 1, StartupCredentialCase.Plaintext)]
-    [InlineData(true, false, 0, StartupCredentialCase.EncryptedUnchangedOtherSecrets)]
-    [InlineData(true, false, 0, StartupCredentialCase.PlaintextMigrationUnchangedOtherSecrets)]
-    [InlineData(true, false, 1, StartupCredentialCase.EncryptedChangedOtherApiKey)]
-    [InlineData(true, false, 0, StartupCredentialCase.ImplicitCopilotOAuth)]
-    [InlineData(true, false, 0, StartupCredentialCase.InvalidEncryptedSecret)]
-    [InlineData(true, false, 1, StartupCredentialCase.OpaqueVendorValue)]
-    [InlineData(true, false, 1, StartupCredentialCase.MultiAuthApiKey)]
-    [InlineData(true, false, 0, StartupCredentialCase.MultiAuthOAuth)]
-    [InlineData(true, false, 1, StartupCredentialCase.LegacyApiKeyNull)]
-    [InlineData(true, false, 1, StartupCredentialCase.LegacyApiKeySourceExposure)]
-    public async Task Startup_reconciliation_preserves_the_OAuth_refresh_contract(
-        bool refreshTokens, bool changeHostOverlay, int expectedRestarts, StartupCredentialCase credentialCase)
+    [InlineData("banana", """{ "Providers": { "p": { "Type": "ollama" } } }""", null)]
+    [InlineData("ollama", """{ "Providers": { "p": { "Type": "banana" } } }""", "Unknown provider type 'banana'")]
+    [InlineData("ollama", "{ invalid json", "Couldn't read secrets.json:")]
+    public async Task Buffered_config_event_validates_the_full_source_chain(
+        string baseProvider, string overlay, string? expectedRejection)
     {
-        var protectOtherSecrets = credentialCase is StartupCredentialCase.EncryptedUnchangedOtherSecrets
-            or StartupCredentialCase.PlaintextMigrationUnchangedOtherSecrets
-            or StartupCredentialCase.EncryptedChangedOtherApiKey;
-        var initiallyEncrypted = credentialCase is StartupCredentialCase.EncryptedUnchangedOtherSecrets
-            or StartupCredentialCase.EncryptedChangedOtherApiKey;
-        ISecretsProtector protector = protectOtherSecrets || credentialCase is
-            StartupCredentialCase.InvalidEncryptedSecret or StartupCredentialCase.OpaqueVendorValue
-            ? SecretsProtection.CreateProtector(_paths)
-            : new NullSecretsProtector();
-        var config = JsonNode.Parse("""
-            {
-              "Daemon": { "Host": "127.0.0.1" },
-              "Providers": { "copilot": { "Type": "github-copilot", "AuthMethod": "OAuthDevice" } }
-            }
-            """)!.AsObject();
-        if (credentialCase == StartupCredentialCase.ImplicitCopilotOAuth)
-            config["Providers"]!["copilot"]!.AsObject().Remove("AuthMethod");
-        if (protectOtherSecrets)
-            config["Providers"]!["other"] = new JsonObject { ["Type"] = "openai", ["AuthMethod"] = "ApiKey" };
-        var expectedProvider = ConfigureStartupCredentialControl(config, credentialCase);
-        File.WriteAllText(_paths.NetclawConfigPath, config.ToJsonString());
+        File.WriteAllText(_paths.NetclawConfigPath,
+            "{ \"Providers\": { \"p\": { \"Type\": \"" + baseProvider + "\" } }, " + GoodModels + " }");
+        File.WriteAllText(_paths.SecretsPath, overlay);
+        _watch.OnFileChanged(this, new FileSystemEventArgs(
+            WatcherChangeTypes.Changed, _paths.ConfigDirectory, "netclaw.json"));
 
-        var initialSecrets = JsonNode.Parse("""
-            {
-              "Providers": {
-                "copilot": {
-                  "ApiKey": "synthetic-retired-key",
-                  "OAuthAccessToken": "synthetic-access-before",
-                  "OAuthRefreshToken": "synthetic-refresh-before",
-                  "OAuthAccountId": "synthetic-account-before",
-                  "OAuthTokenExpiry": "2026-06-01T00:00:00.0000000+00:00"
-                }
-              }
-            }
-            """)!.AsObject();
-        if (protectOtherSecrets)
-        {
-            initialSecrets["Providers"]!["other"] = new JsonObject { ["ApiKey"] = "synthetic-other-key-before" };
-            initialSecrets["Search"] = new JsonObject { ["BraveApiKey"] = "synthetic-search-key" };
-        }
-        SecretsFileWriter.Write(_paths.SecretsPath, initialSecrets.ToJsonString(),
-            initiallyEncrypted ? protector : new NullSecretsProtector());
-        var storedBefore = JsonNode.Parse(File.ReadAllText(_paths.SecretsPath))!;
-        var originalConfig = File.ReadAllBytes(_paths.NetclawConfigPath);
-        using (var generation = new ConfigurationManager())
-        {
-            generation.AddNetclawDaemonSources(_paths);
-            var initialProvider = ProviderConfigurationLoader.Load(generation.GetSection("Providers"))["copilot"];
-            AssertStartupApiKey(generation, initialProvider, storedBefore, protector, "synthetic-retired-key", true);
-        }
+        await _sut.StartAsync(TestContext.Current.CancellationToken);
+        _lifetime.NotifyStarted();
+        _time.Advance(_sut.DebounceInterval);
+        await _sut.PendingReload.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await _sut.StopAsync(TestContext.Current.CancellationToken);
 
-        // Capture the generation before the refresh, through the same sources as Program.
-        using var watcher = CreateWatcher(protector);
-        if (refreshTokens)
-        {
-            OAuthTokenPersistence.PersistTokens(
-                _paths,
-                "copilot",
-                new OAuthDeviceFlowResult(
-                    new SensitiveString("synthetic-access-after"),
-                    new SensitiveString("synthetic-refresh-after"),
-                    new DateTimeOffset(2026, 6, 2, 0, 0, 0, TimeSpan.Zero),
-                    new SensitiveString("synthetic-account-after")),
-                protector);
-        }
+        Assert.Equal(expectedRejection is null ? 1 : 0, _restartCoordinator.RequestCount);
+        if (expectedRejection is null)
+            Assert.Null(_rejectedConfig.Reason);
+        else
+            Assert.Contains(expectedRejection, _rejectedConfig.Reason);
+    }
 
-        if (protectOtherSecrets)
-        {
-            var storedAfter = JsonNode.Parse(File.ReadAllText(_paths.SecretsPath))!;
-            foreach (var path in new[] { new[] { "Providers", "other", "ApiKey" }, new[] { "Search", "BraveApiKey" } })
-            {
-                var before = path.Aggregate(storedBefore, (node, key) => node[key]!).GetValue<string>();
-                var after = path.Aggregate(storedAfter, (node, key) => node[key]!).GetValue<string>();
-                Assert.Equal(initiallyEncrypted, ISecretsProtector.IsEncrypted(before));
-                Assert.True(ISecretsProtector.IsEncrypted(after));
-                Assert.False(string.Equals(before, after, StringComparison.Ordinal), "The stored secret must change after the refresh.");
-                var plaintextBefore = initiallyEncrypted ? protector.Unprotect(before) : before;
-                Assert.True(string.Equals(plaintextBefore, protector.Unprotect(after), StringComparison.Ordinal),
-                    "The refresh must preserve the other secret's plaintext.");
-            }
-        }
+    [Fact]
+    public async Task Rapid_events_cancel_the_previous_debounce_and_request_one_restart()
+    {
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "Providers": {} }""");
+        await _sut.StartAsync(TestContext.Current.CancellationToken);
+        _lifetime.NotifyStarted();
+        var change = new FileSystemEventArgs(WatcherChangeTypes.Changed, _paths.ConfigDirectory, "netclaw.json");
 
-        if (credentialCase == StartupCredentialCase.EncryptedChangedOtherApiKey)
-        {
-            SecretsFileWriter.Update(_paths.SecretsPath, (root, _) =>
-            {
-                root["Providers"]!["other"]!["ApiKey"] = "synthetic-other-key-after";
-                return (root, 0);
-            }, protector, cancellationToken: TestContext.Current.CancellationToken);
-        }
-        ApplyStartupCredentialControl(credentialCase, protector);
-
-        if (changeHostOverlay)
-        {
-            var secrets = JsonNode.Parse(File.ReadAllText(_paths.SecretsPath))!.AsObject();
-            secrets["Daemon"] = new JsonObject { ["Host"] = "localhost" };
-            File.WriteAllText(_paths.SecretsPath, secrets.ToJsonString());
-        }
-
-        Assert.Equal(originalConfig, File.ReadAllBytes(_paths.NetclawConfigPath));
-        using var candidate = new ConfigurationManager();
-        candidate.AddNetclawDaemonSources(_paths);
-        Assert.Equal(changeHostOverlay ? "localhost" : "127.0.0.1", candidate["Daemon:Host"]);
-        var provider = ProviderConfigurationLoader.Load(candidate.GetSection("Providers"))["copilot"];
-        Assert.Equal(expectedProvider.Type, provider.Type);
-        Assert.Equal(expectedProvider.Auth, provider.AuthMethod);
-        if (credentialCase == StartupCredentialCase.ImplicitCopilotOAuth)
-            Assert.False(candidate.GetSection("Providers:copilot:AuthMethod").Exists());
-
-        AssertStartupCredentialControl(candidate, provider, credentialCase, refreshTokens, protector);
-        if (refreshTokens)
-        {
-            foreach (var (token, expected) in new[]
-                     {
-                         (provider.OAuthAccessToken, "synthetic-access-after"),
-                         (provider.OAuthRefreshToken, "synthetic-refresh-after"),
-                         (provider.OAuthAccountId, "synthetic-account-after")
-                     })
-            {
-                Assert.NotNull(token);
-                var actual = ISecretsProtector.IsEncrypted(token.Value) ? protector.Unprotect(token.Value) : token.Value;
-                Assert.True(string.Equals(expected, actual, StringComparison.Ordinal), "The candidate must contain the refreshed token.");
-            }
-            Assert.Equal(new DateTimeOffset(2026, 6, 2, 0, 0, 0, TimeSpan.Zero), provider.OAuthTokenExpiry);
-        }
-        if (protectOtherSecrets)
-        {
-            // Use the owned protector. The process-wide converter hook belongs to host setup.
-            var plaintext = JsonNode.Parse(SecretsFileWriter.DecryptJsonLeaves(File.ReadAllText(_paths.SecretsPath), protector))!;
-            var expectedKey = credentialCase == StartupCredentialCase.EncryptedChangedOtherApiKey
-                ? "synthetic-other-key-after" : "synthetic-other-key-before";
-            Assert.True(string.Equals(expectedKey, plaintext["Providers"]!["other"]!["ApiKey"]!.GetValue<string>(), StringComparison.Ordinal),
-                "The candidate must contain the expected provider key.");
-            Assert.True(string.Equals("synthetic-search-key", plaintext["Search"]!["BraveApiKey"]!.GetValue<string>(), StringComparison.Ordinal),
-                "The candidate must contain the unchanged search key.");
-        }
-
-        // Complete every write before StartAsync, so only startup reconciliation can request a restart.
-        await watcher.StartAsync(TestContext.Current.CancellationToken);
-        _time.Advance(watcher.DebounceInterval);
-        var pendingReload = watcher.PendingReload;
-        Assert.False(pendingReload.IsCompleted);
+        _watch.OnFileChanged(this, change);
+        var first = _sut.PendingReload;
+        _time.Advance(_sut.DebounceInterval / 2);
+        _watch.OnFileChanged(this, change);
+        var latest = _sut.PendingReload;
+        await first.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         Assert.Equal(0, _restartCoordinator.RequestCount);
 
-        _lifetime.NotifyStarted();
-        await pendingReload.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
-        await watcher.StopAsync(TestContext.Current.CancellationToken);
-
-        if (credentialCase == StartupCredentialCase.InvalidEncryptedSecret)
-            Assert.NotNull(_rejectedConfig.Reason);
-        else
-            Assert.Null(_rejectedConfig.Reason);
-        Assert.Equal(expectedRestarts, _restartCoordinator.RequestCount);
+        _time.Advance(_sut.DebounceInterval);
+        await latest.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await _sut.StopAsync(TestContext.Current.CancellationToken);
+        Assert.Equal(1, _restartCoordinator.RequestCount);
     }
 
-    private (string Type, AuthMethod Auth) ConfigureStartupCredentialControl(
-        JsonObject config, StartupCredentialCase credentialCase)
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task Buffered_event_waits_for_application_start_after_debounce(bool startApplication)
     {
-        var provider = config["Providers"]!["copilot"]!.AsObject();
-        var expected = credentialCase switch
-        {
-            StartupCredentialCase.MultiAuthApiKey => (Type: "openai", Auth: AuthMethod.ApiKey),
-            StartupCredentialCase.MultiAuthOAuth => (Type: "openai", Auth: AuthMethod.OAuthPkce),
-            StartupCredentialCase.ImplicitCopilotOAuth => (Type: "github-copilot", Auth: AuthMethod.None),
-            _ => (Type: "github-copilot", Auth: AuthMethod.OAuthDevice)
-        };
-        provider["Type"] = expected.Type;
-        if (credentialCase != StartupCredentialCase.ImplicitCopilotOAuth)
-            provider["AuthMethod"] = expected.Auth.ToString();
+        var token = TestContext.Current.CancellationToken;
+        File.WriteAllText(_paths.NetclawConfigPath, "{ invalid json");
+        _watch.OnFileChanged(this, new FileSystemEventArgs(
+            WatcherChangeTypes.Changed, _paths.ConfigDirectory, "netclaw.json"));
+        var context = new QueuedSynchronizationContext();
+        Task start = Task.CompletedTask;
+        context.Run(() => start = _sut.StartAsync(token));
+        await start;
+        var pendingReload = _sut.PendingReload;
 
-        var descriptor = _services.GetServices<ILlmProviderPlugin>().Last(plugin => plugin.TypeKey == expected.Type);
-        if (credentialCase is StartupCredentialCase.MultiAuthApiKey or StartupCredentialCase.MultiAuthOAuth)
+        var previous = SynchronizationContext.Current;
+        try
         {
-            var auth = Assert.IsType<MultiAuth>(descriptor.Auth);
-            Assert.Contains(expected.Auth, auth.SupportedAuthMethods);
+            SynchronizationContext.SetSynchronizationContext(null);
+            _time.Advance(_sut.DebounceInterval);
         }
-        if (credentialCase == StartupCredentialCase.OpaqueVendorValue)
-            provider["VendorOptions"] = new JsonObject { ["Marker"] = "ENC:synthetic-vendor-before" };
-        if (credentialCase == StartupCredentialCase.LegacyApiKeySourceExposure)
-            provider["ApiKey"] = "synthetic-base-key";
-        return expected;
-    }
-
-    private void ApplyStartupCredentialControl(StartupCredentialCase credentialCase, ISecretsProtector protector)
-    {
-        if (credentialCase is StartupCredentialCase.InvalidEncryptedSecret or StartupCredentialCase.OpaqueVendorValue)
+        finally
         {
-            var value = credentialCase == StartupCredentialCase.InvalidEncryptedSecret
-                ? "ENC:synthetic-invalid-secret" : "ENC:synthetic-vendor-after";
-            Assert.True(ISecretsProtector.IsEncrypted(value));
-            Assert.Throws<System.Security.Cryptography.CryptographicException>(() => protector.Unprotect(value));
-            var secrets = JsonNode.Parse(File.ReadAllText(_paths.SecretsPath))!.AsObject();
-            if (credentialCase == StartupCredentialCase.InvalidEncryptedSecret)
-                secrets["Search"] = new JsonObject { ["BraveApiKey"] = value };
+            SynchronizationContext.SetSynchronizationContext(previous);
+        }
+
+        // This callback completes the debounce and reaches the application-start gate.
+        await context.RunNextAsync(token);
+        Assert.False(pendingReload.IsCompleted);
+        Assert.Equal(0, _restartCoordinator.RequestCount);
+        Assert.Null(_rejectedConfig.Reason);
+        Assert.Equal(0, _logger.Warnings);
+
+        File.WriteAllText(_paths.NetclawConfigPath, """{ "Providers": {} }""");
+        Task transition = Task.CompletedTask;
+        previous = SynchronizationContext.Current;
+        try
+        {
+            SynchronizationContext.SetSynchronizationContext(null);
+            if (startApplication)
+                _lifetime.NotifyStarted();
             else
-                secrets["Providers"]!["copilot"]!["VendorOptions"] = new JsonObject { ["Marker"] = value };
-            // Preserve the invalid or opaque bytes for the watcher to classify.
-            File.WriteAllText(_paths.SecretsPath, secrets.ToJsonString());
+                transition = _sut.StopAsync(token);
         }
-        if (credentialCase is StartupCredentialCase.MultiAuthApiKey or StartupCredentialCase.LegacyApiKeyNull)
+        finally
         {
-            SecretsFileWriter.Update(_paths.SecretsPath, (root, _) =>
+            SynchronizationContext.SetSynchronizationContext(previous);
+        }
+
+        await transition;
+        await context.RunNextAsync(token);
+        await pendingReload.WaitAsync(TimeSpan.FromSeconds(10), token);
+        if (!startApplication)
+            _lifetime.NotifyStarted();
+        await _sut.StopAsync(token);
+
+        Assert.True(pendingReload.IsCompletedSuccessfully);
+        Assert.Equal(startApplication ? 1 : 0, _restartCoordinator.RequestCount);
+        Assert.Null(_rejectedConfig.Reason);
+        Assert.Equal(0, _logger.Warnings);
+    }
+
+    private sealed class QueuedSynchronizationContext : SynchronizationContext
+    {
+        private readonly Channel<(SendOrPostCallback Callback, object? State)> _callbacks =
+            Channel.CreateUnbounded<(SendOrPostCallback, object?)>();
+
+        public override void Post(SendOrPostCallback callback, object? state)
+            => _callbacks.Writer.TryWrite((callback, state));
+
+        public void Run(Action action)
+        {
+            var previous = Current;
+            try
             {
-                root["Providers"]!["copilot"]!["ApiKey"] = credentialCase == StartupCredentialCase.LegacyApiKeyNull
-                    ? null : "synthetic-retired-key";
-                return (root, 0);
-            }, protector, cancellationToken: TestContext.Current.CancellationToken);
+                SetSynchronizationContext(this);
+                action();
+            }
+            finally
+            {
+                SetSynchronizationContext(previous);
+            }
         }
-    }
 
-    private void AssertStartupCredentialControl(
-        IConfiguration candidate, ProviderEntry provider, StartupCredentialCase credentialCase,
-        bool refreshTokens, ISecretsProtector protector)
-    {
-        var stored = JsonNode.Parse(File.ReadAllText(_paths.SecretsPath))!;
-        var expectedKey = credentialCase switch
+        public async Task RunNextAsync(CancellationToken cancellationToken)
         {
-            StartupCredentialCase.MultiAuthApiKey => "synthetic-retired-key",
-            StartupCredentialCase.LegacyApiKeySourceExposure => "synthetic-base-key",
-            _ => refreshTokens ? null : "synthetic-retired-key"
-        };
-        var storedKeyPresent = !refreshTokens || credentialCase is
-            StartupCredentialCase.MultiAuthApiKey or StartupCredentialCase.LegacyApiKeyNull;
-        AssertStartupApiKey(candidate, provider, stored, protector, expectedKey, storedKeyPresent);
-        if (credentialCase == StartupCredentialCase.InvalidEncryptedSecret)
-            Assert.True(string.Equals("ENC:synthetic-invalid-secret", candidate["Search:BraveApiKey"], StringComparison.Ordinal),
-                "The candidate must retain the invalid encrypted value for rejection.");
-        if (credentialCase == StartupCredentialCase.OpaqueVendorValue)
-        {
-            Assert.NotNull(provider.VendorOptions);
-            Assert.True(provider.VendorOptions.ContainsKey("Marker"));
-            Assert.True(string.Equals("ENC:synthetic-vendor-after", provider.VendorOptions["Marker"]!.GetValue<string>(), StringComparison.Ordinal),
-                "The provider loader must preserve the opaque vendor value.");
-            Assert.True(string.Equals("ENC:synthetic-vendor-after", candidate["Providers:copilot:VendorOptions:Marker"], StringComparison.Ordinal),
-                "The candidate must retain the opaque vendor value.");
-        }
-    }
-
-    private static void AssertStartupApiKey(
-        IConfiguration configuration, ProviderEntry provider, JsonNode stored,
-        ISecretsProtector protector, string? expectedKey, bool storedKeyPresent)
-    {
-        Assert.Equal(storedKeyPresent, stored["Providers"]!["copilot"]!.AsObject().ContainsKey("ApiKey"));
-        Assert.Equal(storedKeyPresent || expectedKey is not null,
-            configuration.AsEnumerable().Any(entry => entry.Key == "Providers:copilot:ApiKey"));
-        if (expectedKey is null)
-        {
-            Assert.Null(provider.ApiKey);
-            Assert.Null(configuration["Providers:copilot:ApiKey"]);
-        }
-        else
-        {
-            Assert.NotNull(provider.ApiKey);
-            var actual = ISecretsProtector.IsEncrypted(provider.ApiKey.Value)
-                ? protector.Unprotect(provider.ApiKey.Value) : provider.ApiKey.Value;
-            Assert.True(string.Equals(expectedKey, actual, StringComparison.Ordinal),
-                "The provider loader must preserve the expected API key.");
+            var (callback, state) = await _callbacks.Reader.ReadAsync(cancellationToken).AsTask()
+                .WaitAsync(TimeSpan.FromSeconds(10), cancellationToken);
+            Run(() => callback(state));
         }
     }
 
     [Fact]
-    public async Task Stop_before_application_started_cancels_startup_reconciliation()
+    public async Task Stop_before_application_started_cancels_the_buffered_event_and_detaches()
     {
         File.WriteAllText(_paths.NetclawConfigPath, """{ "Providers": {} }""");
+        var change = new FileSystemEventArgs(WatcherChangeTypes.Changed, _paths.ConfigDirectory, "netclaw.json");
+        _watch.OnFileChanged(this, change);
         await _sut.StartAsync(TestContext.Current.CancellationToken);
-        _time.Advance(_sut.DebounceInterval);
         var pendingReload = _sut.PendingReload;
-        Assert.False(pendingReload.IsCompleted);
-        Assert.Equal(0, _restartCoordinator.RequestCount);
 
         await _sut.StopAsync(TestContext.Current.CancellationToken);
         await pendingReload.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
         _lifetime.NotifyStarted();
+        _watch.OnFileChanged(this, change);
+        var queuedWork = !_sut.PendingReload.IsCompleted;
+        _time.Advance(_sut.DebounceInterval);
 
+        Assert.False(queuedWork);
         Assert.Equal(0, _restartCoordinator.RequestCount);
         Assert.Null(_rejectedConfig.Reason);
     }
@@ -750,6 +592,7 @@ public sealed class ConfigWatcherServiceTests : IDisposable
     public void Dispose()
     {
         _sut.Dispose();
+        _watch.Dispose();
         _lifetime.Dispose();
         _services.Dispose();
         _dir.Dispose();

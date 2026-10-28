@@ -2,84 +2,74 @@
 
 ## Purpose
 
-Define hot-reload behavior for operational configuration files. The system
-monitors ACL rules, provider configuration, MCP server profiles, and schedule
-definitions for changes and applies them to the runtime without process restart.
+Define file-event reload behavior for `netclaw.json`, from configuration load through host shutdown.
+Valid candidates use the existing coordinated daemon restart.
+Terms follow the [engineering glossary](../../../docs/spec/GLOSSARY.md).
 
 ## Requirements
 
 ### Requirement: Operational config file monitoring
 
-The system SHALL monitor operational configuration files for changes using
-`FileSystemWatcher`. Monitored files SHALL include ACL rules, provider
-configuration, MCP server profiles, and schedule definitions.
+The daemon SHALL monitor `netclaw.json` before it loads configuration for each host generation.
+Changed, Created, and rename-into events SHALL request reload validation.
+The daemon SHALL retain an event until the hosted service can accept it.
 
-#### Scenario: ACL file change detected
+#### Scenario: Config edit during startup
 
-- **GIVEN** the ACL rules file exists at the configured path
-- **WHEN** the file is modified on disk
-- **THEN** the `ConfigWatcherService` detects the change within 500ms
-
-#### Scenario: Provider config change detected
-
-- **GIVEN** the provider configuration file exists at the configured path
-- **WHEN** the file is modified on disk
-- **THEN** the `ConfigWatcherService` detects the change within 500ms
+- **GIVEN** the daemon loads its configuration before hosted service startup
+- **WHEN** `netclaw.json` changes in that interval
+- **THEN** the daemon validates the latest canonical sources after application startup
+- **AND** a valid candidate requests coordinated restart
 
 #### Scenario: Unwatched files are not monitored
 
-- **GIVEN** personality files, project registry, or environment inventory files
-  exist
-- **WHEN** those files are modified on disk
-- **THEN** the `ConfigWatcherService` does NOT detect or process the change
+- **WHEN** only `secrets.json` or another unwatched file changes
+- **THEN** the daemon creates no reload request from that event
+
+#### Scenario: Deleted file creates no new request
+
+- **WHEN** `netclaw.json` is deleted or renamed away
+- **THEN** that event creates no new reload request
+- **AND** it does not cancel an earlier retained change event
 
 ### Requirement: Change event debounce
 
-The system SHALL debounce file change events with a configurable window
-(default 500ms) to prevent rapid-fire reloads during file save operations.
+The daemon SHALL debounce reload signals with a fixed 500ms interval.
+Several signals before hosted service attachment SHALL coalesce into one retained signal.
 
 #### Scenario: Rapid successive writes debounced
 
-- **GIVEN** a watched config file is being saved
-- **WHEN** the file system emits multiple change events within 500ms
-- **THEN** the system processes only one reload after the debounce window
+- **WHEN** several watched-file events occur within 500ms
+- **THEN** the daemon processes one reload after the last signal's debounce interval
 
-#### Scenario: Separate files reload independently
+#### Scenario: Startup without an event
 
-- **GIVEN** ACL rules and provider config are both watched
-- **WHEN** both files change within the debounce window
-- **THEN** each file's change is processed independently after its own debounce
+- **WHEN** the hosted service starts without a retained file event
+- **THEN** startup alone creates no reload work
 
 ### Requirement: Validate before apply
 
-The system SHALL validate changed configuration before beginning runtime recovery.
-Invalid configuration SHALL be rejected with logged diagnostics, and the current
-daemon instance SHALL continue running with the previous effective config.
-Valid configuration SHALL initiate a coordinated restart sequence instead of an
-in-place actor update.
+The daemon SHALL validate changed configuration before runtime recovery.
+The candidate SHALL use the same canonical source precedence as host startup.
+Invalid configuration SHALL retain the current effective configuration and produce diagnostics.
+Valid configuration SHALL initiate coordinated restart.
 
 #### Scenario: Valid config change initiates coordinated restart
 
-- **GIVEN** a watched config file changes
-- **WHEN** the new content passes validation
+- **WHEN** a watched-file event produces a valid candidate
 - **THEN** the daemon closes new session ingress
-- **AND** begins draining active sessions before requesting host shutdown
+- **AND** it starts session drain before host shutdown
 
 #### Scenario: Invalid config change rejected
 
-- **GIVEN** a watched config file changes
-- **WHEN** the new content fails validation
-- **THEN** the change is NOT applied
-- **AND** the current daemon instance continues running with the previous effective config
-- **AND** validation errors are logged with file path and error details
+- **WHEN** a watched-file event produces an invalid candidate
+- **THEN** the current daemon continues with its previous effective configuration
+- **AND** the daemon logs the rejection
 
-#### Scenario: Config file deletion with valid resulting config initiates restart
+#### Scenario: Secrets overlay retains precedence
 
-- **GIVEN** a watched config file is being monitored
-- **WHEN** the file is deleted and the resulting effective configuration remains valid
-- **THEN** the daemon treats the deletion as a valid config change
-- **AND** begins the same coordinated restart flow
-- **AND** the process does NOT crash
+- **WHEN** `netclaw.json` changes and a secrets overlay supplies a value
+- **THEN** validation and the next host use the canonical overlay value
 
 ### Requirement: Coordinated daemon restart on valid config change
 
@@ -119,21 +109,23 @@ recovery state, and only then request daemon shutdown.
 
 ### Requirement: ConfigWatcherService hosted service
 
-The `ConfigWatcherService` SHALL be implemented as an `IHostedService` that
-starts with the application and stops on shutdown. It SHALL manage
-`FileSystemWatcher` instances for each watched config file.
+Each host generation SHALL own one file watcher from before configuration load through host disposal.
+The hosted service SHALL accept retained events and wait for application startup before validation.
+Service stop SHALL prevent further event delivery and cancel pending reload work.
 
 #### Scenario: Service starts with application
 
-- **GIVEN** the application is starting
-- **WHEN** the hosted service initializes
-- **THEN** `FileSystemWatcher` instances are created for each watched config
-  file
-- **AND** the service begins monitoring for changes
+- **WHEN** the hosted service attaches to the early watcher
+- **THEN** it accepts any retained signal once
+- **AND** it defers validation until application startup completes
 
 #### Scenario: Service stops on shutdown
 
-- **GIVEN** the application is shutting down
 - **WHEN** the hosted service stops
-- **THEN** all `FileSystemWatcher` instances are disposed
-- **AND** no further change events are processed
+- **THEN** later file events cannot request a reload through that service
+- **AND** the host generation disposes its native watcher
+
+#### Scenario: Host creation fails
+
+- **WHEN** configuration load or host creation fails after the watcher starts
+- **THEN** the host generation disposes the watcher before it exits

@@ -22,7 +22,7 @@ public sealed class ConfigStartupGapProcessTests
     [InlineData(true, StartupEdit.Host)]
     [InlineData(false, StartupEdit.Host)]
     [InlineData(true, StartupEdit.RemoveHost)]
-    [InlineData(true, StartupEdit.SecretsOverlay)]
+    [InlineData(true, StartupEdit.NetclawEditWithSecretsOverlay)]
     [InlineData(true, StartupEdit.InvalidJson)]
     [InlineData(true, StartupEdit.UnchangedComments)]
     [InlineData(true, StartupEdit.ChangedComments)]
@@ -131,7 +131,7 @@ public sealed class ConfigStartupGapProcessTests
     {
         Host,
         RemoveHost,
-        SecretsOverlay,
+        NetclawEditWithSecretsOverlay,
         InvalidJson,
         UnchangedComments,
         ChangedComments,
@@ -157,9 +157,10 @@ public sealed class ConfigStartupGapProcessTests
                 Assert.True(config["Daemon"]!.AsObject().Remove("Host"));
                 WriteFile(paths.NetclawConfigPath, config.ToJsonString());
                 break;
-            case StartupEdit.SecretsOverlay:
-                // The higher-priority source must override A without a netclaw.json event.
+            case StartupEdit.NetclawEditWithSecretsOverlay:
+                // The config event must validate the higher-priority source too.
                 WriteFile(paths.SecretsPath, """{ "Daemon": { "Host": "127.0.0.1" } }""");
+                WriteConfig(paths, port, "localhost", StartupEdit.Host);
                 break;
             case StartupEdit.InvalidJson:
                 WriteFile(paths.NetclawConfigPath, "{ invalid json");
