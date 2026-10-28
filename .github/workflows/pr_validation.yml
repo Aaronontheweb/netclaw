@@ -187,7 +187,7 @@ jobs:
           - group: guard-and-authority
             gates: skill-manage-guard no-program input-one-authority
           - group: stop-proof
-            gates: stop-proof secrets-plaintext-leaf
+            gates: stop-proof secrets-plaintext-leaf local-daemon-address
           - group: daemon-log-retention
             gates: daemon-log-retention
           - group: session-reliability

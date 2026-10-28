@@ -54,7 +54,8 @@ Not in scope:
   `daemon-exposure`, `device-pairing`, `hub-auth`, and `local-control-proof`).
   A local-control proof grants one host operation: a pairing code or the read
   of one provider OAuth result. It never authorizes a tool call, and a tool
-  grant never replaces it;
+  grant never replaces it. The CLI lifecycle commands use the
+  [process home proof](../spec/SPEC-011-daemon-architecture.md#daemon-lifecycle-management);
 - validation of tool arguments against a schema (`tool-arg-validation`);
 - output bounds and spill (`bounded-tool-output`);
 - containment of what an allowed process does after it starts. Netclaw has no

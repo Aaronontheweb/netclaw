@@ -39,7 +39,7 @@ A `FakeToolExecutor` result does not prove that the real executor accepts those 
 ## Focused Mutation Tests
 
 All focused gates run in one job definition, `mutation-gates` in `pr_validation.yml`, on each pull request and merge group. They do not run on `dev` pushes.
-The job has thirteen Linux matrix groups that run in parallel with the normal test matrix.
+The Linux matrix groups run in parallel with the normal test matrix.
 The job timeout is 25 minutes.
 Each Stryker invocation builds the test project and runs the initial test run again. That fixed cost is about 1.5 to 2 minutes per invocation.
 The mutant run itself takes under 1 minute for most spans. Group time is mostly the sum of the invocations of its gates.
@@ -395,6 +395,46 @@ In `DaemonManager`, only `Killed` counts.
 
 CI runs it in the `stop-proof` group of the `mutation-gates` job, with the secrets plaintext leaf gate.
 The gate took 6.9 minutes on a hosted runner, and it made `guard-and-authority` take 20 minutes.
+
+### Local Daemon Address Gate
+
+Run the strict local address gate:
+
+```bash
+./scripts/run-local-daemon-address-mutations.sh
+```
+
+`DaemonApi.ResolveLocalControlEndpoint` must reject an unreadable local config source.
+The gate selects only `false` in `ResolveDaemonConfigEndpoint(paths, lenient: false)`.
+The `local-control-strict-config:begin/end` markers must each occur once.
+The script verifies the complete decision between those markers before Stryker starts.
+
+`LocalDaemonAddressMutationTests` calls the real resolver without HTTP or a PID file.
+Its five xUnit 2 rows cover malformed config, a config directory, malformed secrets,
+a valid custom port, and absent optional files. Each row deletes its temporary home.
+The malformed secrets row also supplies valid config, so partial source omission cannot pass.
+
+The expected mutant count is **one**, with the exact replacement `false` to `true`.
+Only `Killed` passes. A missing, ignored, untested, survived, timeout, or target compile-error mutant fails.
+The script checks the exact source, literal location, replacement, and count.
+It rejects any executed mutant outside the literal.
+It records all compile errors in `reports/local-daemon-address-compile-errors.json` before it excludes artifacts outside the literal.
+The full Stryker report remains in `reports/mutation-report.json`.
+The score threshold does not decide acceptance; the exact mutant check does.
+
+CI runs this gate in the `stop-proof` group. The existing stop-proof selectors remain unchanged.
+The group retains its 25-minute timeout. The stop-proof gate previously took 6.9 minutes on a hosted runner.
+The secrets gate took 1 minute 33 seconds locally; that figure is not a hosted group measurement.
+This addition supplies five pure tests and one mutant in one Stryker invocation.
+The local run killed the exact mutant in 191 seconds. Its initial test run included all 1102 mutation-project cases.
+The verifier rejected eight unsafe report fixtures and accepted the real report.
+The added local cost is 3.2 minutes. The combined hosted group cost remains unverified.
+Move the gate to another group if the measured group cost exceeds the scope-review budget.
+
+On a shared host, hold the shared build lock for Stryker's initial build.
+Release it when `Initial test run started` appears. Keep it free during mutation analysis.
+The report directory defaults to `artifacts/stryker/local-daemon-address`.
+Pass an absolute artifact directory as the first argument to retain local evidence elsewhere.
 
 ### Secrets Plaintext Leaf Gate
 
