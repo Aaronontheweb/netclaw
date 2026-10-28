@@ -500,6 +500,7 @@ An unchanged snapshot needs no restart. A valid difference outside runtime-owned
 This comparison includes removed keys and retains source precedence. An invalid edit uses the existing rejection path.
 
 `ConfigWatcherService` compares the same candidate that it validates.
+Its syntax check accepts comments and trailing commas, as the canonical provider does, and rejects malformed JSON.
 It prepares call-local values and leaves both raw snapshots unchanged.
 It uses the host's existing `ISecretsProtector` only for exact paths that runtime consumers decrypt.
 An unchanged secret compares equal after encryption with a new nonce or migration from plaintext.

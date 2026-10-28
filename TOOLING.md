@@ -282,7 +282,7 @@ The gate pins these three identities:
 All three targets must compile and have `Killed` status. The correction does not accept compiler failures.
 Review the actual report and run all 13 pure cases before acceptance.
 An independent author must review the comparison and its mutation gate.
-The five process cases retain their separate integration role.
+The nine process cases retain their separate integration role, including comments and trailing commas.
 The gate checks the exact source, count, mutator names, UTF-16 locations, and replacements.
 It ignores whitespace trivia in replacements. Every expected mutant must have status `Killed`.
 Missing, extra, ignored, uncovered, timed-out, compile-error, or surviving target mutants fail the gate.

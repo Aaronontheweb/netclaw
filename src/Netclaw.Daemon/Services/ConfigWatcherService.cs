@@ -517,7 +517,13 @@ public sealed class ConfigWatcherService : IHostedService, IDisposable
         try
         {
             var bytes = File.ReadAllBytes(path);
-            var reader = new Utf8JsonReader(bytes);
+            // Match the JSON syntax accepted by AddNetclawDaemonSources.
+            var options = new JsonReaderOptions
+            {
+                CommentHandling = JsonCommentHandling.Skip,
+                AllowTrailingCommas = true
+            };
+            var reader = new Utf8JsonReader(bytes, options);
             while (reader.Read()) { } // Walk the entire document to catch syntax errors
             return true;
         }

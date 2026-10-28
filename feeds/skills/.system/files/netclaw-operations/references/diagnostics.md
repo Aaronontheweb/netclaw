@@ -22,6 +22,7 @@ Repair or restore the file that the command names, then retry.
 
 A new daemon host compares its loaded configuration with the latest files after its config watcher starts.
 A valid difference requests another coordinated restart. This includes an edit before the watcher starts.
+The syntax check accepts comments and trailing commas, as the daemon loader does.
 Runtime-owned OAuth refresh state is an exception, including a refresh before watcher startup.
 The watcher uses the provider loader and descriptors to identify OAuth in both snapshots.
 An OAuth-only descriptor needs no explicit authentication selection.
