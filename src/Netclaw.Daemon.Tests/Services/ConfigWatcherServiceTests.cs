@@ -162,10 +162,13 @@ public sealed class ConfigWatcherServiceTests : IDisposable
         Assert.True(ConfigWatcherService.IsWatchedFile("netclaw.json"));
     }
 
-    [Fact]
-    public async Task InvalidJson_DoesNotTriggerRestart()
+    [Theory]
+    [InlineData("""{ broken json """)]
+    [InlineData("""{ "Providers": {} } /* unclosed comment""")]
+    [InlineData("""{ "Providers": {},, }""")]
+    public async Task InvalidJson_DoesNotTriggerRestart(string config)
     {
-        File.WriteAllText(_paths.NetclawConfigPath, """{ broken json """);
+        File.WriteAllText(_paths.NetclawConfigPath, config);
         // secrets.json doesn't exist — that's fine (optional)
 
         await _sut.ApplyReloadAsync(CancellationToken.None);
@@ -370,6 +373,61 @@ public sealed class ConfigWatcherServiceTests : IDisposable
 
         Assert.Equal(0, _restartCoordinator.RequestCount);
         Assert.Null(_rejectedConfig.Reason);
+    }
+
+    public enum StartupSyntax
+    {
+        StrictJson,
+        Comments,
+        TrailingComma
+    }
+
+    [Theory]
+    [InlineData(false, StartupSyntax.StrictJson)]
+    [InlineData(true, StartupSyntax.StrictJson)]
+    [InlineData(false, StartupSyntax.Comments)]
+    [InlineData(true, StartupSyntax.Comments)]
+    [InlineData(false, StartupSyntax.TrailingComma)]
+    [InlineData(true, StartupSyntax.TrailingComma)]
+    public async Task Startup_reconciliation_accepts_canonical_json_syntax(bool changeDuringGap, StartupSyntax syntax)
+    {
+        var candidate = syntax switch
+        {
+            StartupSyntax.StrictJson => """{ "Daemon": { "Host": "localhost" } }""",
+            StartupSyntax.Comments => """
+                // Synthetic config
+                { "Daemon": { /* Synthetic host */ "Host": "localhost" } }
+                """,
+            StartupSyntax.TrailingComma => """{ "Daemon": { "Host": "localhost", }, }""",
+            _ => throw new ArgumentOutOfRangeException(nameof(syntax), syntax, null)
+        };
+        File.WriteAllText(_paths.NetclawConfigPath, changeDuringGap
+            ? """{ "Daemon": { "Host": "127.0.0.1" } }"""
+            : candidate);
+        using var watcher = CreateWatcher(new NullSecretsProtector());
+        if (changeDuringGap)
+            File.WriteAllText(_paths.NetclawConfigPath, candidate);
+
+        using (var configuration = new ConfigurationManager())
+        {
+            configuration.AddNetclawDaemonSources(_paths);
+            Assert.Equal("localhost", configuration["Daemon:Host"]);
+        }
+
+        // All writes precede subscription. Only startup reconciliation can observe the gap edit.
+        await watcher.StartAsync(TestContext.Current.CancellationToken);
+        _time.Advance(watcher.DebounceInterval);
+        var pendingReload = watcher.PendingReload;
+        Assert.False(pendingReload.IsCompleted);
+        Assert.Equal(0, _restartCoordinator.RequestCount);
+
+        _lifetime.NotifyStarted();
+        await pendingReload.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+        await watcher.StopAsync(TestContext.Current.CancellationToken);
+
+        Assert.Null(_rejectedConfig.Reason);
+        Assert.Equal(0, _logger.Warnings);
+        Assert.Equal(changeDuringGap ? 1 : 0, _restartCoordinator.RequestCount);
     }
 
     public enum StartupCredentialCase

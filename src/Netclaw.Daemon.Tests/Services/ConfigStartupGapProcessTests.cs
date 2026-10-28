@@ -24,6 +24,10 @@ public sealed class ConfigStartupGapProcessTests
     [InlineData(true, StartupEdit.RemoveHost)]
     [InlineData(true, StartupEdit.SecretsOverlay)]
     [InlineData(true, StartupEdit.InvalidJson)]
+    [InlineData(true, StartupEdit.UnchangedComments)]
+    [InlineData(true, StartupEdit.ChangedComments)]
+    [InlineData(true, StartupEdit.UnchangedTrailingComma)]
+    [InlineData(true, StartupEdit.ChangedTrailingComma)]
     public async Task Latest_config_reaches_the_real_host_across_watcher_start(
         bool writeBeforeWatcherStart, StartupEdit edit)
     {
@@ -34,7 +38,9 @@ public sealed class ConfigStartupGapProcessTests
         deadline.CancelAfter(TimeSpan.FromSeconds(90));
         var token = deadline.Token;
 
-        WriteConfig(paths, port, "127.0.0.1");
+        var unchangedSyntax = edit is StartupEdit.UnchangedComments or StartupEdit.UnchangedTrailingComma;
+        var initialSyntax = unchangedSyntax ? edit : StartupEdit.Host;
+        WriteConfig(paths, port, "127.0.0.1", initialSyntax);
         await using var daemon = new OwnedDaemon(directory.Path, paths, port);
         await daemon.WaitForAsync(state => state.Starts == 1 && state.Watchers == 1, token);
         Assert.Equal("127.0.0.1", daemon.State.Host);
@@ -62,9 +68,10 @@ public sealed class ConfigStartupGapProcessTests
 
             // WAL permits readers. Verify that this transaction excludes another writer before A starts.
             await AssertWalWriteGateAsync(gate.ConnectionString, token);
-            WriteConfig(paths, port, "localhost");
-            await daemon.WaitForAsync(state => state.Migrations == 2, token);
+            WriteConfig(paths, port, "localhost", initialSyntax);
+            await daemon.WaitForAsync(state => state.Migrations == 2 || state.Rejections > 0, token);
             daemon.DrainEvents();
+            Assert.Equal(0, daemon.State.Rejections);
             Assert.Equal(1, daemon.State.Watchers);
             Assert.Equal(1, daemon.State.Starts);
 
@@ -75,6 +82,16 @@ public sealed class ConfigStartupGapProcessTests
             await using var release = gate.CreateCommand();
             release.CommandText = "ROLLBACK";
             await release.ExecuteNonQueryAsync(token);
+        }
+
+        if (unchangedSyntax)
+        {
+            await daemon.WaitForAsync(state => state.Starts == 2 && state.Watchers == 2, token);
+            Assert.Equal("localhost", daemon.State.Host);
+            Assert.Equal(2, await ReadGenerationAsync("localhost", port, token));
+            daemon.DrainEvents();
+            Assert.Equal(0, daemon.State.Rejections);
+            return;
         }
 
         if (!writeBeforeWatcherStart)
@@ -99,8 +116,10 @@ public sealed class ConfigStartupGapProcessTests
         }
 
         const string expectedHost = "127.0.0.1";
-        await daemon.WaitForAsync(state => state.Host == expectedHost
-            && state.Migrations >= 3 && state.Starts == state.Migrations, token);
+        await daemon.WaitForAsync(state => (state.Host == expectedHost
+            && state.Migrations >= 3 && state.Starts == state.Migrations)
+            || state.Rejections > 0, token);
+        Assert.Equal(0, daemon.State.Rejections);
         Assert.Equal(expectedHost, daemon.State.Host);
         var generation = await ReadGenerationAsync(expectedHost, port, token);
         Assert.True(generation >= 3, "B must serve the readiness response after host generation A.");
@@ -113,7 +132,11 @@ public sealed class ConfigStartupGapProcessTests
         Host,
         RemoveHost,
         SecretsOverlay,
-        InvalidJson
+        InvalidJson,
+        UnchangedComments,
+        ChangedComments,
+        UnchangedTrailingComma,
+        ChangedTrailingComma
     }
 
     private static void ApplyEdit(NetclawPaths paths, int port, StartupEdit edit)
@@ -121,7 +144,13 @@ public sealed class ConfigStartupGapProcessTests
         switch (edit)
         {
             case StartupEdit.Host:
-                WriteConfig(paths, port, "127.0.0.1");
+            case StartupEdit.ChangedComments:
+            case StartupEdit.ChangedTrailingComma:
+                WriteConfig(paths, port, "127.0.0.1", edit);
+                break;
+            case StartupEdit.UnchangedComments:
+            case StartupEdit.UnchangedTrailingComma:
+                // Keep the bytes that the host read before the startup gate.
                 break;
             case StartupEdit.RemoveHost:
                 var config = JsonNode.Parse(File.ReadAllText(paths.NetclawConfigPath))!.AsObject();
@@ -156,10 +185,10 @@ public sealed class ConfigStartupGapProcessTests
         Assert.Equal(5, error.SqliteErrorCode);
     }
 
-    private static void WriteConfig(NetclawPaths paths, int port, string host)
+    private static void WriteConfig(NetclawPaths paths, int port, string host, StartupEdit edit)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(paths.NetclawConfigPath)!);
-        WriteFile(paths.NetclawConfigPath, JsonSerializer.Serialize(new
+        var config = JsonSerializer.Serialize(new
         {
             configVersion = 1,
             Daemon = new { Host = host, Port = port },
@@ -167,7 +196,15 @@ public sealed class ConfigStartupGapProcessTests
             SkillFeeds = new { Feeds = Array.Empty<object>() },
             ExternalSkills = new { Sources = Array.Empty<object>() },
             Logging = new { Console = new { Enabled = true } }
-        }));
+        });
+        config = edit switch
+        {
+            StartupEdit.UnchangedComments or StartupEdit.ChangedComments =>
+                "// Synthetic config\n/* Startup syntax control */\n" + config,
+            StartupEdit.UnchangedTrailingComma or StartupEdit.ChangedTrailingComma => config[..^1] + ",}",
+            _ => config
+        };
+        WriteFile(paths.NetclawConfigPath, config);
     }
 
     private static void WriteFile(string path, string content)
