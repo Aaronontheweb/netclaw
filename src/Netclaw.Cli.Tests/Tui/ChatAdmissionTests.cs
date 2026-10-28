@@ -346,25 +346,35 @@ public sealed class ChatAdmissionTests : IDisposable
     [Fact]
     public async Task A_late_admission_response_does_not_restore_generation_after_turn_completion()
     {
+        var entered = Gate();
+        var deliverOutput = Gate();
         var release = Gate();
         var completed = Gate();
         var transport = new FakeDaemonHubTransport();
-        transport.VoidInvokeHook = (_, args, token) =>
+        transport.VoidInvokeHook = async (_, args, token) =>
         {
+            entered.TrySetResult();
+            await deliverOutput.Task.WaitAsync(token);
             transport.PushOutput(new SessionOutputDto { Type = "turn_completed", SessionId = (string)args[0]!, TurnNumber = new TurnNumber(1) });
-            return release.Task.WaitAsync(token);
+            await release.Task.WaitAsync(token);
         };
         await using var client = new DaemonClient("http://localhost", transport, reconnectDelays: [TimeSpan.Zero]);
         using var chat = new ChatViewModel(client, TimeProvider.System, new ModelCapabilities { ModelId = "test" }, new ChatNavigationState(), Paths);
         chat.OnActivated();
         await client.ConnectAsync(TestContext.Current.CancellationToken);
-        using var status = chat.StatusMessage.Subscribe(value =>
+        using var output = chat.SessionOutput.Subscribe(value =>
         {
-            if (value == "Ready" && transport.Invocations.Any(call => call.Method == "SendMessage")) completed.TrySetResult();
+            if (value is TurnCompleted) completed.TrySetResult();
         });
         try
         {
             await chat.SubmitAsync("first");
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
+            // An unrelated Ready event must not acknowledge turn completion.
+            chat.StatusMessage.Value = "Generating...";
+            chat.StatusMessage.Value = "Ready";
+            Assert.False(completed.Task.IsCompleted);
+            deliverOutput.TrySetResult();
             await completed.Task.WaitAsync(TimeSpan.FromSeconds(10), TestContext.Current.CancellationToken);
             Assert.False(chat.IsGenerating.Value);
             release.TrySetResult();
@@ -372,6 +382,6 @@ public sealed class ChatAdmissionTests : IDisposable
             Assert.False(chat.IsGenerating.Value);
             Assert.Equal("Ready", chat.StatusMessage.Value);
         }
-        finally { release.TrySetResult(); }
+        finally { deliverOutput.TrySetResult(); release.TrySetResult(); }
     }
 }
