@@ -32,7 +32,7 @@ namespace Netclaw.Actors.Tests.Channels;
 /// in parallel with other test collections, so the counters have one writer.
 /// </remarks>
 [Collection(Name)]
-public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestKit(output: output)
+public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestKit(output: output), IAsyncDisposable
 {
     public const string Name = "Channel telemetry counters";
 
@@ -175,10 +175,17 @@ public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestK
         _listener.Start();
     }
 
-    protected override async Task AfterAllAsync()
+    // Dispose after the actor system stops, as TestKitTeardownGuardTests requires.
+    async ValueTask IAsyncDisposable.DisposeAsync()
     {
-        _listener?.Dispose();
-        await base.AfterAllAsync();
+        try
+        {
+            await base.DisposeAsync();
+        }
+        finally
+        {
+            _listener?.Dispose();
+        }
     }
 
     // ── Slack ──
