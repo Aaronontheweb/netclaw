@@ -78,8 +78,7 @@ internal sealed class McpOAuthClientRegistrar(
         {
             throw new McpOAuthRegistrationException(
                 $"MCP server '{serverName.Value}' requires OAuth, but its authorization server " +
-                $"({issuer}) does not support dynamic client registration. Register a client " +
-                $"manually and set OAuthClientId for '{serverName.Value}' in the MCP server config.");
+                $"({issuer}) does not support dynamic client registration. {ManualClientRemedy(serverName)}");
         }
 
         // Register with exactly the method ClientOAuthProvider will later select for the
@@ -112,8 +111,7 @@ internal sealed class McpOAuthClientRegistrar(
             throw new McpOAuthRegistrationException(
                 $"MCP server '{serverName.Value}' rejected dynamic client registration at " +
                 $"{registrationEndpoint}: HTTP {(int)response.StatusCode} {response.StatusCode}" +
-                $"{DescribeOAuthError(body)}. Register a client manually and set OAuthClientId " +
-                $"for '{serverName.Value}' in the MCP server config.");
+                $"{DescribeOAuthError(body)}. {ManualClientRemedy(serverName)}");
         }
 
         string? clientId;
@@ -171,16 +169,37 @@ internal sealed class McpOAuthClientRegistrar(
             if (issuer is null)
                 continue;
 
-            var metadataUrl = $"{issuer.TrimEnd('/')}/.well-known/oauth-authorization-server";
-            JsonElement metadata;
-            try
+            // RFC 8414 §3 inserts the well-known segment between the host and the issuer
+            // path, so GitHub's issuer https://github.com/login/oauth publishes at
+            // https://github.com/.well-known/oauth-authorization-server/login/oauth. Some
+            // servers publish under the issuer path instead, so that form is tried second.
+            var issuerUri = new Uri(issuer);
+            var issuerPath = issuerUri.AbsolutePath.TrimEnd('/');
+            var appendedUrl = $"{issuer.TrimEnd('/')}/.well-known/oauth-authorization-server";
+            var metadataUrls = string.IsNullOrEmpty(issuerPath)
+                ? new[] { appendedUrl }
+                : [$"{issuerUri.GetLeftPart(UriPartial.Authority)}/.well-known/oauth-authorization-server{issuerPath}", appendedUrl];
+
+            JsonElement? discovered = null;
+            Exception? lastError = null;
+            foreach (var metadataUrl in metadataUrls)
             {
-                metadata = await httpClient.GetFromJsonAsync<JsonElement>(metadataUrl, cancellationToken);
+                try
+                {
+                    discovered = await httpClient.GetFromJsonAsync<JsonElement>(metadataUrl, cancellationToken);
+                    break;
+                }
+                catch (Exception ex) when (ex is HttpRequestException or JsonException or NotSupportedException)
+                {
+                    lastError = ex;
+                }
             }
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or NotSupportedException)
+
+            if (discovered is not { } metadata)
             {
                 throw new McpOAuthRegistrationException(
-                    $"Authorization server '{issuer}' did not return usable metadata at {metadataUrl}.", ex);
+                    $"Authorization server '{issuer}' did not return usable metadata at {string.Join(" or ", metadataUrls)}.",
+                    lastError);
             }
 
             var registrationEndpoint = metadata.TryGetProperty("registration_endpoint", out var registration)
@@ -223,6 +242,13 @@ internal sealed class McpOAuthClientRegistrar(
             return null;
         }
     }
+
+    // GitHub Apps and OAuth Apps both require a client secret, so the remedy names it.
+    // Re-running add keeps the server's grants and approval modes.
+    private static string ManualClientRemedy(McpServerName serverName)
+        => $"Register an OAuth client with the provider, then run `netclaw mcp add` for " +
+           $"'{serverName.Value}' again with `--client-id <id>` to set OAuthClientId. Add `--client-secret <secret>` " +
+           $"if the provider issued a secret.";
 
     private static string DescribeOAuthError(string body)
     {
