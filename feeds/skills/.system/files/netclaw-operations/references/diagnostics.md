@@ -25,6 +25,12 @@ If a local config source cannot be read, `netclaw daemon status` reports an unkn
 `netclaw daemon stop` also skips its shutdown notice. It still requires proof that the process serves this home.
 Repair or restore the file that the command names, then retry.
 
+The daemon compares the loaded `netclaw.json` hash with disk after its config actor starts the watcher.
+A startup difference or a later config event triggers validation after application startup.
+Validation uses canonical sources, including secrets and environment overrides, and accepts comments and trailing commas.
+An invalid candidate preserves the current host and reports its rejection through `netclaw status`.
+A secret-only change, including an OAuth token refresh, creates no reload signal.
+
 The daemon deletes `daemon-*.log` and `crash-*.log` files older than `Retention:Logs:Days`
 (default 14, `0` keeps them forever). It does not delete anything under `logs/sessions/`.
 To read or change the setting, run `netclaw config retention` or

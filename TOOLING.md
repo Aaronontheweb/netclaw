@@ -201,7 +201,8 @@ Stryker records unrelated compilation artifacts outside the selected span; the v
 
 The manual `<=` mutation failed the cutoff row before this gate was added.
 The first local Stryker run killed both expected mutants in 161 seconds.
-The `daemon-log-retention` matrix group keeps this cost separate from existing groups.
+The `daemon-log-retention` matrix group also runs the startup hash check.
+The combined group retains the existing time budget.
 The gate does not measure general code coverage or replace the writer and retention tests.
 
 Run the path-access check locally:
@@ -268,6 +269,26 @@ The finalized gate passes locally and in CI.
 CI places this gate in `child-owner-and-report`; its complete hosted job took 8m14s.
 The combined group must stay within 15 minutes on a fast runner.
 The parent must measure the combined group before acceptance and move this gate if the total exceeds that budget.
+
+### Config Startup Reconciliation Gate
+
+Issue #2485 protects the startup hash check after `ConfigWatcherActor` starts its watcher.
+The host hashes the exact `netclaw.json` bytes that its JSON source consumes.
+The [restart contract](docs/spec/SPEC-011-daemon-architecture.md) follows PRD-001 FR-016.
+
+Run `./scripts/run-config-startup-reconciliation-mutations.sh` with a fresh output directory.
+The linked `DaemonConfigurationSourcesTests` table must kill the exact `loadedHash != currentHash` to `loadedHash == currentHash` mutation.
+The gate checks the source, UTF-16 location, Equality mutator, replacement, count, and `Killed` status.
+An ignored, uncovered, timed-out, compile-error, missing, extra, or surviving target fails.
+An active outside mutant also fails. Compiler artifacts outside the span remain in a separate report.
+The ordinary actor tests prove readiness and timer behavior; three process rows prove actual next-host configuration.
+
+CI runs this gate with `daemon-log-retention` in the existing group.
+On a shared host, hold the build lock through the initial build.
+Release it at `Initial test run started`; keep it free during mutation analysis.
+The default output directory is `artifacts/stryker/config-startup-reconciliation`.
+The two local gate commands took 273 seconds in total, including separate initial builds.
+Hosted group cost remains unverified.
 
 ### No Program Gate
 

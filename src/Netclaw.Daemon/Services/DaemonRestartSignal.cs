@@ -7,7 +7,7 @@ namespace Netclaw.Daemon.Services;
 
 /// <summary>
 /// Process-lifetime flag coordinating config-triggered restarts between
-/// <see cref="ConfigWatcherService"/> (writer) and the outer restart loop
+/// <see cref="DaemonRestartCoordinator"/> (writer) and the outer restart loop
 /// in Program.cs (reader). Created once in Program.cs, registered into
 /// each host iteration's DI container.
 /// </summary>

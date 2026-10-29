@@ -430,7 +430,8 @@ static (NetclawPaths Paths, ModelSelection Models) ConfigureConfigServices(
     // 1. netclaw.json (base config, optional)
     // 2. secrets.json (credentials overlay, optional)
     // 3. NETCLAW_* environment variables (highest priority)
-    configuration.AddNetclawDaemonSources(bootstrapPaths);
+    var netclawJson = ConfigReloadBaseline.ReadNetclawJson(bootstrapPaths);
+    services.AddSingleton(ConfigReloadBaseline.Load(configuration, bootstrapPaths, netclawJson));
 
     // Re-create paths with config-driven overrides (e.g. custom workspaces directory).
     var workspacesDir = configuration.GetValue<string>("Workspaces:Directory");
@@ -1053,6 +1054,7 @@ static (IReadOnlyList<string> Warnings, IReadOnlyList<string> Notices) Configure
         akkaBuilder.WithDailyStatsActor();
         akkaBuilder.WithServerFeedSkillSyncActor();
         akkaBuilder.WithDataRetentionActor();
+        akkaBuilder.WithConfigWatcherActor();
 
         // Register reminder tools after actors start (needs ReminderManagerActor ref)
         akkaBuilder.StartActors((system, registry, _) =>
@@ -1146,10 +1148,6 @@ static (IReadOnlyList<string> Warnings, IReadOnlyList<string> Notices) Configure
     // Also registers the generic channel tools (send_channel_message + the two
     // lookups) whenever at least one remote chat channel is enabled.
     services.AddChannelIntegrations(configuration);
-
-    // Config hot-reload watcher
-    services.AddSingleton<ConfigWatcherService>();
-    services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<ConfigWatcherService>());
 
     // Warm previously active sessions after a coordinated restart.
     services.AddSingleton<RestartRecoveryService>();

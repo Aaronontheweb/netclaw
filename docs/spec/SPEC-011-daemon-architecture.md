@@ -45,7 +45,7 @@ Netclaw.Daemon Process
 │   ├── Slack Socket Mode
 │   └── Internal Timer
 │
-├── ConfigWatcherService + RestartCoordinator (FileSystemWatcher restart coordination)
+├── ConfigWatcherActor + RestartCoordinator (FileSystemWatcher restart coordination)
 └── ISystemPromptProvider (layered soul files)
 ```
 
@@ -493,6 +493,23 @@ not execute tools.
    route activates each target session.
 6. **Invalid config**: log warning with validation errors, preserve previous config
 
+The host records a SHA-256 hash of the exact `netclaw.json` bytes that its JSON provider consumes.
+`ConfigWatcherActor` starts its native watcher, then compares disk with that loaded hash.
+A difference schedules validation after application startup.
+An unchanged startup hash needs no additional restart.
+
+Native file callbacks send actor messages.
+One keyed 500ms actor timer debounces change, create, and rename-into events.
+The actor validates canonical sources, including secrets and environment overlays, before it requests coordinated restart.
+An ordinary config event still triggers validation when the raw bytes match.
+A secret-only event creates no reload signal.
+Invalid candidates retain the current host and report the rejection.
+
+The actor owns its watcher, timer, and one in-flight restart request.
+Actor stop disposes the watcher and cancels the coordinator token.
+The existing restart coordinator retains ingress, session drain, and durable recovery ownership.
+See the [file-event contract](../../openspec/specs/netclaw-config-hot-reload/spec.md).
+
 ### What Changes Take Effect After Restart
 
 - Provider credentials and endpoints
@@ -517,8 +534,8 @@ not execute tools.
 - Not agent file tools: tool authorization write-denies the config directory
   (see `docs/architecture/tool-authorization.md`)
 
-All changes go to disk first. The `FileSystemWatcher` is the single reload
-trigger — there is no in-memory config mutation path.
+All changes go to disk first. Watched file events request reload through the coordinator.
+No in-memory config mutation path exists.
 
 ## Security Context
 
