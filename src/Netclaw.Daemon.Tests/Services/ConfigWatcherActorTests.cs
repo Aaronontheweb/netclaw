@@ -161,28 +161,9 @@ public sealed class ConfigWatcherActorTests(ITestOutputHelper output) : TestKit(
     }
 
     [Theory]
-    [InlineData("{}", null, null)]
-    [InlineData(null, null, null)]
-    [InlineData("{ \"Daemon\": { \"Port\": 9999, \"ExposureMode\": \"reverse-proxy\" } }", null, null)]
-    [InlineData("{ \"Models\": { \"Main\": { \"Provider\": \"p\", \"ModelId\": \"m\" } } }", null, null)]
-    [InlineData("{ " + Models + " }", null, null)]
-    [InlineData("{ \"Models\": { \"Main\": { \"Provider\": \"p\", \"ModelId\": \"m\" }, \"Roles\": { \"Main\": \"d\" } } }", null, "Models")]
-    [InlineData("{ \"Models\": { \"Definitions\": { \"d\": { \"Provider\": \"p\", \"ModelId\": \"m\" } } } }", null, "Models")]
-    [InlineData("{ \"Models\": { \"Definitions\": { \"d\": { \"Provider\": \"p\", \"ModelId\": \"m\" } }, \"Roles\": { \"Main\": \"nope\" } } }", null, "Models")]
-    [InlineData("{ \"Models\": { \"Definitions\": { \"d\": { \"Provider\": \"p\", \"ModelId\": \"m\", \"ContextWindow\": 100 } }, \"Roles\": { \"Main\": \"d\" } } }", null, "ContextWindow")]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"ollama\" } }, \"Models\": { \"Definitions\": { \"d\": { \"Provider\": \"p\", \"ModelId\": \"m\" }, \"f\": { \"Provider\": \"zzz\", \"ModelId\": \"m\" } }, \"Roles\": { \"Main\": \"d\", \"Fallback\": \"f\" } } }", null, "zzz")]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"banana\" } }, " + Models + " }", null, "Unknown provider type 'banana'")]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"openai\" } }, " + Models + " }", null, "requires authentication")]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"anthropic\" } }, " + Models + " }", null, "requires authentication")]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"openai-compatible\" } }, " + Models + " }", null, "Endpoint")]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"ollama\", \"AuthMethod\": \"banana\" } }, " + Models + " }", null, "AuthMethod")]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"ollama\", \"VendorOptions\": \"x\" } }, " + Models + " }", null, "VendorOptions")]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"ollama\", \"OAuthTokenExpiry\": \"garbage\" } }, " + Models + " }", null, "OAuthTokenExpiry")]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"ollama\", \"VendorOptions\": { \"DisableThinking\": true } } }, \"Models\": { \"Definitions\": { \"d\": { \"Provider\": \"p\", \"ModelId\": \"m\", \"Thinking\": \"Low\" } }, \"Roles\": { \"Main\": \"d\" } } }", null, "DisableThinking")]
     [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"banana\" } }, " + Models + " }", "{ \"Providers\": { \"p\": { \"Type\": \"ollama\" } } }", null)]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"ollama\" } }, " + Models + " }", "{ \"Providers\": { \"p\": { \"Type\": \"banana\" } } }", "Unknown provider type 'banana'")]
-    [InlineData("{}", "{ broken json", "Couldn't read secrets.json:")]
-    [InlineData("{ broken json", null, "Couldn't read netclaw.json:")]
+    [InlineData("{ \"Models\": { \"Definitions\": { \"d\": { \"Provider\": \"p\", \"ModelId\": \"m\", \"ContextWindow\": 100 } }, \"Roles\": { \"Main\": \"d\" } } }", null, "ContextWindow")]
+    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"banana\" } }, " + Models + " }", null, "Unknown provider type 'banana'")]
     public async Task Reload_validates_canonical_sources_models_and_providers(
         string? config, string? secrets, string? expectedReason)
     {

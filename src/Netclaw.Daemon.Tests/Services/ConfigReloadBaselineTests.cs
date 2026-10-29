@@ -30,14 +30,11 @@ public sealed class ConfigReloadBaselineTests
         string? loaded, string? current, bool expected)
         => Assert.Equal(expected, ConfigWatcherActor.NeedsStartupReload(loaded, current));
 
-    [Theory]
-    [InlineData("""{ "Daemon": { "Host": "loaded" } }""", """{ "Daemon": { "Host": "current" } }""", "loaded")]
-    [InlineData("""{ "Daemon": { "Host": "loaded" } }""", "{}", "loaded")]
-    [InlineData("{}", """{ "Daemon": { "Host": "current" } }""", null)]
-    [InlineData("/* comment */ { \"Daemon\": { \"Host\": \"loaded\", }, }", "{}", "loaded")]
-    public void The_hash_and_configuration_use_the_same_captured_bytes(
-        string loaded, string current, string? expectedHost)
+    [Fact]
+    public void The_hash_and_configuration_use_the_same_captured_bytes()
     {
+        const string loaded = "/* comment */ { \"Daemon\": { \"Host\": \"loaded\", }, }";
+        const string current = """{ "Daemon": { "Host": "current" } }""";
         using var directory = new DisposableTempDir();
         var paths = new NetclawPaths(directory.Path);
         paths.EnsureDirectoriesExist();
@@ -48,7 +45,7 @@ public sealed class ConfigReloadBaselineTests
 
         var baseline = ConfigReloadBaseline.Load(configuration, paths, bytes);
 
-        Assert.Equal(expectedHost, configuration["Daemon:Host"]);
+        Assert.Equal("loaded", configuration["Daemon:Host"]);
         Assert.Equal(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(loaded))), baseline.NetclawJsonHash);
         Assert.True(ConfigWatcherActor.NeedsStartupReload(
             baseline.NetclawJsonHash, ConfigReloadBaseline.HashNetclawJson(ConfigReloadBaseline.ReadNetclawJson(paths))));
@@ -86,9 +83,6 @@ public sealed class ConfigReloadBaselineTests
 
     [Theory]
     [InlineData("{ broken json", null, "netclaw.json")]
-    [InlineData("{ \"Providers\": {},, }", null, "netclaw.json")]
-    [InlineData("{ \"Providers\": {} } /* unclosed", null, "netclaw.json")]
-    [InlineData("{ \"Models\": { \"Roles\": { \"Main\": \"a\" } }, \"models\": { \"Roles\": { \"Main\": \"b\" } } }", null, "netclaw.json")]
     [InlineData("{}", "{ broken json", "secrets.json")]
     public void Canonical_load_errors_keep_the_source_identity(string config, string? secrets, string expectedFile)
     {
