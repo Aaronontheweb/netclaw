@@ -235,7 +235,7 @@ Suggested quick checks:
    - likely outbound post failure or output mapping issue.
 
 2. **Loop symptom**
-   - high `events.dropped{reason="bot_message"}` and high `events.received`
+   - high `events.filtered{reason="bot_message"}` and high `events.received`
    - indicates self-echo events are arriving and being correctly filtered.
 
 3. **Policy mismatch symptom**

@@ -123,6 +123,14 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
     {
         var eventId = EventIdOf(message);
 
+        // --- Bot self-loop filter ---
+        if (IsBotMessage(message))
+        {
+            Log.Info("event_filtered event={0} reason=bot_message", eventId);
+            Telemetry.RecordEventFiltered("bot_message");
+            return;
+        }
+
         // --- ACL gate ---
         var aclDecision = EvaluateAcl(message);
         if (!aclDecision.IsAllowed)
@@ -130,14 +138,6 @@ public abstract class ChannelConversationActor<TMessage> : ReceiveActor
             var reason = aclDecision.DenyReason ?? "acl_denied";
             Log.Info("event_dropped event={0} reason={1}", eventId, reason);
             Telemetry.RecordEventDropped(reason);
-            return;
-        }
-
-        // --- Bot self-loop filter ---
-        if (IsBotMessage(message))
-        {
-            Log.Info("event_filtered event={0} reason=bot_message", eventId);
-            Telemetry.RecordEventFiltered("bot_message");
             return;
         }
 

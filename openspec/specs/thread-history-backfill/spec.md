@@ -231,7 +231,7 @@ sender id. When neither is available, the entry SHALL be dropped.
 
 The inbound bot-message filter that channel adapters apply to live
 inbound events for loop-prevention purposes (e.g., Slack's
-`IsBotMessage → drop` at `SlackConversationActor.cs:50`) SHALL remain
+`IsBotMessage → drop` in the `SlackInboundMessage` handler of `SlackConversationActor`) SHALL remain
 unchanged. That filter operates on the live inbound path; this
 requirement governs the server-side history-fetch path. The two paths
 are independent.
@@ -616,7 +616,7 @@ sender id. When neither is available, the entry SHALL be dropped.
 
 The inbound bot-message filter that channel adapters apply to live
 inbound events for loop-prevention purposes (e.g., Slack's
-`IsBotMessage → drop` at `SlackConversationActor.cs:50`) SHALL remain
+`IsBotMessage → drop` in the `SlackInboundMessage` handler of `SlackConversationActor`) SHALL remain
 unchanged. That filter operates on the live inbound path; this
 requirement governs the server-side history-fetch path. The two paths
 are independent.
