@@ -96,6 +96,22 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
     }
 
     [Fact]
+    public async Task SkillDetail_requires_authorization_for_an_unauthenticated_request()
+    {
+        // The detail route returns skill content and absolute filesystem paths, so it
+        // must not be reachable anonymously. There is no fallback authorization
+        // policy in this app — an endpoint that omits RequireAuthorization is public.
+        var ct = TestContext.Current.CancellationToken;
+        var paths = new NetclawPaths(_dir.Path);
+        await using var app = await CreateAppAsync(spoofLoopback: false, new SkillRegistry(), paths);
+        var client = app.GetTestClient();
+
+        var response = await client.GetAsync("/api/skills/git", ct);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+    }
+
+    [Fact]
     public async Task Sync_requires_authorization_for_an_unauthenticated_post()
     {
         var paths = new NetclawPaths(_dir.Path);
@@ -247,6 +263,76 @@ public sealed class SkillEndpointRouteBuilderExtensionsTests : IDisposable
         var file = Assert.Single(inventory.Skills, s => s.Name == "demo-file");
         Assert.Equal("native", file.Source);
         Assert.Null(file.ServerName);
+    }
+
+    [Fact]
+    public async Task SkillDetail_reads_the_registered_file_and_reports_a_later_read_failure()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var paths = new NetclawPaths(_dir.Path);
+        paths.EnsureDirectoriesExist();
+        var directory = Directory.CreateDirectory(Path.Combine(paths.SkillsDirectory, "local-proof")).FullName;
+        var file = Path.Combine(directory, "SKILL.md");
+        const string content = "---\nname: local-proof\nversion: 1.3.1\ndescription: HTTP proof.\n---\n\n# HTTP proof\n";
+        await File.WriteAllTextAsync(file, content, ct);
+        var registry = new SkillRegistry();
+        await using var app = await CreateAppAsync(spoofLoopback: true, registry, paths);
+        // The actor reply follows inventory publication. It removes the startup race without a wait or a manual seed.
+        await app.Services.GetRequiredService<IRequiredActor<ServerFeedSkillSyncActorKey>>()
+            .ActorRef.Ask<SkillSyncResult.Response>(ServerFeedSkillSyncActor.Run.Instance, ct);
+        using var client = app.GetTestClient();
+
+        using var response = await client.GetAsync("/api/skills/LOCAL-PROOF", ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var detail = await response.Content.ReadFromJsonAsync<SkillInventory.Detail>(ReadOptions, ct);
+        Assert.NotNull(detail);
+        Assert.Equal("native", detail.Skill.Source);
+        Assert.Equal("1.3.1", detail.Skill.Version);
+        Assert.Equal(file, detail.FilePath);
+        Assert.Equal(content, detail.Content);
+
+        File.Delete(file);
+        using var unavailable = await client.GetAsync("/api/skills/local-proof", ct);
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, unavailable.StatusCode);
+    }
+
+    [Fact]
+    public async Task SkillDetail_returns_mcp_metadata_without_file_access()
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var paths = new NetclawPaths(_dir.Path);
+        var registry = new SkillRegistry();
+        registry.PublishMcpPromptSkills("demo", [new SkillEntry("mcp__demo__hello", "Hello", "A prompt.",
+            new McpPromptSkillSource("demo", "hello", 1, []), "mcp")]);
+        await using var app = await CreateAppAsync(spoofLoopback: true, registry, paths);
+
+        using var response = await app.GetTestClient().GetAsync("/api/skills/mcp__demo__hello", ct);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var detail = await response.Content.ReadFromJsonAsync<SkillInventory.Detail>(ReadOptions, ct);
+        Assert.NotNull(detail);
+        Assert.Equal("mcp", detail.Skill.Source);
+        Assert.Equal("demo", detail.Skill.ServerName);
+        Assert.Null(detail.FilePath);
+        Assert.Null(detail.SkillDirectory);
+        Assert.Null(detail.Content);
+    }
+
+    [Fact]
+    public async Task SkillDetail_returns_404_with_a_body_for_an_unknown_name()
+    {
+        // The body is what lets the CLI tell "unknown skill" from "daemon predates this
+        // route" — both are 404, and collapsing them re-creates the original false
+        // "skill not found" report.
+        var ct = TestContext.Current.CancellationToken;
+        var paths = new NetclawPaths(_dir.Path);
+        await using var app = await CreateAppAsync(spoofLoopback: true, new SkillRegistry(), paths);
+
+        var response = await app.GetTestClient().GetAsync("/api/skills/does-not-exist", ct);
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+        var body = await response.Content.ReadAsStringAsync(ct);
+        Assert.False(string.IsNullOrWhiteSpace(body));
     }
 
     private static ServerFeedSkillSyncService CreateSyncService(SkillRegistry registry, NetclawPaths paths)

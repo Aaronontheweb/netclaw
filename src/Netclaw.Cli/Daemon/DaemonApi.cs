@@ -242,6 +242,40 @@ public sealed class DaemonApi
     }
 
     /// <summary>
+    /// Fetches one skill's detail from the daemon's live registry. Returns null when
+    /// the daemon does not know the name. Throws <see cref="HttpRequestException"/>
+    /// (or a timeout) when the daemon is unreachable; callers report that rather than
+    /// degrading to a disk scan.
+    /// </summary>
+    public async Task<SkillInventory.Detail?> GetSkillAsync(string name, CancellationToken ct = default)
+    {
+        using var cts = CreateTimeoutCts(DefaultTimeout, ct);
+        var client = CreateHttpClient();
+        using var response = await client.GetAsync(
+            $"{_endpoint}/api/skills/{Uri.EscapeDataString(name)}", cts.Token);
+
+        if (response.StatusCode == HttpStatusCode.NotFound)
+        {
+            // Two different failures share 404. A daemon that predates this route
+            // returns an empty 404; the route itself answers an unknown name with a
+            // problem body. Collapsing both into null would report a missing route as
+            // "skill not found" — the exact false negative this endpoint exists to fix.
+            var body = await response.Content.ReadAsStringAsync(cts.Token);
+            if (string.IsNullOrWhiteSpace(body))
+                throw new HttpRequestException(
+                    "the daemon does not serve /api/skills/{name} yet",
+                    inner: null,
+                    response.StatusCode);
+
+            return null;
+        }
+
+        response.EnsureSuccessStatusCode();
+        var stream = await response.Content.ReadAsStreamAsync(cts.Token);
+        return await JsonSerializer.DeserializeAsync<SkillInventory.Detail>(stream, JsonDefaults.Api, cts.Token);
+    }
+
+    /// <summary>
     /// Runs the daemon-owned skill sync pass. This request has no client timeout.
     /// A source pass can exceed normal status request limits. The caller controls
     /// only its wait through <paramref name="ct"/>.
