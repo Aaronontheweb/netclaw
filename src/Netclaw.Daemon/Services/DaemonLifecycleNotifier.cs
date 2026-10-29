@@ -12,7 +12,7 @@ namespace Netclaw.Daemon.Services;
 
 /// <summary>
 /// Fires operational webhook notifications for daemon lifecycle events (start/stop).
-/// Called directly by the shutdown endpoint, <see cref="ConfigWatcherService"/>, and
+/// Called directly by the shutdown endpoint, <see cref="DaemonRestartCoordinator"/>, and
 /// the <see cref="Microsoft.Extensions.Hosting.IHostApplicationLifetime.ApplicationStarted"/> hook.
 /// </summary>
 public sealed class DaemonLifecycleNotifier

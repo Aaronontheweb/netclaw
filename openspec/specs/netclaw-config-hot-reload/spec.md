@@ -10,42 +10,48 @@ Terms follow the [engineering glossary](../../../docs/spec/GLOSSARY.md).
 
 ### Requirement: Operational config file monitoring
 
-The daemon SHALL monitor `netclaw.json` before it loads configuration for each host generation.
-Changed, Created, and rename-into events SHALL request reload validation.
-The daemon SHALL retain an event until the hosted service can accept it.
+The daemon SHALL monitor `netclaw.json` through one actor per host generation.
+Changed, Created, and rename-into events SHALL become actor messages.
+After watcher startup, the actor SHALL compare disk with the hash of the exact file bytes its host loaded.
+A different hash for a present file SHALL request validation after application startup.
+A missing current file SHALL create no startup reload request.
 
 #### Scenario: Config edit during startup
 
-- **GIVEN** the daemon loads its configuration before hosted service startup
-- **WHEN** `netclaw.json` changes in that interval
-- **THEN** the daemon validates the latest canonical sources after application startup
-- **AND** a valid candidate requests coordinated restart
+- **WHEN** `netclaw.json` changes after configuration load and before watcher startup
+- **THEN** the hash check detects the edit
+- **AND** the actor validates it after application startup
+
+#### Scenario: File disappears during startup
+
+- **WHEN** the loaded file is absent after watcher startup
+- **THEN** the actor keeps the current host without a startup reload request
 
 #### Scenario: Unwatched files are not monitored
 
 - **WHEN** only `secrets.json` or another unwatched file changes
 - **THEN** the daemon creates no reload request from that event
 
-#### Scenario: Deleted file creates no new request
+#### Scenario: Deleted file creates no new event request
 
-- **WHEN** `netclaw.json` is deleted or renamed away
-- **THEN** that event creates no new reload request
-- **AND** it does not cancel an earlier retained change event
+- **WHEN** a native event reports deletion or rename-away
+- **THEN** that event creates no reload request
 
 ### Requirement: Change event debounce
 
-The daemon SHALL debounce reload signals with a fixed 500ms interval.
-Several signals before hosted service attachment SHALL coalesce into one retained signal.
+The actor SHALL debounce config messages with one keyed 500ms timer.
+A later config message SHALL reset that timer.
+An unchanged startup file hash SHALL cause no startup restart request.
 
 #### Scenario: Rapid successive writes debounced
 
-- **WHEN** several watched-file events occur within 500ms
-- **THEN** the daemon processes one reload after the last signal's debounce interval
+- **WHEN** several config messages arrive within 500ms
+- **THEN** validation occurs after the last message's debounce interval
 
-#### Scenario: Startup without an event
+#### Scenario: Startup with unchanged bytes
 
-- **WHEN** the hosted service starts without a retained file event
-- **THEN** startup alone creates no reload work
+- **WHEN** the loaded file hash matches disk after watcher startup
+- **THEN** startup alone creates no restart request
 
 ### Requirement: Validate before apply
 
@@ -107,25 +113,18 @@ recovery state, and only then request daemon shutdown.
 - **THEN** the coordinator requests daemon shutdown anyway
 - **AND** the shutdown alert names each timed-out session
 
-### Requirement: ConfigWatcherService hosted service
+### Requirement: Config reload actor lifecycle
 
-Each host generation SHALL own one file watcher from before configuration load through host disposal.
-The hosted service SHALL accept retained events and wait for application startup before validation.
-Service stop SHALL prevent further event delivery and cancel pending reload work.
+The actor SHALL own and dispose its native watcher.
+It SHALL defer validation until application startup and admit at most one coordinated restart request at a time.
+It SHALL retain the existing validation, source precedence, and rejection contracts.
 
-#### Scenario: Service starts with application
+#### Scenario: Events before application startup
 
-- **WHEN** the hosted service attaches to the early watcher
-- **THEN** it accepts any retained signal once
-- **AND** it defers validation until application startup completes
+- **WHEN** the debounce interval ends before application startup
+- **THEN** the actor retains the pending request until startup completes
 
-#### Scenario: Service stops on shutdown
+#### Scenario: Actor stops
 
-- **WHEN** the hosted service stops
-- **THEN** later file events cannot request a reload through that service
-- **AND** the host generation disposes its native watcher
-
-#### Scenario: Host creation fails
-
-- **WHEN** configuration load or host creation fails after the watcher starts
-- **THEN** the host generation disposes the watcher before it exits
+- **WHEN** the actor stops
+- **THEN** it disposes its watcher and cancels its pending coordinator call

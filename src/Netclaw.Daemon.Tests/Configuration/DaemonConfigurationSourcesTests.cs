@@ -23,7 +23,8 @@ public sealed class DaemonConfigurationSourcesTests : IDisposable
         // Program.cs uses top-level statements, so no test can build the full daemon host.
         // The source check pins the calls. The binding below goes through the same calls.
         var program = File.ReadAllText(Path.Combine(FindRepoRoot(), "src", "Netclaw.Daemon", "Program.cs"));
-        Assert.Contains("configuration.AddNetclawDaemonSources(bootstrapPaths);", program, StringComparison.Ordinal);
+        Assert.Contains("ConfigReloadBaseline.ReadNetclawJson(bootstrapPaths)", program, StringComparison.Ordinal);
+        Assert.Contains("ConfigReloadBaseline.Load(", program, StringComparison.Ordinal);
         Assert.Contains("var policyConfiguration = PolicyConfiguration.Bind(configuration);", program, StringComparison.Ordinal);
         Assert.Contains("var toolConfig = policyConfiguration.Tools;", program, StringComparison.Ordinal);
         Assert.Contains("startupLogger.LogWarning(\"Configuration warning: {ConfigurationWarning}\", warning);", program, StringComparison.Ordinal);

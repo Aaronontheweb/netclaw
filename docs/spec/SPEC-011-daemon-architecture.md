@@ -45,7 +45,7 @@ Netclaw.Daemon Process
 │   ├── Slack Socket Mode
 │   └── Internal Timer
 │
-├── ConfigWatcherService + RestartCoordinator (FileSystemWatcher restart coordination)
+├── ConfigWatcherActor + RestartCoordinator (FileSystemWatcher restart coordination)
 └── ISystemPromptProvider (layered soul files)
 ```
 
@@ -493,21 +493,21 @@ not execute tools.
    route activates each target session.
 6. **Invalid config**: log warning with validation errors, preserve previous config
 
-Program arms one `ConfigFileWatch` before each host generation loads configuration.
-Program owns its disposal through host creation, shutdown, and failure paths.
-The watcher retains `netclaw.json` change, create, and rename-into events until `ConfigWatcherService` attaches.
-Several early events coalesce into one signal under the same lock as attachment.
-A delete or rename-away event creates no signal and does not erase an earlier signal.
-A secret-only change creates no signal.
+The host records a SHA-256 hash of the exact `netclaw.json` bytes that its JSON provider consumes.
+`ConfigWatcherActor` starts its native watcher, then compares disk with that loaded hash.
+A difference schedules validation after application startup.
+An unchanged startup hash needs no additional restart.
 
-The service uses its existing 500ms debounce and waits for `ApplicationStarted` before validation.
-It validates the canonical sources, including secrets and environment overlays, before it requests coordinated restart.
-It accepts comments and trailing commas, rejects malformed JSON, and retains the current host on rejection.
-Startup without a retained event creates no reload work.
+Native file callbacks send actor messages.
+One keyed 500ms actor timer debounces change, create, and rename-into events.
+The actor validates canonical sources, including secrets and environment overlays, before it requests coordinated restart.
+An ordinary config event still triggers validation when the raw bytes match.
+A secret-only event creates no reload signal.
+Invalid candidates retain the current host and report the rejection.
 
-Service stop detaches the callback before it cancels pending work.
-The lock order is watcher lock, then debounce lock; native watcher disposal occurs outside both locks.
-No generation snapshot or credential comparison applies.
+The actor owns its watcher, timer, and one in-flight restart request.
+Actor stop disposes the watcher and cancels the coordinator token.
+The existing restart coordinator retains ingress, session drain, and durable recovery ownership.
 See the [file-event contract](../../openspec/specs/netclaw-config-hot-reload/spec.md).
 
 ### What Changes Take Effect After Restart

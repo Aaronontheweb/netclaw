@@ -77,7 +77,6 @@ The table retains earlier group measurements. Gate notes below describe later ad
 | `child-owner-and-report` | one Actors invocation for the owner, control, report, close, and drain-scan spans; `chat-close-dispatch-expiry` (two mutants, one CLI invocation) | [8m14s](https://github.com/netclaw-dev/netclaw/actions/runs/40069130760/job/120798739243) |
 | `loopback-host-origin` | `loopback-host-origin` (two invocations, 4.3 to 6.6) | 4.5 to 7 (estimate) |
 | `child-consent` | `child-consent` (36 mutants, one invocation, about 3, estimate), `text-answer-guard` (15 mutants, two invocations, 3.6 local), `child-resume-gate` (62 mutants, one invocation; local time below) | 9 to 11 (estimate) |
-| `config-startup-reconciliation` | `config-startup-reconciliation` (one required mutant, one Daemon invocation) | 223 seconds locally; hosted cost pending |
 
 The approval-directory gate includes one retained-hop producer target in `FileSystemAuthority.FollowLinkChainCore`.
 The gate requires the omission of `knownTargets?.Add(current);` to have the `Killed` status.
@@ -201,7 +200,8 @@ Stryker records unrelated compilation artifacts outside the selected span; the v
 
 The manual `<=` mutation failed the cutoff row before this gate was added.
 The first local Stryker run killed both expected mutants in 161 seconds.
-The `daemon-log-retention` matrix group keeps this cost separate from existing groups.
+The `daemon-log-retention` matrix group also runs the startup hash check.
+The combined group retains the existing time budget.
 The gate does not measure general code coverage or replace the writer and retention tests.
 
 Run the path-access check locally:
@@ -271,32 +271,23 @@ The parent must measure the combined group before acceptance and move this gate 
 
 ### Config Startup Reconciliation Gate
 
-Issue #2485 protects a `netclaw.json` event before the hosted service attaches.
-The contract follows [PRD-001 FR-016](docs/prd/PRD-001-netclaw-mvp.md#fr-016-config-change-restart-coordination)
-and [SPEC-011](docs/spec/SPEC-011-daemon-architecture.md).
-The shared `ConfigFileWatchTests` fixture checks the actual event handlers and their handoff.
-The mutation changes the retained-event assignment from `true` to `false`.
-The before-attach event cases must kill that mutation.
-The nine process cases separately prove that the next host consumes the edited canonical configuration.
+Issue #2485 protects the startup hash check after `ConfigWatcherActor` starts its watcher.
+The host hashes the exact `netclaw.json` bytes that its JSON source consumes.
+The [restart contract](docs/spec/SPEC-011-daemon-architecture.md) follows PRD-001 FR-016.
 
-Run `./scripts/run-config-startup-reconciliation-mutations.sh` after the disk check confirms at least 20 GiB free.
-The existing Actors mutation project links the shared owner fixture and references the daemon.
-The daemon already grants that assembly internal access.
-The script selects only the marked boolean literal in `ConfigFileWatch`.
-It requires exactly one `Boolean mutation`, the exact source, UTF-16 location, replacement `false`, and status `Killed`.
-Missing, extra, ignored, uncovered, timed-out, compile-error, and surviving targets fail the gate.
-An active mutant outside the selected span also fails the gate.
-The script retains compiler artifacts outside the span in `reports/outside-span-compile-errors.json`.
-A failed Stryker invocation cannot pass the gate.
-Pass a fresh output directory for each run; the script refuses prior scope or report files.
-The default path is `artifacts/stryker/config-startup-reconciliation`.
+Run `./scripts/run-config-startup-reconciliation-mutations.sh` with a fresh output directory.
+The linked `ConfigReloadBaselineTests` table must kill the exact `loadedHash != currentHash` to `loadedHash == currentHash` mutation.
+The gate checks the source, UTF-16 location, Equality mutator, replacement, count, and `Killed` status.
+An ignored, uncovered, timed-out, compile-error, missing, extra, or surviving target fails.
+An active outside mutant also fails. Compiler artifacts outside the span remain in a separate report.
+The ordinary actor tests prove readiness and timer behavior; four process rows prove actual next-host configuration.
 
-On a shared host, hold the shared build lock through Stryker's initial SDK build.
-Release it when Stryker prints `Initial test run started`.
-Keep the lock free during mutation analysis and test waits.
-CI uses a separate group with a 25-minute timeout and a 15-minute target on a fast runner.
-The final local command took 223 seconds, including 1,214 initial cases.
-Hosted cost remains unverified.
+CI runs this gate with `daemon-log-retention` in the existing group.
+On a shared host, hold the build lock through the initial build.
+Release it at `Initial test run started`; keep it free during mutation analysis.
+The default output directory is `artifacts/stryker/config-startup-reconciliation`.
+The two local gate commands took 273 seconds in total, including separate initial builds.
+Hosted group cost remains unverified.
 
 ### No Program Gate
 

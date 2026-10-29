@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text.Json;
 using Microsoft.Extensions.Configuration;
 
 namespace Netclaw.Configuration;
@@ -15,8 +16,32 @@ public static class DaemonConfigurationSources
     /// netclaw.json, then secrets.json, then <c>NETCLAW_*</c> environment variables.
     /// </summary>
     public static IConfigurationBuilder AddNetclawDaemonSources(this IConfigurationBuilder builder, NetclawPaths paths)
-        => builder
-            .AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false)
+        => AddOverlays(builder.AddJsonFile(paths.NetclawConfigPath, optional: true, reloadOnChange: false), paths);
+
+    /// <summary>
+    /// Adds captured netclaw.json bytes, then the canonical overlays. A null stream means the optional file is absent.
+    /// ConfigurationManager consumes the stream immediately; other builders need it until Build completes.
+    /// </summary>
+    public static IConfigurationBuilder AddNetclawDaemonSources(
+        this IConfigurationBuilder builder, NetclawPaths paths, Stream? netclawJson)
+    {
+        if (netclawJson is not null)
+        {
+            try
+            {
+                builder.AddJsonStream(netclawJson);
+            }
+            catch (Exception ex) when (ex is FormatException or JsonException)
+            {
+                throw new InvalidDataException($"Failed to load configuration from file '{paths.NetclawConfigPath}'.", ex);
+            }
+        }
+
+        return AddOverlays(builder, paths);
+    }
+
+    private static IConfigurationBuilder AddOverlays(IConfigurationBuilder builder, NetclawPaths paths) =>
+        builder
             .AddJsonFile(paths.SecretsPath, optional: true, reloadOnChange: false)
             .AddEnvironmentVariables("NETCLAW_");
 

@@ -27,8 +27,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Include="../Netclaw.Daemon.Tests/Services/ConfigFileWatchTests.cs"
-             Link="Services/ConfigFileWatchTests.cs" />
+    <Compile Include="../Netclaw.Daemon.Tests/Services/ConfigReloadBaselineTests.cs"
+             Link="Services/ConfigReloadBaselineTests.cs" />
     <Compile Include="../Netclaw.Security.Tests/ShellPlainFileTargetContractTests.cs"
              Link="Tools/ShellPlainFileTargetContractTests.cs" />
     <Compile Include="../Netclaw.Actors.Tests/Sessions/LoopFeedbackTests.cs"

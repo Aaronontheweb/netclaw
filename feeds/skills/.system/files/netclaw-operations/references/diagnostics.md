@@ -25,12 +25,10 @@ If a local config source cannot be read, `netclaw daemon status` reports an unkn
 `netclaw daemon stop` also skips its shutdown notice. It still requires proof that the process serves this home.
 Repair or restore the file that the command names, then retry.
 
-The daemon watches `netclaw.json` before each host loads its configuration.
-It retains early change events until the hosted service starts.
-A valid candidate requests coordinated restart after application startup.
-The syntax check accepts comments and trailing commas.
-An invalid candidate preserves the current host and reports the rejection through `netclaw status`.
-Validation uses the canonical sources, including the secrets overlay and environment overrides.
+The daemon compares the loaded `netclaw.json` hash with disk after its config actor starts the watcher.
+A startup difference or a later config event triggers validation after application startup.
+Validation uses canonical sources, including secrets and environment overrides, and accepts comments and trailing commas.
+An invalid candidate preserves the current host and reports its rejection through `netclaw status`.
 A secret-only change, including an OAuth token refresh, creates no reload signal.
 
 The daemon deletes `daemon-*.log` and `crash-*.log` files older than `Retention:Logs:Days`
