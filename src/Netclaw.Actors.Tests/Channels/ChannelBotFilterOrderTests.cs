@@ -4,7 +4,6 @@
 // </copyright>
 // -----------------------------------------------------------------------
 using Akka.Actor;
-using Akka.Configuration;
 using Akka.Hosting;
 using Akka.Hosting.TestKit;
 using Microsoft.Extensions.DependencyInjection;
@@ -19,6 +18,7 @@ using Netclaw.Channels.Slack;
 using Netclaw.Channels.Telemetry;
 using Netclaw.Configuration;
 using Netclaw.Security;
+using System.Diagnostics.Metrics;
 using Xunit;
 
 namespace Netclaw.Actors.Tests.Channels;
@@ -36,9 +36,6 @@ public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestK
 {
     public const string Name = "Channel telemetry counters";
 
-    protected override Config? Config =>
-        ConfigurationFactory.ParseString("akka.test.default-timeout = 5s");
-
     protected override void ConfigureServices(HostBuilderContext context, IServiceCollection services)
     {
     }
@@ -51,6 +48,7 @@ public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestK
     public async Task Slack_bot_message_from_ACL_denied_sender_is_filtered_not_dropped()
     {
         ChannelTelemetry.ResetForTests();
+        StartListener();
         var conversation = CreateSlackConversation();
 
         conversation.Tell(CreateSlackMessage(botId: new SlackBotId("B1")));
@@ -62,6 +60,7 @@ public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestK
     public async Task Slack_person_denied_by_ACL_is_dropped()
     {
         ChannelTelemetry.ResetForTests();
+        StartListener();
         var conversation = CreateSlackConversation();
 
         conversation.Tell(CreateSlackMessage(botId: null));
@@ -73,6 +72,7 @@ public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestK
     public async Task Discord_bot_message_from_ACL_denied_sender_is_filtered_not_dropped()
     {
         ChannelTelemetry.ResetForTests();
+        StartListener();
         var conversation = CreateDiscordConversation();
 
         conversation.Tell(CreateDiscordMessage(isBotMessage: true));
@@ -84,6 +84,7 @@ public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestK
     public async Task Discord_person_denied_by_ACL_is_dropped()
     {
         ChannelTelemetry.ResetForTests();
+        StartListener();
         var conversation = CreateDiscordConversation();
 
         conversation.Tell(CreateDiscordMessage(isBotMessage: false));
@@ -95,6 +96,7 @@ public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestK
     public async Task Mattermost_bot_message_from_ACL_denied_sender_is_filtered_not_dropped()
     {
         ChannelTelemetry.ResetForTests();
+        StartListener();
         var conversation = CreateMattermostConversation();
 
         conversation.Tell(CreateMattermostMessage(isBotMessage: true));
@@ -106,6 +108,7 @@ public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestK
     public async Task Mattermost_person_denied_by_ACL_is_dropped()
     {
         ChannelTelemetry.ResetForTests();
+        StartListener();
         var conversation = CreateMattermostConversation();
 
         conversation.Tell(CreateMattermostMessage(isBotMessage: false));
@@ -120,6 +123,8 @@ public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestK
             () => Assert.Equal(1, metrics.GetSnapshot().EventsFiltered),
             cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(0, metrics.GetSnapshot().EventsDropped);
+        Assert.Equal(["bot_message"], Reasons("events.filtered"));
+        Assert.Empty(Reasons("events.dropped"));
     }
 
     private async Task AssertDroppedNotFiltered(ChannelType channelType)
@@ -129,6 +134,51 @@ public sealed class ChannelBotFilterOrderTests(ITestOutputHelper output) : TestK
             () => Assert.Equal(1, metrics.GetSnapshot().EventsDropped),
             cancellationToken: TestContext.Current.CancellationToken);
         Assert.Equal(0, metrics.GetSnapshot().EventsFiltered);
+        Assert.Equal([AclDenyReasons.UserNotAllowed], Reasons("events.dropped"));
+        Assert.Empty(Reasons("events.filtered"));
+    }
+
+    private readonly List<(string Instrument, string Reason)> _measurements = [];
+    private MeterListener? _listener;
+
+    private string[] Reasons(string counterSuffix)
+    {
+        lock (_measurements)
+            return _measurements
+                .Where(m => m.Instrument.EndsWith(counterSuffix, StringComparison.Ordinal))
+                .Select(m => m.Reason)
+                .ToArray();
+    }
+
+    // Observe the reason tag of the dropped and filtered counters.
+    private void StartListener()
+    {
+        _listener = new MeterListener
+        {
+            InstrumentPublished = (instrument, listener) =>
+            {
+                if (instrument.Meter.Name == ChannelTelemetry.MeterName)
+                    listener.EnableMeasurementEvents(instrument);
+            }
+        };
+        _listener.SetMeasurementEventCallback<long>((instrument, _, tags, _) =>
+        {
+            foreach (var tag in tags)
+            {
+                if (tag.Key == "reason")
+                {
+                    lock (_measurements)
+                        _measurements.Add((instrument.Name, tag.Value?.ToString() ?? ""));
+                }
+            }
+        });
+        _listener.Start();
+    }
+
+    protected override async Task AfterAllAsync()
+    {
+        _listener?.Dispose();
+        await base.AfterAllAsync();
     }
 
     // ── Slack ──

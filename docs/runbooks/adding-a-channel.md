@@ -286,13 +286,16 @@ Subclass `ChannelConversationActor<TMessage>`
 (`src/Netclaw.Channels/ChannelConversationActor.cs`). The base owns the
 inbound security pipeline in a **fixed order** — do not reorder or bypass:
 
-1. ACL gate (`EvaluateAcl`)
-2. Bot self-loop filter (`IsBotMessage`)
+1. Bot self-loop filter (`IsBotMessage`)
+2. ACL gate (`EvaluateAcl`)
 3. Ingress gate (restart drain via `SessionIngressGate`)
 4. Routing policy (`EvaluateRouting` → `ChannelRoutingVerdict`:
    `StartOrContinue` / `ContinueOnly` / `Ignore`)
 5. Text normalization, 4,000-char truncation, empty-text filter
 6. Session binding get-or-create and forward
+
+The bot filter runs before the ACL gate so that the bot's own echoes count as
+`filtered` and not as ACL `dropped`.
 
 It also owns 2-hour idle passivation, stop-on-failure supervision of session
 bindings, and `Terminated` bookkeeping. You implement 13 abstract members:
