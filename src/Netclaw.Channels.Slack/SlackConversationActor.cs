@@ -29,6 +29,13 @@ public sealed class SlackConversationActor : ReceiveActor
 
         Receive<SlackInboundMessage>(message =>
         {
+            if (IsBotMessage(message))
+            {
+                _log.Info("event_filtered event={0} reason=bot_message", message.EventId);
+                ChannelTelemetry.For(ChannelType.Slack).RecordEventFiltered("bot_message");
+                return;
+            }
+
             var aclDecision = SlackAclPolicy.EvaluateInbound(
                 message,
                 _dependencies.Options,
@@ -38,13 +45,6 @@ public sealed class SlackConversationActor : ReceiveActor
             {
                 _log.Info("event_dropped event={0} reason={1}", message.EventId, aclDecision.DenyReason ?? "acl_denied");
                 ChannelTelemetry.For(ChannelType.Slack).RecordEventDropped(aclDecision.DenyReason ?? "acl_denied");
-                return;
-            }
-
-            if (IsBotMessage(message))
-            {
-                _log.Info("event_filtered event={0} reason=bot_message", message.EventId);
-                ChannelTelemetry.For(ChannelType.Slack).RecordEventFiltered("bot_message");
                 return;
             }
 
