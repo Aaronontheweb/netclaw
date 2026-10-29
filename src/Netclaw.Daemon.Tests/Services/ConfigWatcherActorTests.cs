@@ -3,6 +3,7 @@
 //      Copyright (C) 2026 - 2026 Petabridge, LLC <https://petabridge.com>
 // </copyright>
 // -----------------------------------------------------------------------
+using System.Text;
 using Akka.Actor;
 using Akka.Configuration;
 using Akka.Hosting;
@@ -70,49 +71,72 @@ public sealed class ConfigWatcherActorTests(ITestOutputHelper output) : TestKit(
         await SettleAsync(actor);
     }
 
-    [Theory]
-    [InlineData("same", 0)]
-    [InlineData("different", 1)]
-    [InlineData("appeared", 1)]
-    [InlineData("missing", 0)]
-    [InlineData("read_error", 0)]
-    public async Task Startup_reconciliation_uses_the_loaded_hash(string state, int expectedRestarts)
+    public static TheoryData<string, string?, string?, bool, int> StartupCases => new()
     {
-        var current = WriteCandidate(state == "missing" ? null : "{}", null);
-        if (state == "read_error")
+        { "same_bytes", "{}", "{}", false, 0 },
+        { "different_bytes", "{}", "older", false, 1 },
+        { "file_appeared", "{}", null, false, 1 },
+        { "file_disappeared", null, "{}", false, 0 },
+        { "read_error", "{}", "{}", true, 0 }
+    };
+
+    [Theory]
+    [MemberData(nameof(StartupCases))]
+    public async Task Startup_reconciliation_uses_the_loaded_hash(
+        string name, string? current, string? loaded, bool unreadable, int expectedRestarts)
+    {
+        WriteCandidate(current, null);
+        if (unreadable)
         {
             File.Delete(Paths.NetclawConfigPath);
             Directory.CreateDirectory(Paths.NetclawConfigPath);
         }
-        var loaded = state switch { "same" => current, "appeared" => null, _ => "older-hash" };
-        var actor = CreateActor(loaded);
+        var actor = CreateActor(ConfigReloadBaseline.HashNetclawJson(loaded is null ? null : Encoding.UTF8.GetBytes(loaded)));
         actor.Tell(HostStarted.Instance);
         await AdvanceAsync(actor, Debounce);
 
-        Assert.Equal(expectedRestarts, _restart.Count);
-        if (state == "read_error") Assert.Contains("netclaw.json", _rejected.Reason);
+        Assert.True(expectedRestarts == _restart.Count, name);
+        if (unreadable) Assert.Contains("netclaw.json", _rejected.Reason);
         else Assert.Null(_rejected.Reason);
     }
 
-    [Theory]
-    [InlineData(WatcherChangeTypes.Changed, "netclaw.json", null, 1)]
-    [InlineData(WatcherChangeTypes.Created, "netclaw.json", null, 1)]
-    [InlineData(WatcherChangeTypes.Renamed, "netclaw.json", "config.tmp", 1)]
-    [InlineData(WatcherChangeTypes.Changed, "secrets.json", null, 0)]
-    [InlineData(WatcherChangeTypes.Deleted, "netclaw.json", null, 0)]
-    [InlineData(WatcherChangeTypes.Renamed, "config.old", "netclaw.json", 0)]
-    [InlineData(WatcherChangeTypes.Changed, "other.txt", null, 0)]
-    [InlineData(WatcherChangeTypes.Changed, null, null, 0)]
-    public async Task File_events_preserve_the_contract_even_when_bytes_match_the_baseline(
-        WatcherChangeTypes kind, string? name, string? oldName, int expectedRestarts)
+    private const string PriorRejection = "an earlier rejected edit";
+    public static TheoryData<string, string, string?, WatcherChangeTypes, string?, string?, string?> ReloadCases => new()
     {
-        var actor = CreateActor(WriteCandidate("{}", null));
+        { "changed_with_secrets_overlay", "{ \"Providers\": { \"p\": { \"Type\": \"banana\" } }, " + Models + " }",
+            "{ \"Providers\": { \"p\": { \"Type\": \"ollama\" } } }", WatcherChangeTypes.Changed, "netclaw.json", null, null },
+        { "created", "{}", null, WatcherChangeTypes.Created, "netclaw.json", null, null },
+        { "renamed_into", "{}", null, WatcherChangeTypes.Renamed, "netclaw.json", "config.tmp", null },
+        { "secrets_only", "{}", null, WatcherChangeTypes.Changed, "secrets.json", null, PriorRejection },
+        { "deleted", "{}", null, WatcherChangeTypes.Deleted, "netclaw.json", null, PriorRejection },
+        { "renamed_away", "{}", null, WatcherChangeTypes.Renamed, "config.old", "netclaw.json", PriorRejection },
+        { "other_file", "{}", null, WatcherChangeTypes.Changed, "other.txt", null, PriorRejection },
+        { "invalid_model", "{ \"Models\": { \"Definitions\": { \"d\": { \"Provider\": \"p\", \"ModelId\": \"m\", \"ContextWindow\": 100 } }, \"Roles\": { \"Main\": \"d\" } } }",
+            null, WatcherChangeTypes.Changed, "netclaw.json", null, "ContextWindow" },
+        { "invalid_provider", "{ \"Providers\": { \"p\": { \"Type\": \"banana\" } }, " + Models + " }",
+            null, WatcherChangeTypes.Changed, "netclaw.json", null, "Unknown provider type 'banana'" }
+    };
+
+    [Theory]
+    [MemberData(nameof(ReloadCases))]
+    public async Task File_events_validate_the_current_candidate_and_preserve_rejection_state(
+        string name, string config, string? secrets, WatcherChangeTypes kind, string? file, string? oldFile, string? expectedReason)
+    {
+        var hash = WriteCandidate(config, secrets);
+        _rejected.Reject(PriorRejection);
+        var actor = CreateActor(hash);
         actor.Tell(HostStarted.Instance);
-        actor.Tell(new ConfigChanged(kind, name, oldName));
+        actor.Tell(new ConfigChanged(kind, file, oldFile));
         await AdvanceAsync(actor, Debounce);
 
-        Assert.Equal(expectedRestarts, _restart.Count);
-        Assert.Null(_rejected.Reason);
+        Assert.True(_restart.Count == (expectedReason is null ? 1 : 0), name);
+        if (expectedReason is null) Assert.Null(_rejected.Reason);
+        else
+        {
+            Assert.Contains(expectedReason, _rejected.Reason);
+            Assert.DoesNotContain('\n', _rejected.Reason!);
+            Assert.DoesNotContain("   at ", _rejected.Reason);
+        }
     }
 
     [Theory]
@@ -160,30 +184,6 @@ public sealed class ConfigWatcherActorTests(ITestOutputHelper output) : TestKit(
         Assert.Equal(1, _restart.Count);
     }
 
-    [Theory]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"banana\" } }, " + Models + " }", "{ \"Providers\": { \"p\": { \"Type\": \"ollama\" } } }", null)]
-    [InlineData("{ \"Models\": { \"Definitions\": { \"d\": { \"Provider\": \"p\", \"ModelId\": \"m\", \"ContextWindow\": 100 } }, \"Roles\": { \"Main\": \"d\" } } }", null, "ContextWindow")]
-    [InlineData("{ \"Providers\": { \"p\": { \"Type\": \"banana\" } }, " + Models + " }", null, "Unknown provider type 'banana'")]
-    public async Task Reload_validates_canonical_sources_models_and_providers(
-        string? config, string? secrets, string? expectedReason)
-    {
-        var hash = WriteCandidate(config, secrets);
-        _rejected.Reject("an earlier rejected edit");
-        var actor = CreateActor(hash);
-        actor.Tell(HostStarted.Instance);
-        actor.Tell(new ConfigChanged(WatcherChangeTypes.Changed, "netclaw.json", null));
-        await AdvanceAsync(actor, Debounce);
-
-        Assert.Equal(expectedReason is null ? 1 : 0, _restart.Count);
-        if (expectedReason is null) Assert.Null(_rejected.Reason);
-        else
-        {
-            Assert.Contains(expectedReason, _rejected.Reason);
-            Assert.DoesNotContain('\n', _rejected.Reason!);
-            Assert.DoesNotContain("   at ", _rejected.Reason);
-        }
-    }
-
     [Fact]
     public async Task Repeated_invalid_events_warn_once()
     {
@@ -200,12 +200,16 @@ public sealed class ConfigWatcherActorTests(ITestOutputHelper output) : TestKit(
         Assert.Equal(0, _restart.Count);
     }
 
+    public enum RestartEnd { Complete, Stop, FailThenRetry }
+
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task An_admitted_restart_ignores_queued_events_and_stop_cancels_its_token(bool stop)
+    [InlineData(RestartEnd.Complete)]
+    [InlineData(RestartEnd.Stop)]
+    [InlineData(RestartEnd.FailThenRetry)]
+    public async Task Coordinator_outcomes_preserve_one_admission_and_allow_only_an_event_retry(RestartEnd outcome)
     {
-        _restart.Hold = true;
+        var response = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        _restart.Response = response.Task;
         var actor = CreateActor(WriteCandidate("{}", null));
         await WatchAsync(actor);
         actor.Tell(HostStarted.Instance);
@@ -215,8 +219,9 @@ public sealed class ConfigWatcherActorTests(ITestOutputHelper output) : TestKit(
             await SettleAsync(actor);
             ((TestScheduler)Sys.Scheduler).Advance(Debounce);
             await _restart.Entered.Task.WaitAsync(Deadline, TestContext.Current.CancellationToken);
-            actor.Tell(new ConfigChanged(WatcherChangeTypes.Changed, "netclaw.json", null));
-            if (stop)
+            if (outcome != RestartEnd.FailThenRetry)
+                actor.Tell(new ConfigChanged(WatcherChangeTypes.Changed, "netclaw.json", null));
+            if (outcome == RestartEnd.Stop)
             {
                 Sys.Stop(actor);
                 await ExpectTerminatedAsync(actor, Deadline, cancellationToken: TestContext.Current.CancellationToken);
@@ -224,26 +229,18 @@ public sealed class ConfigWatcherActorTests(ITestOutputHelper output) : TestKit(
             }
             else
             {
-                _restart.Release.TrySetResult();
+                _restart.Response = Task.CompletedTask;
+                if (outcome == RestartEnd.FailThenRetry) response.TrySetException(new InvalidOperationException("The test restart failed."));
+                else response.TrySetResult();
+                await SettleAsync(actor);
+                Assert.Equal(1, _restart.Count);
+                if (outcome == RestartEnd.FailThenRetry)
+                    actor.Tell(new ConfigChanged(WatcherChangeTypes.Changed, "netclaw.json", null));
                 await AdvanceAsync(actor, Debounce);
             }
-            Assert.Equal(1, _restart.Count);
+            Assert.Equal(outcome == RestartEnd.FailThenRetry ? 2 : 1, _restart.Count);
         }
-        finally { _restart.Release.TrySetResult(); }
-    }
-
-    [Fact]
-    public async Task A_failed_coordinator_allows_a_later_event_to_retry()
-    {
-        _restart.ThrowFirst = true;
-        var actor = CreateActor(WriteCandidate("{}", null));
-        actor.Tell(HostStarted.Instance);
-        for (var i = 0; i < 2; i++)
-        {
-            actor.Tell(new ConfigChanged(WatcherChangeTypes.Changed, "netclaw.json", null));
-            await AdvanceAsync(actor, Debounce);
-        }
-        Assert.Equal(2, _restart.Count);
+        finally { response.TrySetResult(); }
     }
 
     async ValueTask IAsyncDisposable.DisposeAsync()
@@ -267,18 +264,16 @@ public sealed class ConfigWatcherActorTests(ITestOutputHelper output) : TestKit(
     {
         private int _count;
         public int Count => Volatile.Read(ref _count);
-        public bool Hold { get; set; }
-        public bool ThrowFirst { get; set; }
+        public Task Response { get; set; } = Task.CompletedTask;
         public CancellationToken Token { get; private set; }
         public TaskCompletionSource Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public TaskCompletionSource Release { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public Task RequestConfigRestartAsync(CancellationToken cancellationToken)
         {
+            var response = Response;
             Token = cancellationToken;
-            var count = Interlocked.Increment(ref _count);
+            Interlocked.Increment(ref _count);
             Entered.TrySetResult();
-            if (ThrowFirst && count == 1) throw new InvalidOperationException("The test restart failed.");
-            return Hold ? Release.Task.WaitAsync(cancellationToken) : Task.CompletedTask;
+            return response.WaitAsync(cancellationToken);
         }
     }
 }

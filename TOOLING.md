@@ -277,11 +277,11 @@ The host hashes the exact `netclaw.json` bytes that its JSON source consumes.
 The [restart contract](docs/spec/SPEC-011-daemon-architecture.md) follows PRD-001 FR-016.
 
 Run `./scripts/run-config-startup-reconciliation-mutations.sh` with a fresh output directory.
-The linked `ConfigReloadBaselineTests` table must kill the exact `loadedHash != currentHash` to `loadedHash == currentHash` mutation.
+The linked `DaemonConfigurationSourcesTests` table must kill the exact `loadedHash != currentHash` to `loadedHash == currentHash` mutation.
 The gate checks the source, UTF-16 location, Equality mutator, replacement, count, and `Killed` status.
 An ignored, uncovered, timed-out, compile-error, missing, extra, or surviving target fails.
 An active outside mutant also fails. Compiler artifacts outside the span remain in a separate report.
-The ordinary actor tests prove readiness and timer behavior; four process rows prove actual next-host configuration.
+The ordinary actor tests prove readiness and timer behavior; three process rows prove actual next-host configuration.
 
 CI runs this gate with `daemon-log-retention` in the existing group.
 On a shared host, hold the build lock through the initial build.

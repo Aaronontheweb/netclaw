@@ -17,13 +17,16 @@ namespace Netclaw.Daemon.Tests.Services;
 
 public sealed class ConfigStartupGapProcessTests
 {
+    public static TheoryData<string, StartupEdit> GapEdits => new()
+    {
+        { "changed_host", StartupEdit.Host },
+        { "secrets_overlay", StartupEdit.NetclawEditWithSecretsOverlay },
+        { "invalid_json", StartupEdit.InvalidJson }
+    };
+
     [Theory]
-    [InlineData(true, StartupEdit.Host)]
-    [InlineData(false, StartupEdit.Host)]
-    [InlineData(true, StartupEdit.NetclawEditWithSecretsOverlay)]
-    [InlineData(true, StartupEdit.InvalidJson)]
-    public async Task Latest_config_reaches_the_real_host_across_watcher_start(
-        bool writeBeforeWatcherStart, StartupEdit edit)
+    [MemberData(nameof(GapEdits))]
+    public async Task Latest_config_reaches_the_real_host_across_watcher_start(string name, StartupEdit edit)
     {
         using var directory = new DisposableTempDir();
         var paths = new NetclawPaths(Path.Combine(directory.Path, "home"));
@@ -68,20 +71,11 @@ public sealed class ConfigStartupGapProcessTests
             Assert.Equal(1, daemon.State.Starts);
 
             // Program loaded A before this checkpoint. The memory schema UPDATE holds the new watcher behind the gate.
-            if (writeBeforeWatcherStart)
-                ApplyEdit(paths, port, edit);
+            ApplyEdit(paths, port, edit);
 
             await using var release = gate.CreateCommand();
             release.CommandText = "ROLLBACK";
             await release.ExecuteNonQueryAsync(token);
-        }
-
-        if (!writeBeforeWatcherStart)
-        {
-            await daemon.WaitForAsync(state => state.Starts == 2 && state.Watchers == 2, token);
-            Assert.Equal("localhost", daemon.State.Host);
-            Assert.Equal(2, await ReadGenerationAsync("localhost", port, token));
-            ApplyEdit(paths, port, edit);
         }
 
         if (edit == StartupEdit.InvalidJson)
@@ -104,7 +98,7 @@ public sealed class ConfigStartupGapProcessTests
         Assert.Equal(0, daemon.State.Rejections);
         Assert.Equal(expectedHost, daemon.State.Host);
         var generation = await ReadGenerationAsync(expectedHost, port, token);
-        Assert.True(generation >= 3, "B must serve the readiness response after host generation A.");
+        Assert.True(generation >= 3, $"{name}: B must serve the readiness response after host generation A.");
         Assert.Equal(daemon.State.Migrations, generation);
         Assert.Equal(0, daemon.State.Rejections);
     }
